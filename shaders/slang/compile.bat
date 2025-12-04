@@ -1,0 +1,1 @@
+slangc.exe .\tree64.slang -profile glsl_450 -line-directive-mode none -target glsl -o tree64.glsl -entry main 

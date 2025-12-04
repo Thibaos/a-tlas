@@ -1,0 +1,27 @@
+[package]
+name = "a-tlas"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+vulkano = { git = "https://github.com/vulkano-rs/vulkano" }
+vulkano-shaders = { git = "https://github.com/vulkano-rs/vulkano" }
+vulkano-util = { git = "https://github.com/vulkano-rs/vulkano" }
+vulkano-taskgraph = { git = "https://github.com/vulkano-rs/vulkano" }
+rand = "0.9"
+winit = "0.30.12"
+dot_vox = "*"
+glam = { version = "*", features = ["bytemuck"] }
+bytemuck = { version = "*", features = ["extern_crate_alloc"] }
+ply-rs = "*"
+crossterm = "0.29.0"
+
+[profile.release]
+codegen-units = 1
+
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
