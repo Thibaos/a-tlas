@@ -1,6 +1,5 @@
 use std::sync::Arc;
 
-use crate::{App, RenderContext};
 use vulkano::{
     DeviceSize, Packed24_8,
     acceleration_structure::{
@@ -15,6 +14,8 @@ use vulkano::{
 use vulkano_taskgraph::{
     Id, Task, TaskContext, TaskResult, command_buffer::RecordingCommandBuffer,
 };
+
+use crate::app::{App, RenderContext};
 
 const UPDATES_PER_FRAME: u64 = 2u64.pow(10);
 

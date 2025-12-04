@@ -1,4 +1,4 @@
-use a_tlas::App;
+use a_tlas::app::App;
 use std::error::Error;
 use winit::event_loop::EventLoop;
 

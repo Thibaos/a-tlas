@@ -1,6 +1,6 @@
 use std::time::Instant;
 
-use crate::TICKS_PER_SECOND;
+use crate::app::TICKS_PER_SECOND;
 
 pub struct PhysicsController {
     last_update: Instant,

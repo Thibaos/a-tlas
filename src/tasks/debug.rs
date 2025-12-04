@@ -1,4 +1,3 @@
-use crate::RenderContext;
 use core::slice;
 use std::sync::Arc;
 use vulkano::{
@@ -8,6 +7,8 @@ use vulkano::{
 use vulkano_taskgraph::{
     Id, Task, TaskContext, TaskResult, command_buffer::RecordingCommandBuffer,
 };
+
+use crate::app::RenderContext;
 
 pub mod shader {
     pub(crate) mod vert {

@@ -1,9 +1,9 @@
 use crate::{
-    App, RenderContext,
+    app::{App, RenderContext},
     rt::{acceleration_structure, closest_hit, intersection, miss, raygen},
     world::voxel::{get_palette, triangles_from_box},
 };
-use glam::{IVec3, Vec3};
+use glam::Vec3;
 use std::sync::Arc;
 use vulkano::{
     DeviceSize, Packed24_8,
