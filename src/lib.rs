@@ -71,7 +71,6 @@ pub struct App {
     resources: Arc<Resources>,
     graphics_flight_id: Id<Flight>,
     compute_flight_id: Id<Flight>,
-    rcx: Option<RenderContext>,
 
     last_frame_update: Instant,
     next_log_update: Instant,
@@ -84,6 +83,8 @@ pub struct App {
 
     player_controller: PlayerController,
     physics_controller: PhysicsController,
+
+    rcx: Option<RenderContext>,
 }
 
 pub struct RenderContext {
@@ -101,6 +102,7 @@ pub struct RenderContext {
     recreate_swapchain: bool,
     renderer_node_id: NodeId,
     task_graph: ExecutableTaskGraph<Self>,
+    needs_as_rebuild: bool,
 }
 
 impl App {
@@ -242,7 +244,8 @@ impl App {
             .physical_device()
             .properties()
             .max_instance_count
-            .expect("Max instance count not found");
+            .expect("Max instance count not found")
+            / 2u64.pow(10);
 
         let voxel_data = open_file("assets/nuke.vox");
         let world = Chunks::new(&voxel_data);
@@ -302,6 +305,7 @@ impl App {
         let now = Instant::now();
         if !now.duration_since(self.next_log_update).is_zero() {
             self.next_log_update = Instant::now().checked_add(Duration::from_secs(1)).unwrap();
+            // self.rcx.as_mut().unwrap().needs_as_rebuild = true;
         }
     }
 
@@ -434,13 +438,13 @@ impl ApplicationHandler for App {
         let rt_pass = RayTracingPass::new(&self, virtual_swapchain_id, self.max_instance_count);
         let tlas_instance_buffer_id = rt_pass.instance_buffer_id;
 
-        let update_as_task = UpdateAccelerationStructureTask {
-            blas_reference: rt_pass.blas.device_address().into(),
-            instance_buffer_id: rt_pass.instance_buffer_id,
-            scratch_buffer_id: rt_pass.scratch_buffer_id,
-            tlas: rt_pass.tlas.clone(),
-            max_instance_count: self.max_instance_count,
-        };
+        let update_as_task = UpdateAccelerationStructureTask::new(
+            rt_pass.instance_buffer_id,
+            rt_pass.scratch_buffer_id,
+            rt_pass.tlas.clone(),
+            rt_pass.blas.device_address().into(),
+            self.max_instance_count,
+        );
 
         let renderer_node_id = task_graph
             .create_task_node("rt", QueueFamilyType::Graphics, rt_pass)
@@ -464,7 +468,7 @@ impl ApplicationHandler for App {
         let task_graph = unsafe {
             task_graph
                 .compile(&CompileInfo {
-                    queues: &[&self.graphics_queue],
+                    queues: &[&self.graphics_queue, &self.compute_queue],
                     present_queue: Some(&self.graphics_queue),
                     flight_id: self.graphics_flight_id,
                     ..Default::default()
@@ -518,6 +522,7 @@ impl ApplicationHandler for App {
             viewport,
             swapchain_storage_image_ids,
             renderer_node_id,
+            needs_as_rebuild: true,
         });
     }
 
@@ -622,7 +627,9 @@ impl ApplicationHandler for App {
                 };
 
                 match execute_result {
-                    Ok(()) => {}
+                    Ok(()) => {
+                        self.rcx.as_mut().unwrap().needs_as_rebuild = false;
+                    }
                     Err(ExecuteError::Swapchain {
                         error: VulkanError::OutOfDate,
                         ..

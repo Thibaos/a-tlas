@@ -36,10 +36,22 @@ pub fn build_acceleration_structure_common(
 ) -> Arc<AccelerationStructure> {
     let now = Instant::now();
 
+    let flags = match ty {
+        AccelerationStructureType::TopLevel => {
+            BuildAccelerationStructureFlags::PREFER_FAST_TRACE
+                | BuildAccelerationStructureFlags::ALLOW_UPDATE
+        }
+        AccelerationStructureType::BottomLevel => {
+            BuildAccelerationStructureFlags::PREFER_FAST_TRACE
+        }
+        _ => {
+            unimplemented!()
+        }
+    };
+
     let mut as_build_geometry_info = AccelerationStructureBuildGeometryInfo {
         mode: mode.clone(),
-        flags: BuildAccelerationStructureFlags::PREFER_FAST_TRACE
-            | BuildAccelerationStructureFlags::ALLOW_UPDATE,
+        flags,
         ..AccelerationStructureBuildGeometryInfo::new(geometries)
     };
 
@@ -161,14 +173,14 @@ pub fn build_blas(
 }
 
 pub fn build_tlas(
-    as_instances: Vec<AccelerationStructureInstance>,
+    instance: Vec<AccelerationStructureInstance>,
     allocator: Arc<dyn MemoryAllocator>,
     device: Arc<Device>,
     queue: Arc<Queue>,
     resources: &Arc<Resources>,
     flight_id: Id<Flight>,
 ) -> Arc<AccelerationStructure> {
-    let primitive_count = as_instances.len() as u32;
+    let primitive_count = instance.len() as u32;
 
     let instance_buffer = Buffer::from_iter(
         &allocator,
@@ -182,7 +194,7 @@ pub fn build_tlas(
                 | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
             ..Default::default()
         },
-        as_instances,
+        instance,
     )
     .unwrap();
 

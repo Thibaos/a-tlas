@@ -6,15 +6,14 @@ use crate::{
 use glam::{IVec3, Vec3};
 use std::sync::Arc;
 use vulkano::{
-    DeviceSize,
+    DeviceSize, Packed24_8,
     acceleration_structure::{
         AccelerationStructure, AccelerationStructureBuildGeometryInfo,
         AccelerationStructureBuildType, AccelerationStructureGeometries,
         AccelerationStructureGeometryInstancesData, AccelerationStructureGeometryInstancesDataType,
-        AccelerationStructureInstance, BuildAccelerationStructureFlags,
-        BuildAccelerationStructureMode,
+        AccelerationStructureInstance,
     },
-    buffer::{Buffer, BufferCreateInfo, BufferUsage, Subbuffer},
+    buffer::{Buffer, BufferContents, BufferCreateInfo, BufferUsage},
     memory::allocator::{AllocationCreateInfo, DeviceLayout, MemoryTypeFilter},
     pipeline::{
         Pipeline, PipelineShaderStageCreateInfo,
@@ -77,12 +76,31 @@ impl RayTracingPass {
             app.compute_flight_id,
         );
 
-        let render_instances: Vec<AccelerationStructureInstance> = app.world.to_instances(
-            0,
-            &IVec3::ZERO,
-            blas.device_address().into(),
-            max_instance_count,
-        );
+        // let render_instances: Vec<AccelerationStructureInstance> = app.world.to_instances(
+        //     0,
+        //     &IVec3::ZERO,
+        //     blas.device_address().into(),
+        //     max_instance_count,
+        // );
+
+        let render_instances = (0..max_instance_count)
+            .map(|_| {
+                const RANGE: i32 = 256;
+                let x = rand::random_range(-RANGE..=RANGE) as f32;
+                let y = rand::random_range(-RANGE..=RANGE) as f32;
+                let z = rand::random_range(-RANGE..=RANGE) as f32;
+
+                AccelerationStructureInstance {
+                    acceleration_structure_reference: blas.device_address().into(),
+                    instance_custom_index_and_mask: Packed24_8::new(
+                        rand::random::<u8>() as u32,
+                        0xFF,
+                    ),
+                    transform: [[1.0, 0.0, 0.0, x], [0.0, 1.0, 0.0, y], [0.0, 0.0, 1.0, z]],
+                    ..Default::default()
+                }
+            })
+            .collect::<Vec<_>>();
 
         let build_geometry_info = AccelerationStructureBuildGeometryInfo {
             ..AccelerationStructureBuildGeometryInfo::new(
@@ -115,15 +133,6 @@ impl RayTracingPass {
             )
             .unwrap();
 
-        let tlas = acceleration_structure::build_tlas(
-            render_instances.clone(),
-            app.memory_allocator.clone(),
-            app.device.clone(),
-            app.compute_queue.clone(),
-            &app.resources,
-            app.compute_flight_id,
-        );
-
         let instance_buffer_id = app
             .resources
             .create_buffer(
@@ -141,6 +150,15 @@ impl RayTracingPass {
                     .unwrap(),
             )
             .unwrap();
+
+        let tlas = acceleration_structure::build_tlas(
+            render_instances.clone(),
+            app.memory_allocator.clone(),
+            app.device.clone(),
+            app.compute_queue.clone(),
+            &app.resources,
+            app.compute_flight_id,
+        );
 
         let bcx = app.resources.bindless_context().unwrap();
 
@@ -254,9 +272,19 @@ impl RayTracingPass {
                 |_cbf, tcx| {
                     *tcx.write_buffer(palette_buffer_id, ..)? = raygen::Palette { colors: palette };
 
+                    let write_instance_buffer = tcx
+                        .write_buffer::<[AccelerationStructureInstance]>(instance_buffer_id, ..)?;
+
+                    for (dst, src) in write_instance_buffer.iter_mut().zip(render_instances) {
+                        *dst = src;
+                    }
+
                     Ok(())
                 },
-                [(palette_buffer_id, HostAccessType::Write)],
+                [
+                    (palette_buffer_id, HostAccessType::Write),
+                    (instance_buffer_id, HostAccessType::Write),
+                ],
                 [],
                 [],
             )
