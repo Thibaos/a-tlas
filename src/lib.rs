@@ -41,7 +41,7 @@ use winit::{
 
 use crate::{
     rt::raygen,
-    tasks::{as_update::UpdateAccelerationStructureTask, debug, rt::RayTracingPass},
+    tasks::{debug, render::RayTracingRenderTask, update_as::UpdateAccelerationStructureTask},
     world::{chunk::Chunks, voxel::open_file},
 };
 
@@ -244,8 +244,9 @@ impl App {
             .physical_device()
             .properties()
             .max_instance_count
-            .expect("Max instance count not found")
-            / 2u64.pow(10);
+            .expect("Max instance count not found");
+
+        let max_instance_count = 65536;
 
         let voxel_data = open_file("assets/nuke.vox");
         let world = Chunks::new(&voxel_data);
@@ -435,10 +436,12 @@ impl ApplicationHandler for App {
 
         let virtual_swapchain_id = task_graph.add_swapchain(&SwapchainCreateInfo::default());
 
-        let rt_pass = RayTracingPass::new(&self, virtual_swapchain_id, self.max_instance_count);
+        let rt_pass =
+            RayTracingRenderTask::new(&self, virtual_swapchain_id, self.max_instance_count);
         let tlas_instance_buffer_id = rt_pass.instance_buffer_id;
 
         let update_as_task = UpdateAccelerationStructureTask::new(
+            self,
             rt_pass.instance_buffer_id,
             rt_pass.scratch_buffer_id,
             rt_pass.tlas.clone(),
@@ -628,7 +631,7 @@ impl ApplicationHandler for App {
 
                 match execute_result {
                     Ok(()) => {
-                        self.rcx.as_mut().unwrap().needs_as_rebuild = false;
+                        // self.rcx.as_mut().unwrap().needs_as_rebuild = false;
                     }
                     Err(ExecuteError::Swapchain {
                         error: VulkanError::OutOfDate,

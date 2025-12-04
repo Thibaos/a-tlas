@@ -13,7 +13,7 @@ use vulkano::{
         AccelerationStructureGeometryInstancesData, AccelerationStructureGeometryInstancesDataType,
         AccelerationStructureInstance,
     },
-    buffer::{Buffer, BufferContents, BufferCreateInfo, BufferUsage},
+    buffer::{Buffer, BufferCreateInfo, BufferUsage},
     memory::allocator::{AllocationCreateInfo, DeviceLayout, MemoryTypeFilter},
     pipeline::{
         Pipeline, PipelineShaderStageCreateInfo,
@@ -31,7 +31,7 @@ use vulkano_taskgraph::{
     resource::HostAccessType,
 };
 
-pub struct RayTracingPass {
+pub struct RayTracingRenderTask {
     swapchain_id: Id<Swapchain>,
     pub acceleration_structure_id: AccelerationStructureId,
     pub camera_buffer_id: Id<Buffer>,
@@ -47,7 +47,7 @@ pub struct RayTracingPass {
     pipeline: Arc<RayTracingPipeline>,
 }
 
-impl RayTracingPass {
+impl RayTracingRenderTask {
     pub fn new(app: &App, virtual_swapchain_id: Id<Swapchain>, max_instance_count: u64) -> Self {
         let vertices = triangles_from_box(Vec3::ZERO);
         let vertex_buffer = Buffer::from_iter(
@@ -83,12 +83,12 @@ impl RayTracingPass {
         //     max_instance_count,
         // );
 
+        let range: i32 = max_instance_count.ilog2().pow(2) as i32 * 3;
         let render_instances = (0..max_instance_count)
             .map(|_| {
-                const RANGE: i32 = 256;
-                let x = rand::random_range(-RANGE..=RANGE) as f32;
-                let y = rand::random_range(-RANGE..=RANGE) as f32;
-                let z = rand::random_range(-RANGE..=RANGE) as f32;
+                let x = rand::random_range(-range..=range) as f32;
+                let y = rand::random_range(-range..=range) as f32;
+                let z = rand::random_range(-range..=range) as f32;
 
                 AccelerationStructureInstance {
                     acceleration_structure_reference: blas.device_address().into(),
@@ -329,7 +329,7 @@ impl RayTracingPass {
             )
             .unwrap();
 
-        RayTracingPass {
+        RayTracingRenderTask {
             swapchain_id: virtual_swapchain_id,
             acceleration_structure_id,
             camera_buffer_id,
@@ -347,7 +347,7 @@ impl RayTracingPass {
     }
 }
 
-impl Task for RayTracingPass {
+impl Task for RayTracingRenderTask {
     type World = RenderContext;
 
     unsafe fn execute(
