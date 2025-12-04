@@ -41,11 +41,7 @@ use winit::{
 
 use crate::{
     rt::raygen,
-    tasks::{
-        as_update::UpdateAccelerationStructureTask,
-        debug,
-        rt::{MAX_INSTANCE_COUNT, RayTracingPass},
-    },
+    tasks::{as_update::UpdateAccelerationStructureTask, debug, rt::RayTracingPass},
     world::{chunk::Chunks, voxel::open_file},
 };
 
@@ -82,6 +78,7 @@ pub struct App {
     delta_time: Duration,
     focused: bool,
 
+    max_instance_count: u64,
     voxel_data: dot_vox::DotVoxData,
     world: Chunks,
 
@@ -241,8 +238,14 @@ impl App {
         let graphics_flight_id = resources.create_flight(MAX_FRAMES_IN_FLIGHT).unwrap();
         let compute_flight_id = resources.create_flight(1).unwrap();
 
+        let max_instance_count = device
+            .physical_device()
+            .properties()
+            .max_instance_count
+            .expect("Max instance count not found");
+
         let voxel_data = open_file("assets/nuke.vox");
-        let world = Chunks::new(&voxel_data, MAX_INSTANCE_COUNT);
+        let world = Chunks::new(&voxel_data);
 
         App {
             close_requested: false,
@@ -269,6 +272,7 @@ impl App {
             player_controller: PlayerController::default(),
             physics_controller: PhysicsController::new(),
 
+            max_instance_count,
             voxel_data,
             world,
 
@@ -427,12 +431,15 @@ impl ApplicationHandler for App {
 
         let virtual_swapchain_id = task_graph.add_swapchain(&SwapchainCreateInfo::default());
 
-        let rt_pass = RayTracingPass::new(&self, virtual_swapchain_id);
+        let rt_pass = RayTracingPass::new(&self, virtual_swapchain_id, self.max_instance_count);
         let tlas_instance_buffer_id = rt_pass.instance_buffer_id;
 
         let update_as_task = UpdateAccelerationStructureTask {
             blas_reference: rt_pass.blas.device_address().into(),
             instance_buffer_id: rt_pass.instance_buffer_id,
+            scratch_buffer_id: rt_pass.scratch_buffer_id,
+            tlas: rt_pass.tlas.clone(),
+            max_instance_count: self.max_instance_count,
         };
 
         let renderer_node_id = task_graph
@@ -445,7 +452,7 @@ impl ApplicationHandler for App {
             .build();
 
         let update_as_node_id = task_graph
-            .create_task_node("update AS", QueueFamilyType::Graphics, update_as_task)
+            .create_task_node("update AS", QueueFamilyType::Compute, update_as_task)
             .build();
 
         task_graph

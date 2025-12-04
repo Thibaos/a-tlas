@@ -107,13 +107,24 @@ pub fn build_acceleration_structure_common(
         .unwrap()
     };
 
+    match ty {
+        AccelerationStructureType::TopLevel => {
+            print!("build tlas ");
+        }
+        AccelerationStructureType::BottomLevel => {
+            print!("build blas ");
+        }
+        _ => {}
+    }
+
     let elapsed = now.elapsed();
-    println!("Build AS cmd: {elapsed:.2?}");
+
+    print!("cmd: {elapsed:.2?}, ");
 
     resources.flight(flight_id).unwrap().wait_idle().unwrap();
 
     let elapsed = now.elapsed();
-    println!("Build AS wait: {elapsed:.2?}");
+    println!("wait: {elapsed:.2?}");
 
     acceleration
 }

@@ -32,27 +32,24 @@ use vulkano_taskgraph::{
     resource::HostAccessType,
 };
 
-pub const MAX_INSTANCE_COUNT: u64 = 2u64.pow(20);
-
 pub struct RayTracingPass {
     swapchain_id: Id<Swapchain>,
     pub acceleration_structure_id: AccelerationStructureId,
     pub camera_buffer_id: Id<Buffer>,
     pub sunlight_buffer_id: Id<Buffer>,
     pub instance_buffer_id: Id<Buffer>,
-    scratch_buffer_id: Id<Buffer>,
+    pub scratch_buffer_id: Id<Buffer>,
     camera_storage_buffer_id: StorageBufferId,
     palette_storage_buffer_id: StorageBufferId,
     sunlight_storage_buffer_id: StorageBufferId,
     shader_binding_table: ShaderBindingTable,
     pub blas: Arc<AccelerationStructure>,
-    tlas: Arc<AccelerationStructure>,
+    pub tlas: Arc<AccelerationStructure>,
     pipeline: Arc<RayTracingPipeline>,
-    pub render_instances: Vec<AccelerationStructureInstance>,
 }
 
 impl RayTracingPass {
-    pub fn new(app: &App, virtual_swapchain_id: Id<Swapchain>) -> Self {
+    pub fn new(app: &App, virtual_swapchain_id: Id<Swapchain>, max_instance_count: u64) -> Self {
         let vertices = triangles_from_box(Vec3::ZERO);
         let vertex_buffer = Buffer::from_iter(
             &app.memory_allocator,
@@ -75,14 +72,17 @@ impl RayTracingPass {
             vertex_buffer,
             app.memory_allocator.clone(),
             app.device.clone(),
-            app.graphics_queue.clone(),
+            app.compute_queue.clone(),
             &app.resources,
-            app.graphics_flight_id,
+            app.compute_flight_id,
         );
 
-        let render_instances =
-            app.world
-                .to_instances(0, &IVec3::ZERO, blas.device_address().into());
+        let render_instances: Vec<AccelerationStructureInstance> = app.world.to_instances(
+            0,
+            &IVec3::ZERO,
+            blas.device_address().into(),
+            max_instance_count,
+        );
 
         let build_geometry_info = AccelerationStructureBuildGeometryInfo {
             ..AccelerationStructureBuildGeometryInfo::new(
@@ -99,7 +99,7 @@ impl RayTracingPass {
             .acceleration_structure_build_sizes(
                 AccelerationStructureBuildType::Device,
                 &build_geometry_info,
-                &[MAX_INSTANCE_COUNT as u32],
+                &[max_instance_count as u32],
             )
             .unwrap();
 
@@ -119,9 +119,9 @@ impl RayTracingPass {
             render_instances.clone(),
             app.memory_allocator.clone(),
             app.device.clone(),
-            app.graphics_queue.clone(),
+            app.compute_queue.clone(),
             &app.resources,
-            app.graphics_flight_id,
+            app.compute_flight_id,
         );
 
         let instance_buffer_id = app
@@ -137,10 +137,8 @@ impl RayTracingPass {
                         | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
                     ..Default::default()
                 },
-                DeviceLayout::new_unsized::<[AccelerationStructureInstance]>(
-                    MAX_INSTANCE_COUNT as u64,
-                )
-                .unwrap(),
+                DeviceLayout::new_unsized::<[AccelerationStructureInstance]>(max_instance_count)
+                    .unwrap(),
             )
             .unwrap();
 
@@ -317,7 +315,6 @@ impl RayTracingPass {
             blas,
             tlas,
             pipeline,
-            render_instances,
         }
     }
 }
@@ -337,64 +334,6 @@ impl Task for RayTracingPass {
 
         unsafe { cbf.update_buffer(self.camera_buffer_id, 0, &rcx.rt_camera_data) }?;
         unsafe { cbf.update_buffer(self.sunlight_buffer_id, 0, &rcx.rt_sunlight_data) }?;
-
-        let write_instance_buffer = tcx
-            .write_buffer::<[AccelerationStructureInstance]>(self.instance_buffer_id, ..)
-            .unwrap();
-
-        for (o, render_instance) in write_instance_buffer.iter_mut().zip(&self.render_instances) {
-            *o = *render_instance;
-        }
-
-        let instance_buffer = Subbuffer::new(
-            tcx.buffer(self.instance_buffer_id)
-                .unwrap()
-                .buffer()
-                .clone(),
-        )
-        .cast_aligned::<AccelerationStructureInstance>();
-
-        let geometry_instances_data = AccelerationStructureGeometryInstancesData::new(
-            AccelerationStructureGeometryInstancesDataType::Values(Some(instance_buffer.clone())),
-        );
-
-        let geometries = AccelerationStructureGeometries::Instances(geometry_instances_data);
-        let primitive_count = self.render_instances.len() as u32;
-
-        let mut build_geometry_info = AccelerationStructureBuildGeometryInfo {
-            mode: BuildAccelerationStructureMode::Update(self.tlas.clone()),
-            flags: BuildAccelerationStructureFlags::PREFER_FAST_TRACE,
-            ..AccelerationStructureBuildGeometryInfo::new(geometries)
-        };
-
-        let scratch_buffer =
-            Subbuffer::new(tcx.buffer(self.scratch_buffer_id).unwrap().buffer().clone());
-
-        build_geometry_info.dst_acceleration_structure = Some(self.tlas.clone());
-        build_geometry_info.scratch_data = Some(scratch_buffer);
-
-        // unsafe {
-        //     cbf.as_raw().build_acceleration_structure(
-        //         &build_geometry_info,
-        //         &[AccelerationStructureBuildRangeInfo {
-        //             primitive_count,
-        //             ..Default::default()
-        //         }],
-        //     )
-        // }?;
-
-        // unsafe {
-        //     cbf.pipeline_barrier(&DependencyInfo {
-        //         memory_barriers: &[MemoryBarrier {
-        //             src_stages: PipelineStages::ACCELERATION_STRUCTURE_BUILD,
-        //             dst_stages: PipelineStages::ALL_COMMANDS,
-        //             src_access: AccessFlags::ACCELERATION_STRUCTURE_WRITE,
-        //             dst_access: AccessFlags::ACCELERATION_STRUCTURE_WRITE,
-        //             ..Default::default()
-        //         }],
-        //         ..Default::default()
-        //     })
-        // }?;
 
         unsafe {
             cbf.push_constants(

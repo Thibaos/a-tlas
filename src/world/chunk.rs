@@ -287,7 +287,6 @@ pub type ChunksInner = HashMap<IVec3, Chunk>;
 #[derive(Default)]
 pub struct Chunks {
     inner: ChunksInner,
-    max_instance_count: u64,
 }
 
 impl Chunks {
@@ -380,7 +379,7 @@ impl Chunks {
         (grid_position, local_position)
     }
 
-    pub fn new(voxel_data: &DotVoxData, max_instance_count: u64) -> Self {
+    pub fn new(voxel_data: &DotVoxData) -> Self {
         let mut chunks = Chunks::create_empty_chunks();
 
         let mut loader = SceneGraphTraverser {
@@ -422,17 +421,11 @@ impl Chunks {
             }
         }
 
-        Self {
-            inner: chunks,
-            max_instance_count,
-        }
+        Self { inner: chunks }
     }
 
     fn from(inner: ChunksInner) -> Self {
-        Self {
-            inner,
-            max_instance_count: 0,
-        }
+        Self { inner }
     }
 
     #[cfg(debug_assertions)]
@@ -449,6 +442,7 @@ impl Chunks {
         lod: u32,
         origin: &IVec3,
         acceleration_structure_reference: u64,
+        max_instance_count: u64,
     ) -> Vec<AccelerationStructureInstance> {
         let mut chunks = self.active_chunks().collect::<Vec<_>>();
 
@@ -465,7 +459,7 @@ impl Chunks {
             .flat_map(|(grid_position, chunk)| {
                 chunk.to_instances(lod, **grid_position, acceleration_structure_reference)
             })
-            .take(self.max_instance_count as usize)
+            .take(max_instance_count as usize)
             .collect()
     }
 
