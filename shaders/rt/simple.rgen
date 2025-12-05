@@ -46,8 +46,8 @@ void main() {
     const vec3 origin = (camera.view_inverse * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
     const vec3 direction = normalize((camera.view_inverse * vec4(eye_pos.xyz, 0.0)).xyz);
 
-    // const uint ray_flags = gl_RayFlagsOpaqueEXT;
-    const uint ray_flags = gl_RayFlagsTerminateOnFirstHitEXT;
+    const uint ray_flags = gl_RayFlagsOpaqueEXT;
+    // const uint ray_flags = gl_RayFlagsTerminateOnFirstHitEXT;
 
     vec4 final_color = vec4(0.0);
 

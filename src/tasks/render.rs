@@ -4,9 +4,13 @@ use crate::{
     world::voxel::{get_palette, triangles_from_box},
 };
 use glam::Vec3;
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
+use std::{
+    f32::consts::TAU,
+    ops::Range,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 use vulkano::{
     DeviceSize, Packed24_8,
@@ -87,12 +91,23 @@ impl RayTracingRenderTask {
         //     max_instance_count,
         // );
 
-        let range: i32 = max_instance_count.ilog2().pow(2) as i32 * 3;
+        fn sample_uniform_sphere(radius: f32) -> (f32, f32, f32) {
+            let sample = Vec3::new(
+                rand::random_range(-1.0..=1.0),
+                rand::random_range(-1.0..=1.0),
+                rand::random_range(-1.0..=1.0),
+            )
+            .normalize()
+                * rand::random_range(0.0..=1.0)
+                * radius;
+
+            (sample.x.floor(), sample.y.floor(), sample.z.floor())
+        }
+
+        let radius: f32 = max_instance_count.ilog2().pow(3) as f32;
         let render_instances = (0..max_instance_count)
             .map(|_| {
-                let x = rand::random_range(-range..=range) as f32;
-                let y = rand::random_range(-range..=range) as f32;
-                let z = rand::random_range(-range..=range) as f32;
+                let (x, y, z) = sample_uniform_sphere(radius);
 
                 AccelerationStructureInstance {
                     acceleration_structure_reference: blas.device_address().into(),

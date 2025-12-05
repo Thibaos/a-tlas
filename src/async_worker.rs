@@ -62,10 +62,7 @@ pub fn run_worker(
 
         while let Ok(()) = channel.recv() {
             let now = Instant::now();
-            println!(
-                "Received TLAS update request! ({})",
-                now.elapsed().as_millis()
-            );
+            println!("Received TLAS update request!");
 
             let graphics_flight = resources.flight(graphics_flight_id).unwrap();
 

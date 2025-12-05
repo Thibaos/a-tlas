@@ -18,10 +18,8 @@ use vulkano::{
 use vulkano_taskgraph::{
     Id, QueueFamilyType,
     descriptor_set::{BindlessContext, StorageImageId},
-    graph::{CompileInfo, ExecutableTaskGraph, ExecuteError, NodeId, TaskGraph},
-    resource::{
-        AccessTypes, Flight, HostAccessType, ImageLayoutType, Resources, ResourcesCreateInfo,
-    },
+    graph::{CompileInfo, ExecutableTaskGraph, ExecuteError, TaskGraph},
+    resource::{AccessTypes, Flight, ImageLayoutType, Resources, ResourcesCreateInfo},
     resource_map,
 };
 
@@ -95,7 +93,6 @@ pub struct RenderContext {
     #[cfg(debug_assertions)]
     pub viewport: Viewport,
     recreate_swapchain: bool,
-    renderer_node_id: NodeId,
     task_graph: ExecutableTaskGraph<Self>,
     channel: mpsc::Sender<()>,
 }
@@ -241,7 +238,9 @@ impl App {
             .max_instance_count
             .expect("Max instance count not found");
 
-        let max_instance_count = 65536;
+        let max_instance_count = 1_000_000;
+
+        dbg!(max_instance_count);
 
         let voxel_data = open_file("assets/nuke.vox");
         let world = Chunks::new(&voxel_data);
@@ -319,7 +318,6 @@ impl App {
         let rcx = self.rcx.as_mut().unwrap();
 
         self.player_controller.fly_movement(self.delta_time);
-        let translation = self.player_controller.translation;
         let view = self.player_controller.view();
 
         let size = rcx.window.inner_size();
@@ -330,15 +328,6 @@ impl App {
             0.01,
             10000.0,
         );
-
-        let inv_proj_mat = (proj * view).inverse().to_cols_array_2d();
-        // let camera_position = Padded(translation.to_array());
-
-        // rcx.scene_params = tree64::SceneParams {
-        //     inv_proj_mat,
-        //     camera_position,
-        //     resolution: size.into(),
-        // };
 
         rcx.rt_camera_data = raygen::Camera {
             proj_inverse: proj.inverse().to_cols_array_2d(),
@@ -432,7 +421,6 @@ impl ApplicationHandler for App {
 
         let rt_pass =
             RayTracingRenderTask::new(&self, virtual_swapchain_id, self.max_instance_count);
-        let tlas_instance_buffer_id = rt_pass.instance_buffer_id;
 
         let update_as_task = UpdateAccelerationStructureTask::new(
             self,
@@ -455,7 +443,7 @@ impl ApplicationHandler for App {
             rt_pass.current_as_index.clone(),
         );
 
-        let renderer_node_id = task_graph
+        task_graph
             .create_task_node("Render", QueueFamilyType::Graphics, rt_pass)
             .image_access(
                 virtual_swapchain_id.current_image_id(),
@@ -465,21 +453,14 @@ impl ApplicationHandler for App {
             .build();
 
         let task_graph = unsafe {
-            task_graph
-                .compile(&CompileInfo {
-                    queues: &[&self.graphics_queue],
-                    present_queue: Some(&self.graphics_queue),
-                    flight_id: self.graphics_flight_id,
-                    ..Default::default()
-                })
-                .unwrap()
-        };
-        // let scene_params = tree64::SceneParams {
-        //     inv_proj_mat: Mat4::perspective_lh(PI / 2.0, 16.0 / 9.0, 0.01, 10000.0)
-        //         .to_cols_array_2d(),
-        //     camera_position: Padded([0.0, 0.0, 0.0]),
-        //     resolution: window_size.into(),
-        // };
+            task_graph.compile(&CompileInfo {
+                queues: &[&self.graphics_queue],
+                present_queue: Some(&self.graphics_queue),
+                flight_id: self.graphics_flight_id,
+                ..Default::default()
+            })
+        }
+        .unwrap();
 
         #[cfg(debug_assertions)]
         let viewport = Viewport {
@@ -520,7 +501,6 @@ impl ApplicationHandler for App {
             #[cfg(debug_assertions)]
             viewport,
             swapchain_storage_image_ids,
-            renderer_node_id,
             channel,
         });
     }
