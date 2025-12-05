@@ -1,4 +1,5 @@
 pub mod app;
+mod async_worker;
 mod physics;
 mod player_controller;
 mod rt;

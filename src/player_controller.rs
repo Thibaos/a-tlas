@@ -132,8 +132,12 @@ impl PlayerController {
 
     pub fn handle_keyboard_event(&mut self, key_event: KeyEvent) {
         match key_event.state {
-            ElementState::Pressed => self.pressed_keys.insert(key_event.logical_key.clone()),
-            ElementState::Released => self.pressed_keys.remove(&key_event.logical_key),
+            ElementState::Pressed => {
+                self.pressed_keys.insert(key_event.logical_key.clone());
+            }
+            ElementState::Released => {
+                self.pressed_keys.remove(&key_event.logical_key);
+            }
         };
     }
 }

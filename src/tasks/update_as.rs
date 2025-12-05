@@ -15,16 +15,15 @@ use vulkano_taskgraph::{
     Id, Task, TaskContext, TaskResult, command_buffer::RecordingCommandBuffer,
 };
 
-use crate::app::{App, RenderContext};
+use crate::app::App;
 
 const UPDATES_PER_FRAME: u64 = 2u64.pow(10);
 
 pub struct UpdateAccelerationStructureTask {
     blas_reference: u64,
-    instance_buffer_id: Id<Buffer>,
-    tlas: Arc<AccelerationStructure>,
+    pub instance_buffer_id: Id<Buffer>,
+    staging_tlas: [Arc<AccelerationStructure>; 2],
     scratch_buffer_id: Id<Buffer>,
-    build_geometry_info: AccelerationStructureBuildGeometryInfo,
     max_instance_count: u64,
 }
 
@@ -33,56 +32,25 @@ impl UpdateAccelerationStructureTask {
         app: &App,
         instance_buffer_id: Id<Buffer>,
         scratch_buffer_id: Id<Buffer>,
-        tlas: Arc<AccelerationStructure>,
+        staging_tlas: [Arc<AccelerationStructure>; 2],
         blas_reference: u64,
-        max_instance_count: u64,
     ) -> Self {
-        let instance_buffer = Subbuffer::new(
-            app.resources
-                .buffer(instance_buffer_id)
-                .expect("Instance buffer not found")
-                .buffer()
-                .clone(),
-        )
-        .cast_aligned::<AccelerationStructureInstance>();
-
-        let geometry_instances_data = AccelerationStructureGeometryInstancesData::new(
-            AccelerationStructureGeometryInstancesDataType::Values(Some(instance_buffer.clone())),
-        );
-
-        let geometries = AccelerationStructureGeometries::Instances(geometry_instances_data);
-
-        let mut build_geometry_info = AccelerationStructureBuildGeometryInfo {
-            mode: BuildAccelerationStructureMode::Update(tlas.clone()),
-            flags: BuildAccelerationStructureFlags::PREFER_FAST_BUILD
-                | BuildAccelerationStructureFlags::ALLOW_UPDATE,
-            ..AccelerationStructureBuildGeometryInfo::new(geometries)
-        };
-
-        let scratch_buffer = Subbuffer::new(
-            app.resources
-                .buffer(scratch_buffer_id)
-                .expect("Scratch buffer not found")
-                .buffer()
-                .clone(),
-        );
-
-        build_geometry_info.dst_acceleration_structure = Some(tlas.clone());
-        build_geometry_info.scratch_data = Some(scratch_buffer);
-
         Self {
             blas_reference,
             instance_buffer_id,
-            tlas,
+            staging_tlas,
             scratch_buffer_id,
-            build_geometry_info,
-            max_instance_count,
+            max_instance_count: app.max_instance_count,
         }
     }
 }
 
+pub struct AsyncRenderContext {
+    pub tlas: Arc<AccelerationStructure>,
+}
+
 impl Task for UpdateAccelerationStructureTask {
-    type World = RenderContext;
+    type World = AsyncRenderContext;
 
     unsafe fn execute(
         &self,
@@ -90,10 +58,6 @@ impl Task for UpdateAccelerationStructureTask {
         tcx: &mut TaskContext<'_>,
         rcx: &Self::World,
     ) -> TaskResult {
-        if !rcx.needs_as_rebuild {
-            return Ok(());
-        }
-
         const AS_SIZE: DeviceSize = size_of::<AccelerationStructureInstance>() as DeviceSize;
 
         let start_instance = rand::random_range(0..(self.max_instance_count - UPDATES_PER_FRAME));
@@ -118,9 +82,40 @@ impl Task for UpdateAccelerationStructureTask {
             };
         }
 
+        let instance_buffer = Subbuffer::new(
+            tcx.buffer(self.instance_buffer_id)
+                .expect("Instance buffer not found")
+                .buffer()
+                .clone(),
+        )
+        .cast_aligned::<AccelerationStructureInstance>();
+
+        let geometry_instances_data = AccelerationStructureGeometryInstancesData::new(
+            AccelerationStructureGeometryInstancesDataType::Values(Some(instance_buffer.clone())),
+        );
+
+        let geometries = AccelerationStructureGeometries::Instances(geometry_instances_data);
+
+        let mut build_geometry_info = AccelerationStructureBuildGeometryInfo {
+            mode: BuildAccelerationStructureMode::Update(rcx.tlas.clone()),
+            flags: BuildAccelerationStructureFlags::PREFER_FAST_BUILD
+                | BuildAccelerationStructureFlags::ALLOW_UPDATE,
+            ..AccelerationStructureBuildGeometryInfo::new(geometries)
+        };
+
+        let scratch_buffer = Subbuffer::new(
+            tcx.buffer(self.scratch_buffer_id)
+                .expect("Scratch buffer not found")
+                .buffer()
+                .clone(),
+        );
+
+        build_geometry_info.dst_acceleration_structure = Some(rcx.tlas.clone());
+        build_geometry_info.scratch_data = Some(scratch_buffer);
+
         unsafe {
             cbf.as_raw().build_acceleration_structure(
-                &self.build_geometry_info,
+                &build_geometry_info,
                 &[AccelerationStructureBuildRangeInfo {
                     primitive_count: self.max_instance_count as u32,
                     ..Default::default()

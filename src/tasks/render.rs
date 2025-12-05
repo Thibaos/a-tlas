@@ -4,7 +4,10 @@ use crate::{
     world::voxel::{get_palette, triangles_from_box},
 };
 use glam::Vec3;
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 use vulkano::{
     DeviceSize, Packed24_8,
     acceleration_structure::{
@@ -33,7 +36,7 @@ use vulkano_taskgraph::{
 
 pub struct RayTracingRenderTask {
     swapchain_id: Id<Swapchain>,
-    pub acceleration_structure_id: AccelerationStructureId,
+    pub acceleration_structure_ids: [AccelerationStructureId; 2],
     pub camera_buffer_id: Id<Buffer>,
     pub sunlight_buffer_id: Id<Buffer>,
     pub instance_buffer_id: Id<Buffer>,
@@ -43,7 +46,8 @@ pub struct RayTracingRenderTask {
     sunlight_storage_buffer_id: StorageBufferId,
     shader_binding_table: ShaderBindingTable,
     pub blas: Arc<AccelerationStructure>,
-    pub tlas: Arc<AccelerationStructure>,
+    pub acceleration_structures: [Arc<AccelerationStructure>; 2],
+    pub current_as_index: Arc<AtomicBool>,
     pipeline: Arc<RayTracingPipeline>,
 }
 
@@ -151,14 +155,24 @@ impl RayTracingRenderTask {
             )
             .unwrap();
 
-        let tlas = acceleration_structure::build_tlas(
-            render_instances.clone(),
-            app.memory_allocator.clone(),
-            app.device.clone(),
-            app.compute_queue.clone(),
-            &app.resources,
-            app.compute_flight_id,
-        );
+        let acceleration_structures = [
+            acceleration_structure::build_tlas(
+                render_instances.clone(),
+                app.memory_allocator.clone(),
+                app.device.clone(),
+                app.compute_queue.clone(),
+                &app.resources,
+                app.compute_flight_id,
+            ),
+            acceleration_structure::build_tlas(
+                render_instances.clone(),
+                app.memory_allocator.clone(),
+                app.device.clone(),
+                app.compute_queue.clone(),
+                &app.resources,
+                app.compute_flight_id,
+            ),
+        ];
 
         let bcx = app.resources.bindless_context().unwrap();
 
@@ -300,7 +314,12 @@ impl RayTracingRenderTask {
         let shader_binding_table =
             ShaderBindingTable::new(&app.memory_allocator, &pipeline).unwrap();
 
-        let acceleration_structure_id = bcx.global_set().add_acceleration_structure(tlas.clone());
+        let acceleration_structure_ids = [
+            bcx.global_set()
+                .add_acceleration_structure(acceleration_structures[0].clone()),
+            bcx.global_set()
+                .add_acceleration_structure(acceleration_structures[1].clone()),
+        ];
 
         let camera_storage_buffer_id = bcx
             .global_set()
@@ -331,17 +350,18 @@ impl RayTracingRenderTask {
 
         RayTracingRenderTask {
             swapchain_id: virtual_swapchain_id,
-            acceleration_structure_id,
             camera_buffer_id,
             sunlight_buffer_id,
             instance_buffer_id,
             scratch_buffer_id,
+            acceleration_structure_ids,
             camera_storage_buffer_id,
             palette_storage_buffer_id,
             sunlight_storage_buffer_id,
             shader_binding_table,
             blas,
-            tlas,
+            acceleration_structures,
+            current_as_index: Arc::new(AtomicBool::new(false)),
             pipeline,
         }
     }
@@ -363,13 +383,16 @@ impl Task for RayTracingRenderTask {
         unsafe { cbf.update_buffer(self.camera_buffer_id, 0, &rcx.rt_camera_data) }?;
         unsafe { cbf.update_buffer(self.sunlight_buffer_id, 0, &rcx.rt_sunlight_data) }?;
 
+        let current_index = self.current_as_index.load(Ordering::Relaxed);
+
         unsafe {
             cbf.push_constants(
                 self.pipeline.layout(),
                 0,
                 &raygen::PushConstants {
                     image_id: rcx.swapchain_storage_image_ids[image_index as usize],
-                    acceleration_structure_id: self.acceleration_structure_id,
+                    acceleration_structure_id: self.acceleration_structure_ids
+                        [current_index as usize],
                     camera_buffer_id: self.camera_storage_buffer_id,
                     palette_buffer_id: self.palette_storage_buffer_id,
                     sunlight_buffer_id: self.sunlight_storage_buffer_id,

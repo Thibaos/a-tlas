@@ -1,7 +1,7 @@
 use glam::{Mat4, vec3};
 use std::{
     f32::consts::PI,
-    sync::Arc,
+    sync::{Arc, mpsc},
     time::{Duration, Instant},
 };
 use vulkano::{
@@ -38,6 +38,7 @@ use winit::{
 };
 
 use crate::{
+    async_worker::run_worker,
     physics::PhysicsController,
     player_controller::PlayerController,
     rt::raygen,
@@ -71,7 +72,7 @@ pub struct App {
     delta_time: Duration,
     focused: bool,
 
-    max_instance_count: u64,
+    pub max_instance_count: u64,
     pub voxel_data: dot_vox::DotVoxData,
     world: Chunks,
 
@@ -96,7 +97,7 @@ pub struct RenderContext {
     recreate_swapchain: bool,
     renderer_node_id: NodeId,
     task_graph: ExecutableTaskGraph<Self>,
-    pub needs_as_rebuild: bool,
+    channel: mpsc::Sender<()>,
 }
 
 impl App {
@@ -300,7 +301,6 @@ impl App {
         let now = Instant::now();
         if !now.duration_since(self.next_log_update).is_zero() {
             self.next_log_update = Instant::now().checked_add(Duration::from_secs(1)).unwrap();
-            self.rcx.as_mut().unwrap().needs_as_rebuild = true;
         }
     }
 
@@ -438,13 +438,25 @@ impl ApplicationHandler for App {
             self,
             rt_pass.instance_buffer_id,
             rt_pass.scratch_buffer_id,
-            rt_pass.tlas.clone(),
+            rt_pass.acceleration_structures.clone(),
             rt_pass.blas.device_address().into(),
-            self.max_instance_count,
+        );
+
+        let (channel, receiver) = mpsc::channel();
+
+        run_worker(
+            receiver,
+            update_as_task,
+            self.compute_queue.clone(),
+            self.resources.clone(),
+            self.graphics_flight_id,
+            self.compute_flight_id,
+            rt_pass.acceleration_structures.clone(),
+            rt_pass.current_as_index.clone(),
         );
 
         let renderer_node_id = task_graph
-            .create_task_node("rt", QueueFamilyType::Graphics, rt_pass)
+            .create_task_node("Render", QueueFamilyType::Graphics, rt_pass)
             .image_access(
                 virtual_swapchain_id.current_image_id(),
                 AccessTypes::RAY_TRACING_SHADER_STORAGE_WRITE,
@@ -452,20 +464,10 @@ impl ApplicationHandler for App {
             )
             .build();
 
-        let update_as_node_id = task_graph
-            .create_task_node("update AS", QueueFamilyType::Compute, update_as_task)
-            .build();
-
-        task_graph
-            .add_edge(renderer_node_id, update_as_node_id)
-            .unwrap();
-
-        task_graph.add_host_buffer_access(tlas_instance_buffer_id, HostAccessType::Write);
-
         let task_graph = unsafe {
             task_graph
                 .compile(&CompileInfo {
-                    queues: &[&self.graphics_queue, &self.compute_queue],
+                    queues: &[&self.graphics_queue],
                     present_queue: Some(&self.graphics_queue),
                     flight_id: self.graphics_flight_id,
                     ..Default::default()
@@ -519,7 +521,7 @@ impl ApplicationHandler for App {
             viewport,
             swapchain_storage_image_ids,
             renderer_node_id,
-            needs_as_rebuild: true,
+            channel,
         });
     }
 
@@ -624,9 +626,7 @@ impl ApplicationHandler for App {
                 };
 
                 match execute_result {
-                    Ok(()) => {
-                        self.rcx.as_mut().unwrap().needs_as_rebuild = false;
-                    }
+                    Ok(()) => {}
                     Err(ExecuteError::Swapchain {
                         error: VulkanError::OutOfDate,
                         ..
@@ -648,6 +648,16 @@ impl ApplicationHandler for App {
                 ..
             } => self.player_controller.handle_speed_change(y),
             WindowEvent::KeyboardInput { event, .. } => {
+                match event.state {
+                    ElementState::Pressed => {
+                        if let Some(txt) = event.logical_key.to_text() {
+                            if txt == "r" {
+                                self.rcx.as_ref().unwrap().channel.send(()).unwrap()
+                            }
+                        }
+                    }
+                    _ => {}
+                }
                 self.player_controller.handle_keyboard_event(event)
             }
             _ => {}
