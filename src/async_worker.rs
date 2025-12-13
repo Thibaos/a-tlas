@@ -54,6 +54,7 @@ pub fn run_worker(
     compute_flight_id: Id<Flight>,
     acceleration_structures: [Arc<AccelerationStructure>; 2],
     current_as_index: Arc<AtomicBool>,
+    show_current_index: Arc<AtomicBool>,
 ) {
     let task_graph = init_worker(update_as_task, queue, resources.clone(), compute_flight_id);
 
@@ -62,7 +63,6 @@ pub fn run_worker(
 
         while let Ok(()) = channel.recv() {
             let now = Instant::now();
-            println!("Received TLAS update request!");
 
             let graphics_flight = resources.flight(graphics_flight_id).unwrap();
 
@@ -72,7 +72,8 @@ pub fn run_worker(
 
             graphics_flight.wait_for_frame(last_frame, None).unwrap();
 
-            let current_index = current_as_index.load(Ordering::Relaxed);
+            let back_index = !current_as_index.load(Ordering::Relaxed);
+            // println!("Updating TLAS at index: {back_index}");
 
             let resource_map = resource_map!(&task_graph).unwrap();
 
@@ -80,7 +81,7 @@ pub fn run_worker(
                 task_graph.execute(
                     resource_map,
                     &AsyncRenderContext {
-                        tlas: acceleration_structures[current_index as usize].clone(),
+                        tlas: acceleration_structures[back_index as usize].clone(),
                     },
                     || {},
                 )
@@ -95,9 +96,12 @@ pub fn run_worker(
 
             last_frame = graphics_flight.current_frame();
 
-            current_as_index.store(!current_index, Ordering::Relaxed);
-
-            println!("TLAS update took: {:.0}ms", now.elapsed().as_millis());
+            current_as_index.store(back_index, Ordering::Relaxed);
+            show_current_index.store(true, Ordering::Relaxed);
+            println!(
+                "TLAS update took: {:.2}ms",
+                now.elapsed().as_micros() as f64 / 1000.
+            );
         }
     });
 }

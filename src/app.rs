@@ -238,11 +238,11 @@ impl App {
             .max_instance_count
             .expect("Max instance count not found");
 
-        let max_instance_count = 1_000_000;
+        let max_instance_count = 1_000;
 
         dbg!(max_instance_count);
 
-        let voxel_data = open_file("assets/nuke.vox");
+        let voxel_data = open_file("assets/custom.vox");
         let world = Chunks::new(&voxel_data);
 
         App {
@@ -307,8 +307,8 @@ impl App {
         let now = Instant::now();
         let delta = now.duration_since(self.last_frame_update);
         if !now.duration_since(self.next_log_update).is_zero() {
-            #[cfg(debug_assertions)]
-            println!("{:.2} fps", 1.0 / delta.as_secs_f32());
+            // #[cfg(debug_assertions)]
+            // println!("{:.2} fps", 1.0 / delta.as_secs_f32());
         }
         self.last_frame_update = now;
         self.delta_time = delta;
@@ -441,6 +441,7 @@ impl ApplicationHandler for App {
             self.compute_flight_id,
             rt_pass.acceleration_structures.clone(),
             rt_pass.current_as_index.clone(),
+            rt_pass.show_current_index.clone(),
         );
 
         task_graph
@@ -632,7 +633,7 @@ impl ApplicationHandler for App {
                     ElementState::Pressed => {
                         if let Some(txt) = event.logical_key.to_text() {
                             if txt == "r" {
-                                self.rcx.as_ref().unwrap().channel.send(()).unwrap()
+                                self.rcx.as_ref().unwrap().channel.send(()).unwrap();
                             }
                         }
                     }

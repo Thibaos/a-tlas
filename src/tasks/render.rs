@@ -4,13 +4,9 @@ use crate::{
     world::voxel::{get_palette, triangles_from_box},
 };
 use glam::Vec3;
-use std::{
-    f32::consts::TAU,
-    ops::Range,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
 };
 use vulkano::{
     DeviceSize, Packed24_8,
@@ -52,6 +48,7 @@ pub struct RayTracingRenderTask {
     pub blas: Arc<AccelerationStructure>,
     pub acceleration_structures: [Arc<AccelerationStructure>; 2],
     pub current_as_index: Arc<AtomicBool>,
+    pub show_current_index: Arc<AtomicBool>,
     pipeline: Arc<RayTracingPipeline>,
 }
 
@@ -377,6 +374,7 @@ impl RayTracingRenderTask {
             blas,
             acceleration_structures,
             current_as_index: Arc::new(AtomicBool::new(false)),
+            show_current_index: Arc::new(AtomicBool::new(true)),
             pipeline,
         }
     }
@@ -398,7 +396,13 @@ impl Task for RayTracingRenderTask {
         unsafe { cbf.update_buffer(self.camera_buffer_id, 0, &rcx.rt_camera_data) }?;
         unsafe { cbf.update_buffer(self.sunlight_buffer_id, 0, &rcx.rt_sunlight_data) }?;
 
-        let current_index = self.current_as_index.load(Ordering::Relaxed);
+        let front_index = self.current_as_index.load(Ordering::Relaxed);
+
+        // if self.show_current_index.load(Ordering::Relaxed) {
+        //     println!("Now rendering TLAS with index: {front_index}");
+        // }
+
+        self.show_current_index.store(false, Ordering::Relaxed);
 
         unsafe {
             cbf.push_constants(
@@ -407,7 +411,7 @@ impl Task for RayTracingRenderTask {
                 &raygen::PushConstants {
                     image_id: rcx.swapchain_storage_image_ids[image_index as usize],
                     acceleration_structure_id: self.acceleration_structure_ids
-                        [current_index as usize],
+                        [front_index as usize],
                     camera_buffer_id: self.camera_storage_buffer_id,
                     palette_buffer_id: self.palette_storage_buffer_id,
                     sunlight_buffer_id: self.sunlight_storage_buffer_id,
