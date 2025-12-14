@@ -24,19 +24,11 @@ const UPDATES_PER_FRAME: u64 = 1000;
 pub struct UpdateAccelerationStructureTask {
     blas_reference: u64,
     pub instance_buffer_id: Id<Buffer>,
-    staging_tlas: [Arc<AccelerationStructure>; 2],
     scratch_buffer_id: Id<Buffer>,
-    max_instance_count: u64,
 }
 
 impl UpdateAccelerationStructureTask {
-    pub fn new(
-        app: &App,
-        instance_buffer_id: Id<Buffer>,
-        scratch_buffer_id: Id<Buffer>,
-        staging_tlas: [Arc<AccelerationStructure>; 2],
-        blas_reference: u64,
-    ) -> Self {
+    pub fn new(app: &App, instance_buffer_id: Id<Buffer>, blas_reference: u64) -> Self {
         let geometry_instances_data = AccelerationStructureGeometryInstancesData::new(
             AccelerationStructureGeometryInstancesDataType::Values(None),
         );
@@ -69,7 +61,6 @@ impl UpdateAccelerationStructureTask {
         Self {
             blas_reference,
             instance_buffer_id,
-            staging_tlas,
             scratch_buffer_id: update_scratch_buffer,
             max_instance_count: app.max_instance_count,
         }
@@ -96,22 +87,15 @@ impl Task for UpdateAccelerationStructureTask {
             0..(UPDATES_PER_FRAME * AS_SIZE),
         )?;
 
-        let mut set = HashSet::<(i32, i32, i32)>::new();
-
         for instance in write_instance_buffer.iter_mut() {
             const RANGE: i32 = 32;
             let x = rand::random_range(-RANGE..=RANGE);
             let y = rand::random_range(-RANGE..=RANGE);
             let z = rand::random_range(-RANGE..=RANGE);
 
-            let contains = set.contains(&(x, y, z));
-
             *instance = AccelerationStructureInstance {
                 acceleration_structure_reference: self.blas_reference,
-                instance_custom_index_and_mask: Packed24_8::new(
-                    rand::random::<u8>() as u32,
-                    if contains { 0x00 } else { 0xFF },
-                ),
+                instance_custom_index_and_mask: Packed24_8::new(rand::random::<u8>() as u32, 0xFF),
                 transform: [
                     [1.0, 0.0, 0.0, x as f32],
                     [0.0, 1.0, 0.0, y as f32],
@@ -119,8 +103,6 @@ impl Task for UpdateAccelerationStructureTask {
                 ],
                 ..Default::default()
             };
-
-            set.insert((x, y, z));
         }
 
         let instance_buffer = Subbuffer::new(

@@ -2,18 +2,17 @@ use std::{sync::Arc, time::Instant};
 
 use vulkano::{
     acceleration_structure::{
-        AabbPositions, AccelerationStructure, AccelerationStructureBuildGeometryInfo,
+        AccelerationStructure, AccelerationStructureBuildGeometryInfo,
         AccelerationStructureBuildRangeInfo, AccelerationStructureBuildType,
         AccelerationStructureCreateInfo, AccelerationStructureGeometries,
-        AccelerationStructureGeometryAabbsData, AccelerationStructureGeometryInstancesData,
-        AccelerationStructureGeometryInstancesDataType, AccelerationStructureGeometryTrianglesData,
-        AccelerationStructureInstance, AccelerationStructureType, BuildAccelerationStructureFlags,
-        BuildAccelerationStructureMode, GeometryFlags,
+        AccelerationStructureGeometryInstancesData, AccelerationStructureGeometryInstancesDataType,
+        AccelerationStructureGeometryTrianglesData, AccelerationStructureInstance,
+        AccelerationStructureType, BuildAccelerationStructureFlags, BuildAccelerationStructureMode,
     },
     buffer::{Buffer, BufferCreateInfo, BufferUsage, Subbuffer},
     device::{Device, Queue},
     format::Format,
-    memory::allocator::{AllocationCreateInfo, MemoryAllocator, MemoryTypeFilter},
+    memory::allocator::{AllocationCreateInfo, MemoryAllocator},
 };
 use vulkano_taskgraph::{
     Id,
@@ -129,14 +128,10 @@ pub fn build_acceleration_structure_common(
         _ => {}
     }
 
-    let elapsed = now.elapsed();
-
-    print!("cmd: {elapsed:.2?}, ");
-
     resources.flight(flight_id).unwrap().wait_idle().unwrap();
 
     let elapsed = now.elapsed();
-    println!("wait: {elapsed:.2?}");
+    println!("{elapsed:.2?}");
 
     acceleration
 }
@@ -173,31 +168,14 @@ pub fn build_blas(
 }
 
 pub fn build_tlas(
-    instance: Vec<AccelerationStructureInstance>,
+    instance_buffer: Subbuffer<[AccelerationStructureInstance]>,
+    primitive_count: u32,
     allocator: Arc<dyn MemoryAllocator>,
     device: Arc<Device>,
     queue: Arc<Queue>,
     resources: &Arc<Resources>,
     flight_id: Id<Flight>,
 ) -> Arc<AccelerationStructure> {
-    let primitive_count = instance.len() as u32;
-
-    let instance_buffer = Buffer::from_iter(
-        &allocator,
-        &BufferCreateInfo {
-            usage: BufferUsage::SHADER_DEVICE_ADDRESS
-                | BufferUsage::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY,
-            ..Default::default()
-        },
-        &AllocationCreateInfo {
-            memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
-                | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
-            ..Default::default()
-        },
-        instance,
-    )
-    .unwrap();
-
     let as_geometry_instances_data = AccelerationStructureGeometryInstancesData::new(
         AccelerationStructureGeometryInstancesDataType::Values(Some(instance_buffer)),
     );
@@ -210,58 +188,6 @@ pub fn build_tlas(
         primitive_count,
         AccelerationStructureType::TopLevel,
         allocator,
-        device,
-        queue,
-        resources,
-        flight_id,
-    )
-}
-
-pub fn build_blas_aabb(
-    memory_allocator: Arc<dyn MemoryAllocator>,
-    device: Arc<Device>,
-    queue: Arc<Queue>,
-    resources: &Arc<Resources>,
-    flight_id: Id<Flight>,
-) -> Arc<AccelerationStructure> {
-    let aabbs = [AabbPositions {
-        min: [-0.5; 3],
-        max: [0.5; 3],
-    }];
-
-    let primitive_count = aabbs.len() as u32;
-
-    let data = Buffer::from_iter(
-        &memory_allocator,
-        &BufferCreateInfo {
-            usage: BufferUsage::SHADER_DEVICE_ADDRESS
-                | BufferUsage::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY,
-            ..Default::default()
-        },
-        &AllocationCreateInfo {
-            memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
-                | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
-            ..Default::default()
-        },
-        aabbs,
-    )
-    .unwrap();
-
-    let as_geometry_aabb_data = AccelerationStructureGeometryAabbsData {
-        flags: GeometryFlags::OPAQUE,
-        data: Some(data.into_bytes()),
-        stride: 4 * 4,
-        ..AccelerationStructureGeometryAabbsData::new()
-    };
-
-    let geometries = AccelerationStructureGeometries::Aabbs(vec![as_geometry_aabb_data]);
-
-    build_acceleration_structure_common(
-        geometries,
-        BuildAccelerationStructureMode::Build,
-        primitive_count,
-        AccelerationStructureType::BottomLevel,
-        memory_allocator,
         device,
         queue,
         resources,

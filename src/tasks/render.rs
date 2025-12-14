@@ -16,7 +16,7 @@ use vulkano::{
         AccelerationStructureGeometryInstancesData, AccelerationStructureGeometryInstancesDataType,
         AccelerationStructureInstance,
     },
-    buffer::{Buffer, BufferCreateInfo, BufferUsage},
+    buffer::{Buffer, BufferCreateInfo, BufferUsage, Subbuffer},
     memory::allocator::{AllocationCreateInfo, DeviceLayout, MemoryTypeFilter},
     pipeline::{
         Pipeline, PipelineShaderStageCreateInfo,
@@ -167,9 +167,70 @@ impl RayTracingRenderTask {
             )
             .unwrap();
 
+        let instance_buffer = Subbuffer::new(
+            app.resources
+                .buffer(instance_buffer_id)
+                .expect("Instance buffer not found")
+                .buffer()
+                .clone(),
+        )
+        .cast_aligned::<AccelerationStructureInstance>();
+
+        let palette = get_palette(&app.voxel_data).map(|color| [color.x, color.y, color.z, 1.0]);
+
+        let palette_buffer_id = app
+            .resources
+            .create_buffer(
+                &BufferCreateInfo {
+                    usage: BufferUsage::STORAGE_BUFFER | BufferUsage::TRANSFER_DST,
+                    ..Default::default()
+                },
+                &AllocationCreateInfo {
+                    memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
+                        | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
+                    ..Default::default()
+                },
+                DeviceLayout::new_sized::<raygen::Palette>(),
+            )
+            .unwrap();
+
+        unsafe {
+            vulkano_taskgraph::execute(
+                &app.transfer_queue,
+                &app.resources,
+                app.graphics_flight_id,
+                |_cbf, tcx| {
+                    *tcx.write_buffer(palette_buffer_id, ..)? = raygen::Palette { colors: palette };
+
+                    let write_instance_buffer = tcx
+                        .write_buffer::<[AccelerationStructureInstance]>(instance_buffer_id, ..)?;
+
+                    for (dst, src) in write_instance_buffer.iter_mut().zip(render_instances) {
+                        *dst = src;
+                    }
+
+                    Ok(())
+                },
+                [
+                    (palette_buffer_id, HostAccessType::Write),
+                    (instance_buffer_id, HostAccessType::Write),
+                ],
+                [],
+                [],
+            )
+        }
+        .unwrap();
+
+        app.resources
+            .flight(app.graphics_flight_id)
+            .unwrap()
+            .wait_idle()
+            .unwrap();
+
         let acceleration_structures = [
             acceleration_structure::build_tlas(
-                render_instances.clone(),
+                instance_buffer.clone(),
+                max_instance_count as u32,
                 app.memory_allocator.clone(),
                 app.device.clone(),
                 app.compute_queue.clone(),
@@ -177,7 +238,8 @@ impl RayTracingRenderTask {
                 app.compute_flight_id,
             ),
             acceleration_structure::build_tlas(
-                render_instances.clone(),
+                instance_buffer,
+                max_instance_count as u32,
                 app.memory_allocator.clone(),
                 app.device.clone(),
                 app.compute_queue.clone(),
@@ -256,24 +318,6 @@ impl RayTracingRenderTask {
             )
             .unwrap();
 
-        let palette = get_palette(&app.voxel_data).map(|color| [color.x, color.y, color.z, 1.0]);
-
-        let palette_buffer_id = app
-            .resources
-            .create_buffer(
-                &BufferCreateInfo {
-                    usage: BufferUsage::STORAGE_BUFFER | BufferUsage::TRANSFER_DST,
-                    ..Default::default()
-                },
-                &AllocationCreateInfo {
-                    memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
-                        | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
-                    ..Default::default()
-                },
-                DeviceLayout::new_sized::<raygen::Palette>(),
-            )
-            .unwrap();
-
         let sunlight_buffer_id = app
             .resources
             .create_buffer(
@@ -288,39 +332,6 @@ impl RayTracingRenderTask {
                 },
                 DeviceLayout::new_sized::<raygen::Sunlight>(),
             )
-            .unwrap();
-
-        unsafe {
-            vulkano_taskgraph::execute(
-                &app.transfer_queue,
-                &app.resources,
-                app.graphics_flight_id,
-                |_cbf, tcx| {
-                    *tcx.write_buffer(palette_buffer_id, ..)? = raygen::Palette { colors: palette };
-
-                    let write_instance_buffer = tcx
-                        .write_buffer::<[AccelerationStructureInstance]>(instance_buffer_id, ..)?;
-
-                    for (dst, src) in write_instance_buffer.iter_mut().zip(render_instances) {
-                        *dst = src;
-                    }
-
-                    Ok(())
-                },
-                [
-                    (palette_buffer_id, HostAccessType::Write),
-                    (instance_buffer_id, HostAccessType::Write),
-                ],
-                [],
-                [],
-            )
-        }
-        .unwrap();
-
-        app.resources
-            .flight(app.graphics_flight_id)
-            .unwrap()
-            .wait_idle()
             .unwrap();
 
         let shader_binding_table =
