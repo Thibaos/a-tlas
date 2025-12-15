@@ -1,4 +1,4 @@
-use std::{collections::HashSet, sync::Arc};
+use std::sync::Arc;
 
 use vulkano::{
     DeviceSize, Packed24_8,
@@ -62,7 +62,6 @@ impl UpdateAccelerationStructureTask {
             blas_reference,
             instance_buffer_id,
             scratch_buffer_id: update_scratch_buffer,
-            max_instance_count: app.max_instance_count,
         }
     }
 }
@@ -129,7 +128,8 @@ impl Task for UpdateAccelerationStructureTask {
         );
 
         build_geometry_info.mode = BuildAccelerationStructureMode::Update(rcx.tlas.clone());
-        build_geometry_info.flags = BuildAccelerationStructureFlags::ALLOW_UPDATE;
+        build_geometry_info.flags = BuildAccelerationStructureFlags::PREFER_FAST_TRACE
+            | BuildAccelerationStructureFlags::ALLOW_UPDATE;
         build_geometry_info.dst_acceleration_structure = Some(rcx.tlas.clone());
         build_geometry_info.scratch_data = Some(scratch_buffer);
 

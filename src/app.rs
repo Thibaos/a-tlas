@@ -425,7 +425,6 @@ impl ApplicationHandler for App {
         let update_as_task = UpdateAccelerationStructureTask::new(
             self,
             rt_pass.instance_buffer_id,
-            rt_pass.acceleration_structures.clone(),
             rt_pass.blas.device_address().into(),
         );
 

@@ -1,3 +1,4 @@
+#![allow(unused)]
 use std::{collections::HashMap, fmt::Display};
 
 use dot_vox::DotVoxData;

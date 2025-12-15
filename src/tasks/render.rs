@@ -26,10 +26,11 @@ use vulkano::{
         },
     },
     swapchain::Swapchain,
+    sync::{AccessFlags, PipelineStages},
 };
 use vulkano_taskgraph::{
     Id, Task, TaskContext, TaskResult,
-    command_buffer::RecordingCommandBuffer,
+    command_buffer::{DependencyInfo, MemoryBarrier, RecordingCommandBuffer},
     descriptor_set::{AccelerationStructureId, StorageBufferId},
     resource::HostAccessType,
 };
@@ -40,7 +41,6 @@ pub struct RayTracingRenderTask {
     pub camera_buffer_id: Id<Buffer>,
     pub sunlight_buffer_id: Id<Buffer>,
     pub instance_buffer_id: Id<Buffer>,
-    pub scratch_buffer_id: Id<Buffer>,
     camera_storage_buffer_id: StorageBufferId,
     palette_storage_buffer_id: StorageBufferId,
     sunlight_storage_buffer_id: StorageBufferId,
@@ -376,7 +376,6 @@ impl RayTracingRenderTask {
             camera_buffer_id,
             sunlight_buffer_id,
             instance_buffer_id,
-            scratch_buffer_id,
             acceleration_structure_ids,
             camera_storage_buffer_id,
             palette_storage_buffer_id,
@@ -435,6 +434,20 @@ impl Task for RayTracingRenderTask {
         }
 
         unsafe { cbf.trace_rays(self.shader_binding_table.addresses(), extent) }?;
+
+        let dependency_info = DependencyInfo {
+            memory_barriers: &[MemoryBarrier {
+                src_stages: PipelineStages::LATE_FRAGMENT_TESTS,
+                dst_stages: PipelineStages::EARLY_FRAGMENT_TESTS,
+                src_access: AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE,
+                dst_access: AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE
+                    | AccessFlags::DEPTH_STENCIL_ATTACHMENT_READ,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        unsafe { cbf.pipeline_barrier(&dependency_info) }?;
 
         Ok(())
     }
