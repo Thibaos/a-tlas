@@ -60,7 +60,7 @@ pub fn build_acceleration_structure_common(
             &as_build_geometry_info,
             &[primitive_count],
         )
-        .unwrap();
+        .expect("acceleration_structure_build_sizes error");
 
     let scratch_buffer = Buffer::new_slice::<u8>(
         &memory_allocator,

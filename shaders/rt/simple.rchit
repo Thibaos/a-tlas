@@ -26,6 +26,23 @@ float compute_edge(float edge_width, vec3 box_position) {
 
 void main() {
     // incoming_static_payload.color = vec4(1.0);
-    incoming_static_payload.color = palette.colors[gl_InstanceCustomIndexEXT];
+    // incoming_static_payload.color = palette.colors[gl_InstanceCustomIndexEXT];
+    int id = gl_PrimitiveID;
+    vec3 n = vec3(0.0);
+
+    if (id < 2) {
+        n = vec3(-1.0, 0.0, 0.0);
+    } else if (id < 4) {
+        n = vec3(1.0, 0.0, 0.0);
+    } else if (id < 6) {
+        n = vec3(0.0, 1.0, 0.0);
+    } else if (id < 8) {
+        n = vec3(0.0, -1.0, 0.0);
+    } else if (id < 10) {
+        n = vec3(0.0, 0.0, 1.0);
+    } else {
+        n = vec3(0.0, 0.0, -1.0);
+    }
+    incoming_static_payload.color = vec4((n + 1.0) / 2.0, 1.0);
     incoming_static_payload.t = gl_RayTmaxEXT;
 }

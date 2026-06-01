@@ -10,12 +10,7 @@ use std::sync::{
 };
 use vulkano::{
     DeviceSize, Packed24_8,
-    acceleration_structure::{
-        AccelerationStructure, AccelerationStructureBuildGeometryInfo,
-        AccelerationStructureBuildType, AccelerationStructureGeometries,
-        AccelerationStructureGeometryInstancesData, AccelerationStructureGeometryInstancesDataType,
-        AccelerationStructureInstance,
-    },
+    acceleration_structure::{AccelerationStructure, AccelerationStructureInstance},
     buffer::{Buffer, BufferCreateInfo, BufferUsage, Subbuffer},
     memory::allocator::{AllocationCreateInfo, DeviceLayout, MemoryTypeFilter},
     pipeline::{
@@ -117,37 +112,6 @@ impl RayTracingRenderTask {
                 }
             })
             .collect::<Vec<_>>();
-
-        let build_geometry_info = AccelerationStructureBuildGeometryInfo {
-            ..AccelerationStructureBuildGeometryInfo::new(
-                AccelerationStructureGeometries::Instances(
-                    AccelerationStructureGeometryInstancesData::new(
-                        AccelerationStructureGeometryInstancesDataType::Values(None),
-                    ),
-                ),
-            )
-        };
-
-        let build_sizes_info = app
-            .device
-            .acceleration_structure_build_sizes(
-                AccelerationStructureBuildType::Device,
-                &build_geometry_info,
-                &[max_instance_count as u32],
-            )
-            .unwrap();
-
-        let scratch_buffer_id = app
-            .resources
-            .create_buffer(
-                &BufferCreateInfo {
-                    usage: BufferUsage::SHADER_DEVICE_ADDRESS | BufferUsage::STORAGE_BUFFER,
-                    ..Default::default()
-                },
-                &AllocationCreateInfo::default(),
-                DeviceLayout::new_unsized::<[u8]>(build_sizes_info.build_scratch_size).unwrap(),
-            )
-            .unwrap();
 
         let instance_buffer_id = app
             .resources

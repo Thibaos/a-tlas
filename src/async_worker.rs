@@ -16,9 +16,7 @@ use vulkano_taskgraph::{
     resource_map,
 };
 
-use crate::tasks::update_as::{AsyncRenderContext, UpdateAccelerationStructureTask};
-
-const TRANSFER_GRANULARITY: u32 = 4096;
+use crate::tasks::update_as::UpdateAccelerationStructureTask;
 
 fn init_worker(
     update_as_task: UpdateAccelerationStructureTask,

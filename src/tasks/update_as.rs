@@ -1,111 +1,44 @@
-use std::sync::Arc;
-
 use vulkano::{
     DeviceSize, Packed24_8,
     acceleration_structure::{
-        AccelerationStructure, AccelerationStructureBuildGeometryInfo,
-        AccelerationStructureBuildRangeInfo, AccelerationStructureBuildType,
-        AccelerationStructureGeometries, AccelerationStructureGeometryInstancesData,
-        AccelerationStructureGeometryInstancesDataType, AccelerationStructureInstance,
-        BuildAccelerationStructureFlags, BuildAccelerationStructureMode,
+        AccelerationStructureBuildGeometryInfo, AccelerationStructureBuildRangeInfo,
+        AccelerationStructureBuildType, AccelerationStructureGeometries,
+        AccelerationStructureGeometryInstancesData, AccelerationStructureGeometryInstancesDataType,
+        AccelerationStructureInstance, BuildAccelerationStructureFlags,
+        BuildAccelerationStructureMode,
     },
     buffer::{Buffer, BufferCreateInfo, BufferUsage, Subbuffer},
     memory::allocator::{AllocationCreateInfo, DeviceLayout},
+    sync::{AccessFlags, PipelineStages},
 };
 use vulkano_taskgraph::{
-    Id, Task, TaskContext, TaskResult, command_buffer::RecordingCommandBuffer,
+    Id, Task, TaskContext, TaskResult,
+    command_buffer::{DependencyInfo, MemoryBarrier, RecordingCommandBuffer},
 };
 
-use crate::app::App;
+use crate::app::{App, RenderContext};
 
-const UPDATES_PER_FRAME: u64 = 2u64.pow(10);
+const AS_SIZE: DeviceSize = size_of::<AccelerationStructureInstance>() as DeviceSize;
 
 pub struct UpdateAccelerationStructureTask {
+    instance_count: u32,
     blas_reference: u64,
     pub instance_buffer_id: Id<Buffer>,
-    scratch_buffer_id: Id<Buffer>,
+    pub scratch_buffer_id: Id<Buffer>,
+    geometries: AccelerationStructureGeometries,
 }
 
 impl UpdateAccelerationStructureTask {
-    pub fn new(app: &App, instance_buffer_id: Id<Buffer>, blas_reference: u64) -> Self {
-        let geometry_instances_data = AccelerationStructureGeometryInstancesData::new(
-            AccelerationStructureGeometryInstancesDataType::Values(None),
-        );
-
-        let geometries = AccelerationStructureGeometries::Instances(geometry_instances_data);
-
-        let build_info = AccelerationStructureBuildGeometryInfo::new(geometries);
-
-        let build_sizes_info = app
-            .device
-            .acceleration_structure_build_sizes(
-                AccelerationStructureBuildType::Device,
-                &build_info,
-                &[UPDATES_PER_FRAME as u32],
-            )
-            .unwrap();
-
-        let update_scratch_buffer = app
-            .resources
-            .create_buffer(
-                &BufferCreateInfo {
-                    usage: BufferUsage::SHADER_DEVICE_ADDRESS | BufferUsage::STORAGE_BUFFER,
-                    ..Default::default()
-                },
-                &AllocationCreateInfo::default(),
-                DeviceLayout::new_unsized::<[u8]>(build_sizes_info.build_scratch_size).unwrap(),
-            )
-            .unwrap();
-
-        Self {
-            blas_reference,
-            instance_buffer_id,
-            scratch_buffer_id: update_scratch_buffer,
-        }
-    }
-}
-
-pub struct AsyncRenderContext {
-    pub tlas: Arc<AccelerationStructure>,
-}
-
-impl Task for UpdateAccelerationStructureTask {
-    type World = AsyncRenderContext;
-
-    unsafe fn execute(
-        &self,
-        cbf: &mut RecordingCommandBuffer<'_>,
-        tcx: &mut TaskContext<'_>,
-        rcx: &Self::World,
-    ) -> TaskResult {
-        const AS_SIZE: DeviceSize = size_of::<AccelerationStructureInstance>() as DeviceSize;
-
-        let write_instance_buffer = tcx.write_buffer::<[AccelerationStructureInstance]>(
-            self.instance_buffer_id,
-            0..(UPDATES_PER_FRAME * AS_SIZE),
-        )?;
-
-        for instance in write_instance_buffer.iter_mut() {
-            const RANGE: i32 = 32;
-            let x = rand::random_range(-RANGE..=RANGE);
-            let y = rand::random_range(-RANGE..=RANGE);
-            let z = rand::random_range(-RANGE..=RANGE);
-
-            *instance = AccelerationStructureInstance {
-                acceleration_structure_reference: self.blas_reference,
-                instance_custom_index_and_mask: Packed24_8::new(rand::random::<u8>() as u32, 0xFF),
-                transform: [
-                    [1.0, 0.0, 0.0, x as f32],
-                    [0.0, 1.0, 0.0, y as f32],
-                    [0.0, 0.0, 1.0, z as f32],
-                ],
-                ..Default::default()
-            };
-        }
-
+    pub fn new(
+        app: &App,
+        instance_count: u32,
+        instance_buffer_id: Id<Buffer>,
+        blas_reference: u64,
+    ) -> Self {
         let instance_buffer = Subbuffer::new(
-            tcx.buffer(self.instance_buffer_id)
-                .expect("Instance buffer not found")
+            app.resources
+                .buffer(instance_buffer_id)
+                .unwrap()
                 .buffer()
                 .clone(),
         )
@@ -117,14 +50,101 @@ impl Task for UpdateAccelerationStructureTask {
 
         let geometries = AccelerationStructureGeometries::Instances(geometry_instances_data);
 
-        let mut build_geometry_info = AccelerationStructureBuildGeometryInfo::new(geometries);
+        let build_geometry_info = AccelerationStructureBuildGeometryInfo::new(geometries.clone());
 
-        let scratch_buffer = Subbuffer::new(
-            tcx.buffer(self.scratch_buffer_id)
-                .expect("Scratch buffer not found")
-                .buffer()
-                .clone(),
-        );
+        let build_sizes_info = app
+            .device
+            .acceleration_structure_build_sizes(
+                AccelerationStructureBuildType::Device,
+                &build_geometry_info,
+                &[instance_count],
+            )
+            .unwrap();
+
+        // `mode` is ignored by vulkano's size query, so the driver computes for Build mode.
+        // `build_scratch_size` is a safe upper bound for any update operation.
+        let scratch_size = build_sizes_info.build_scratch_size;
+
+        let scratch_buffer_id = app
+            .resources
+            .create_buffer(
+                &BufferCreateInfo {
+                    usage: BufferUsage::SHADER_DEVICE_ADDRESS | BufferUsage::STORAGE_BUFFER,
+                    ..Default::default()
+                },
+                &AllocationCreateInfo::default(),
+                DeviceLayout::new_unsized::<[u8]>(scratch_size).unwrap(),
+            )
+            .unwrap();
+
+        Self {
+            instance_count,
+            blas_reference,
+            instance_buffer_id,
+            scratch_buffer_id,
+            geometries,
+        }
+    }
+}
+
+impl Task for UpdateAccelerationStructureTask {
+    type World = RenderContext;
+
+    unsafe fn execute(
+        &self,
+        cbf: &mut RecordingCommandBuffer<'_>,
+        tcx: &mut TaskContext<'_>,
+        rcx: &Self::World,
+    ) -> TaskResult {
+        if !rcx.tlas_update_requested {
+            return Ok(());
+        }
+
+        let write_instance_buffer = tcx.write_buffer::<[AccelerationStructureInstance]>(
+            self.instance_buffer_id,
+            0..(self.instance_count as u64 * AS_SIZE),
+        )?;
+
+        for instance in write_instance_buffer.iter_mut() {
+            let range: i32 = self.instance_count.ilog2() as i32;
+            let x = rand::random_range(-range..=range);
+            let y = rand::random_range(-range..=range);
+            let z = rand::random_range(-range..=range);
+
+            *instance = AccelerationStructureInstance {
+                acceleration_structure_reference: self.blas_reference,
+                instance_custom_index_and_mask: Packed24_8::new(1, 0xFF),
+                transform: [
+                    [1.0, 0.0, 0.0, x as f32],
+                    [0.0, 1.0, 0.0, y as f32],
+                    [0.0, 0.0, 1.0, z as f32],
+                ],
+                ..Default::default()
+            };
+        }
+
+        // Make the instance buffer write (TRANSFER) visible to the AS build's
+        // internal read of the instance buffer (SHADER_READ in AS_BUILD stage),
+        // as well as making the previous frame's AS writes visible to this update.
+        let pre_memory_barrier = MemoryBarrier {
+            src_access: AccessFlags::ACCELERATION_STRUCTURE_WRITE
+                | AccessFlags::TRANSFER_WRITE
+                | AccessFlags::SHADER_READ,
+            dst_access: AccessFlags::ACCELERATION_STRUCTURE_READ
+                | AccessFlags::ACCELERATION_STRUCTURE_WRITE
+                | AccessFlags::SHADER_READ,
+            src_stages: PipelineStages::ACCELERATION_STRUCTURE_BUILD
+                | PipelineStages::ALL_TRANSFER
+                | PipelineStages::RAY_TRACING_SHADER,
+            dst_stages: PipelineStages::ACCELERATION_STRUCTURE_BUILD,
+            ..Default::default()
+        };
+
+        let mut build_geometry_info =
+            AccelerationStructureBuildGeometryInfo::new(self.geometries.clone());
+
+        let scratch_buffer =
+            Subbuffer::new(tcx.buffer(self.scratch_buffer_id).unwrap().buffer().clone());
 
         build_geometry_info.mode = BuildAccelerationStructureMode::Update(rcx.tlas.clone());
         build_geometry_info.flags = BuildAccelerationStructureFlags::PREFER_FAST_TRACE
@@ -133,13 +153,36 @@ impl Task for UpdateAccelerationStructureTask {
         build_geometry_info.scratch_data = Some(scratch_buffer);
 
         unsafe {
+            cbf.pipeline_barrier(&DependencyInfo {
+                memory_barriers: &[pre_memory_barrier],
+                ..Default::default()
+            })
+        }?;
+
+        unsafe {
             cbf.as_raw().build_acceleration_structure(
                 &build_geometry_info,
                 &[AccelerationStructureBuildRangeInfo {
-                    primitive_count: UPDATES_PER_FRAME as u32,
+                    primitive_count: self.instance_count,
                     ..Default::default()
                 }],
             )
+        }?;
+
+        let post_memory_barrier = MemoryBarrier {
+            src_access: AccessFlags::ACCELERATION_STRUCTURE_WRITE,
+            dst_access: AccessFlags::ACCELERATION_STRUCTURE_READ | AccessFlags::SHADER_READ,
+            src_stages: PipelineStages::ACCELERATION_STRUCTURE_BUILD,
+            dst_stages: PipelineStages::ACCELERATION_STRUCTURE_BUILD
+                | PipelineStages::RAY_TRACING_SHADER,
+            ..Default::default()
+        };
+
+        unsafe {
+            cbf.pipeline_barrier(&DependencyInfo {
+                memory_barriers: &[post_memory_barrier],
+                ..Default::default()
+            })
         }?;
 
         Ok(())

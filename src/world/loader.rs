@@ -89,9 +89,9 @@ impl SceneGraphTraverser<'_> {
         let scale = glam::Vec3A::from_array(scale).xzy(); // no need to negate scale.y because scale is not a coordinate
 
         let mut offset = Vec3A::new(
-            if size.x % 2 == 0 { 0.0 } else { 0.5 },
-            if size.z % 2 == 0 { 0.0 } else { 0.5 },
-            if size.y % 2 == 0 { 0.0 } else { -0.5 },
+            if size.x.is_multiple_of(2) { 0.0 } else { 0.5 },
+            if size.z.is_multiple_of(2) { 0.0 } else { 0.5 },
+            if size.y.is_multiple_of(2) { 0.0 } else { -0.5 },
         );
         offset = quat.mul_vec3a(offset); // If another seam shows up in the future, try multiplying this with `scale`
 

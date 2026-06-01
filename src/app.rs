@@ -1,25 +1,32 @@
 use glam::{Mat4, vec3};
 use std::{
     f32::consts::PI,
-    sync::{Arc, mpsc},
+    sync::Arc,
     time::{Duration, Instant},
 };
 use vulkano::{
     VulkanError, VulkanLibrary,
+    acceleration_structure::AccelerationStructure,
+    buffer::{BufferCreateInfo, BufferUsage},
     device::{
         Device, DeviceCreateInfo, DeviceExtensions, DeviceFeatures, Queue, QueueCreateInfo,
         QueueFlags, physical::PhysicalDeviceType,
     },
     image::{ImageFormatInfo, ImageLayout, ImageUsage, view::ImageView},
     instance::{Instance, InstanceCreateFlags, InstanceCreateInfo, InstanceExtensions},
-    memory::allocator::{MemoryAllocator, StandardMemoryAllocator},
+    memory::allocator::{
+        AllocationCreateInfo, DeviceLayout, MemoryAllocator, MemoryTypeFilter,
+        StandardMemoryAllocator,
+    },
     swapchain::{PresentMode, Surface, Swapchain, SwapchainCreateInfo},
 };
 use vulkano_taskgraph::{
     Id, QueueFamilyType,
     descriptor_set::{BindlessContext, StorageImageId},
-    graph::{CompileInfo, ExecutableTaskGraph, ExecuteError, TaskGraph},
-    resource::{AccessTypes, Flight, ImageLayoutType, Resources, ResourcesCreateInfo},
+    graph::{AttachmentInfo, CompileInfo, ExecutableTaskGraph, ExecuteError, TaskGraph},
+    resource::{
+        AccessTypes, Flight, HostAccessType, ImageLayoutType, Resources, ResourcesCreateInfo,
+    },
     resource_map,
 };
 
@@ -36,17 +43,20 @@ use winit::{
 };
 
 use crate::{
-    async_worker::run_worker,
     physics::PhysicsController,
     player_controller::PlayerController,
     rt::raygen,
-    tasks::{debug, render::RayTracingRenderTask, update_as::UpdateAccelerationStructureTask},
-    world::{chunk::Chunks, voxel::open_file},
+    tasks::{render::RayTracingRenderTask, update_as::UpdateAccelerationStructureTask},
+    world::{Vertex3DColor, chunk::Chunks, voxel::open_file},
 };
+
+#[cfg(debug_assertions)]
+use crate::tasks::debug::{self, DrawDebugTask, create_debug_pipeline};
 
 pub const MAX_FRAMES_IN_FLIGHT: u32 = 2;
 pub const MIN_SWAPCHAIN_IMAGES: u32 = MAX_FRAMES_IN_FLIGHT + 1;
 pub const TICKS_PER_SECOND: u32 = 1;
+pub const MAX_DEBUG_LINES: u32 = 4096;
 
 pub struct App {
     close_requested: bool,
@@ -56,7 +66,6 @@ pub struct App {
 
     pub graphics_queue: Arc<Queue>,
     pub compute_queue: Arc<Queue>,
-    #[cfg(debug_assertions)]
     pub transfer_queue: Arc<Queue>,
 
     pub memory_allocator: Arc<dyn MemoryAllocator>,
@@ -88,13 +97,16 @@ pub struct RenderContext {
     // scene_params: tree64::SceneParams,
     pub rt_camera_data: raygen::Camera,
     pub rt_sunlight_data: raygen::Sunlight,
+    pub tlas: Arc<AccelerationStructure>,
+    pub tlas_update_requested: bool,
     #[cfg(debug_assertions)]
     pub debug_constant_data: debug::shader::vert::PushConstants,
+    #[cfg(debug_assertions)]
+    pub debug_lines: Vec<Vertex3DColor>,
     #[cfg(debug_assertions)]
     pub viewport: Viewport,
     recreate_swapchain: bool,
     task_graph: ExecutableTaskGraph<Self>,
-    channel: mpsc::Sender<()>,
 }
 
 impl App {
@@ -215,7 +227,6 @@ impl App {
 
         let graphics_queue = queues.next().unwrap();
         let compute_queue = queues.next().unwrap();
-        #[cfg(debug_assertions)]
         let transfer_queue = queues.next().unwrap();
 
         let memory_allocator = Arc::new(StandardMemoryAllocator::new(&device, &Default::default()));
@@ -232,17 +243,17 @@ impl App {
         let graphics_flight_id = resources.create_flight(MAX_FRAMES_IN_FLIGHT).unwrap();
         let compute_flight_id = resources.create_flight(1).unwrap();
 
-        let max_instance_count = device
-            .physical_device()
-            .properties()
-            .max_instance_count
-            .expect("Max instance count not found");
+        // let max_instance_count = device
+        //     .physical_device()
+        //     .properties()
+        //     .max_instance_count
+        //     .expect("Max instance count not found");
 
-        let max_instance_count = 1_000;
+        let max_instance_count = 16384;
 
         dbg!(max_instance_count);
 
-        let voxel_data = open_file("assets/custom.vox");
+        let voxel_data = open_file("assets/castle.vox");
         let world = Chunks::new(&voxel_data);
 
         App {
@@ -253,7 +264,6 @@ impl App {
 
             graphics_queue,
             compute_queue,
-            #[cfg(debug_assertions)]
             transfer_queue,
 
             memory_allocator,
@@ -307,8 +317,8 @@ impl App {
         let now = Instant::now();
         let delta = now.duration_since(self.last_frame_update);
         if !now.duration_since(self.next_log_update).is_zero() {
-            // #[cfg(debug_assertions)]
-            // println!("{:.2} fps", 1.0 / delta.as_secs_f32());
+            #[cfg(debug_assertions)]
+            println!("{:.2} fps", 1.0 / delta.as_secs_f32());
         }
         self.last_frame_update = now;
         self.delta_time = delta;
@@ -350,6 +360,11 @@ impl App {
             self.player_controller.rotate(delta);
         }
     }
+
+    #[cfg(debug_assertions)]
+    pub fn update_debug_lines(&mut self) {
+        self.rcx.as_mut().unwrap().debug_lines = self.world.debug_lines();
+    }
 }
 
 impl ApplicationHandler for App {
@@ -362,7 +377,7 @@ impl ApplicationHandler for App {
         let window_size = window.inner_size();
         let surface = Surface::from_window(&self.instance, &window).unwrap();
 
-        let swapchain_id = {
+        let (swapchain_id, swapchain_format) = {
             let surface_capabilities = self
                 .device
                 .physical_device()
@@ -389,27 +404,30 @@ impl ApplicationHandler for App {
 
             let present_mode = PresentMode::Immediate;
 
-            self.resources
-                .create_swapchain(
-                    &surface,
-                    &SwapchainCreateInfo {
-                        present_mode,
-                        min_image_count: surface_capabilities
-                            .min_image_count
-                            .max(MIN_SWAPCHAIN_IMAGES),
-                        image_format,
-                        image_extent: window_size.into(),
-                        image_usage: ImageUsage::STORAGE | ImageUsage::COLOR_ATTACHMENT,
-                        image_color_space,
-                        composite_alpha: surface_capabilities
-                            .supported_composite_alpha
-                            .into_iter()
-                            .next()
-                            .unwrap(),
-                        ..Default::default()
-                    },
-                )
-                .unwrap()
+            (
+                self.resources
+                    .create_swapchain(
+                        &surface,
+                        &SwapchainCreateInfo {
+                            present_mode,
+                            min_image_count: surface_capabilities
+                                .min_image_count
+                                .max(MIN_SWAPCHAIN_IMAGES),
+                            image_format,
+                            image_extent: window_size.into(),
+                            image_usage: ImageUsage::STORAGE | ImageUsage::COLOR_ATTACHMENT,
+                            image_color_space,
+                            composite_alpha: surface_capabilities
+                                .supported_composite_alpha
+                                .into_iter()
+                                .next()
+                                .unwrap(),
+                            ..Default::default()
+                        },
+                    )
+                    .unwrap(),
+                image_format,
+            )
         };
 
         let swapchain_storage_image_ids =
@@ -420,38 +438,99 @@ impl ApplicationHandler for App {
         let virtual_swapchain_id = task_graph.add_swapchain(&SwapchainCreateInfo::default());
 
         let rt_pass =
-            RayTracingRenderTask::new(&self, virtual_swapchain_id, self.max_instance_count);
+            RayTracingRenderTask::new(self, virtual_swapchain_id, self.max_instance_count);
 
         let update_as_task = UpdateAccelerationStructureTask::new(
             self,
+            self.max_instance_count as u32,
             rt_pass.instance_buffer_id,
             rt_pass.blas.device_address().into(),
         );
 
-        let (channel, receiver) = mpsc::channel();
+        let tlas = rt_pass.acceleration_structures[0].clone();
 
-        run_worker(
-            receiver,
-            update_as_task,
-            self.compute_queue.clone(),
-            self.resources.clone(),
-            self.graphics_flight_id,
-            self.compute_flight_id,
-            rt_pass.acceleration_structures.clone(),
-            rt_pass.current_as_index.clone(),
-            rt_pass.show_current_index.clone(),
-        );
+        let instance_buffer_id = update_as_task.instance_buffer_id;
+        let scratch_buffer_id = update_as_task.scratch_buffer_id;
 
-        task_graph
+        let update_as_node_id = task_graph
+            .create_task_node("Update TLAS", QueueFamilyType::Compute, update_as_task)
+            .buffer_access(
+                instance_buffer_id,
+                AccessTypes::ACCELERATION_STRUCTURE_BUILD_ACCELERATION_STRUCTURE_WRITE,
+            )
+            .buffer_access(
+                scratch_buffer_id,
+                AccessTypes::ACCELERATION_STRUCTURE_BUILD_ACCELERATION_STRUCTURE_WRITE,
+            )
+            .build();
+
+        let instance_buffer_id = rt_pass.instance_buffer_id;
+
+        let rt_node_id = task_graph
             .create_task_node("Render", QueueFamilyType::Graphics, rt_pass)
             .image_access(
                 virtual_swapchain_id.current_image_id(),
                 AccessTypes::RAY_TRACING_SHADER_STORAGE_WRITE,
                 ImageLayoutType::General,
             )
+            .buffer_access(
+                instance_buffer_id,
+                AccessTypes::RAY_TRACING_SHADER_ACCELERATION_STRUCTURE_READ,
+            )
             .build();
 
-        let task_graph = unsafe {
+        let virtual_framebuffer_id = task_graph.add_framebuffer();
+
+        let debug_vertex_buffer_id = self
+            .resources
+            .create_buffer(
+                &BufferCreateInfo {
+                    usage: BufferUsage::VERTEX_BUFFER,
+                    ..Default::default()
+                },
+                &AllocationCreateInfo {
+                    memory_type_filter: MemoryTypeFilter::HOST_RANDOM_ACCESS
+                        | MemoryTypeFilter::PREFER_DEVICE,
+                    ..Default::default()
+                },
+                DeviceLayout::new_unsized::<[Vertex3DColor]>(MAX_DEBUG_LINES.into()).unwrap(),
+            )
+            .unwrap();
+
+        #[cfg(debug_assertions)]
+        let debug_pass = DrawDebugTask::new(debug_vertex_buffer_id);
+
+        #[cfg(debug_assertions)]
+        let debug_node_id = task_graph
+            .create_task_node("Debug", QueueFamilyType::Graphics, debug_pass)
+            .framebuffer(virtual_framebuffer_id)
+            .color_attachment(
+                virtual_swapchain_id.current_image_id(),
+                AccessTypes::COLOR_ATTACHMENT_WRITE,
+                ImageLayoutType::Optimal,
+                &AttachmentInfo {
+                    format: swapchain_format,
+                    ..Default::default()
+                },
+            )
+            .image_access(
+                virtual_swapchain_id.current_image_id(),
+                AccessTypes::COLOR_ATTACHMENT_READ,
+                ImageLayoutType::Optimal,
+            )
+            .buffer_access(debug_vertex_buffer_id, AccessTypes::VERTEX_ATTRIBUTE_READ)
+            .build();
+
+        task_graph.add_host_buffer_access(instance_buffer_id, HostAccessType::Write);
+
+        #[cfg(debug_assertions)]
+        task_graph.add_host_buffer_access(debug_vertex_buffer_id, HostAccessType::Write);
+
+        task_graph.add_edge(update_as_node_id, rt_node_id).unwrap();
+        #[cfg(debug_assertions)]
+        task_graph.add_edge(rt_node_id, debug_node_id).unwrap();
+
+        let mut task_graph = unsafe {
             task_graph.compile(&CompileInfo {
                 queues: &[&self.graphics_queue],
                 present_queue: Some(&self.graphics_queue),
@@ -460,6 +539,21 @@ impl ApplicationHandler for App {
             })
         }
         .unwrap();
+
+        #[cfg(debug_assertions)]
+        {
+            let node = task_graph.task_node(debug_node_id).unwrap();
+
+            let debug_pipeline = create_debug_pipeline(self, node);
+
+            task_graph
+                .task_node_mut(debug_node_id)
+                .unwrap()
+                .task_mut()
+                .downcast_mut::<DrawDebugTask>()
+                .unwrap()
+                .pipeline = Some(debug_pipeline);
+        }
 
         #[cfg(debug_assertions)]
         let viewport = Viewport {
@@ -495,12 +589,15 @@ impl ApplicationHandler for App {
             // scene_params,
             rt_camera_data,
             rt_sunlight_data,
+            tlas,
+            tlas_update_requested: false,
             #[cfg(debug_assertions)]
             debug_constant_data,
             #[cfg(debug_assertions)]
+            debug_lines: vec![],
+            #[cfg(debug_assertions)]
             viewport,
             swapchain_storage_image_ids,
-            channel,
         });
     }
 
@@ -527,6 +624,7 @@ impl ApplicationHandler for App {
                 self.rcx.as_mut().unwrap().recreate_swapchain = true;
             }
             WindowEvent::RedrawRequested => {
+                // self.update_debug_lines();
                 self.update_delta_time();
                 self.update_camera();
                 self.physics_controller.request_update();
@@ -605,7 +703,9 @@ impl ApplicationHandler for App {
                 };
 
                 match execute_result {
-                    Ok(()) => {}
+                    Ok(()) => {
+                        self.rcx.as_mut().unwrap().tlas_update_requested = false;
+                    }
                     Err(ExecuteError::Swapchain {
                         error: VulkanError::OutOfDate,
                         ..
@@ -627,16 +727,11 @@ impl ApplicationHandler for App {
                 ..
             } => self.player_controller.handle_speed_change(y),
             WindowEvent::KeyboardInput { event, .. } => {
-                match event.state {
-                    ElementState::Pressed => {
-                        if let Some(txt) = event.logical_key.to_text() {
-                            if txt == "r" {
-                                self.rcx.as_ref().unwrap().channel.send(()).unwrap();
-                            }
+                if event.state == ElementState::Pressed
+                    && let Some(txt) = event.logical_key.to_text()
+                        && txt == "r" {
+                            self.rcx.as_mut().unwrap().tlas_update_requested = true;
                         }
-                    }
-                    _ => {}
-                }
                 self.player_controller.handle_keyboard_event(event)
             }
             _ => {}
