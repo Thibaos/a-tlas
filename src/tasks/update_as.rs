@@ -7,7 +7,7 @@ use vulkano::{
         AccelerationStructureBuildRangeInfo, AccelerationStructureBuildType,
         AccelerationStructureGeometries, AccelerationStructureGeometryInstancesData,
         AccelerationStructureGeometryInstancesDataType, AccelerationStructureInstance,
-        BuildAccelerationStructureFlags, BuildAccelerationStructureMode, GeometryInstanceFlags,
+        BuildAccelerationStructureFlags, BuildAccelerationStructureMode,
     },
     buffer::{Buffer, BufferCreateInfo, BufferUsage, Subbuffer},
     memory::allocator::{AllocationCreateInfo, DeviceLayout},
@@ -18,8 +18,7 @@ use vulkano_taskgraph::{
 
 use crate::app::App;
 
-const UPDATES_PER_FRAME: u64 = 1000;
-// const UPDATES_PER_FRAME: u64 = 2u64.pow(10);
+const UPDATES_PER_FRAME: u64 = 2u64.pow(10);
 
 pub struct UpdateAccelerationStructureTask {
     blas_reference: u64,
