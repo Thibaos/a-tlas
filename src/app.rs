@@ -1,7 +1,7 @@
 use glam::{Mat4, vec3};
 use std::{
     f32::consts::PI,
-    sync::{Arc, atomic::AtomicBool},
+    sync::{Arc, atomic::AtomicBool, mpsc},
     time::{Duration, Instant},
 };
 use vulkano::{
@@ -43,6 +43,7 @@ use winit::{
 };
 
 use crate::{
+    async_tlas::run_worker,
     physics::PhysicsController,
     player_controller::PlayerController,
     rt::raygen,
@@ -81,7 +82,7 @@ pub struct App {
     focused: bool,
 
     pub voxel_data: dot_vox::DotVoxData,
-    world: Chunks,
+    pub world: Chunks,
 
     player_controller: PlayerController,
     physics_controller: PhysicsController,
@@ -97,7 +98,7 @@ pub struct RenderContext {
     // scene_params: tree64::SceneParams,
     pub rt_camera_data: raygen::Camera,
     pub rt_sunlight_data: raygen::Sunlight,
-    pub tlas: Arc<AccelerationStructure>,
+    // pub tlas: Arc<AccelerationStructure>,
     pub acceleration_structures: [Arc<AccelerationStructure>; 2],
     pub current_as_index: Arc<AtomicBool>,
     pub tlas_update_requested: bool,
@@ -109,6 +110,14 @@ pub struct RenderContext {
     pub viewport: Viewport,
     recreate_swapchain: bool,
     task_graph: ExecutableTaskGraph<Self>,
+
+    channel: mpsc::Sender<()>,
+}
+
+pub struct AsyncRenderContext {
+    pub acceleration_structures: [Arc<AccelerationStructure>; 2],
+    pub current_as_index: Arc<AtomicBool>,
+    pub tlas_update_requested: bool,
 }
 
 impl App {
@@ -439,24 +448,22 @@ impl ApplicationHandler for App {
 
         let acceleration_structures = rt_pass.acceleration_structures.clone();
         let current_as_index = rt_pass.current_as_index.clone();
-        let tlas = acceleration_structures[0].clone();
-
-        let instance_buffer_id = update_as_task.instance_buffer_id;
-        let scratch_buffer_id = update_as_task.scratch_buffer_id;
-
-        let update_as_node_id = task_graph
-            .create_task_node("Update TLAS", QueueFamilyType::Compute, update_as_task)
-            .buffer_access(
-                instance_buffer_id,
-                AccessTypes::ACCELERATION_STRUCTURE_BUILD_ACCELERATION_STRUCTURE_WRITE,
-            )
-            .buffer_access(
-                scratch_buffer_id,
-                AccessTypes::ACCELERATION_STRUCTURE_BUILD_ACCELERATION_STRUCTURE_WRITE,
-            )
-            .build();
 
         let instance_buffer_id = rt_pass.instance_buffer_id;
+
+        let (channel, receiver) = mpsc::channel();
+
+        run_worker(
+            receiver,
+            update_as_task,
+            self.compute_queue.clone(),
+            self.resources.clone(),
+            self.graphics_flight_id,
+            self.compute_flight_id,
+            rt_pass.acceleration_structures.clone(),
+            rt_pass.current_as_index.clone(),
+            rt_pass.show_current_index.clone(),
+        );
 
         let rt_node_id = task_graph
             .create_task_node("Render", QueueFamilyType::Graphics, rt_pass)
@@ -513,12 +520,12 @@ impl ApplicationHandler for App {
             .buffer_access(debug_vertex_buffer_id, AccessTypes::VERTEX_ATTRIBUTE_READ)
             .build();
 
-        task_graph.add_host_buffer_access(instance_buffer_id, HostAccessType::Write);
+        // task_graph.add_host_buffer_access(instance_buffer_id, HostAccessType::Write);
 
         #[cfg(debug_assertions)]
         task_graph.add_host_buffer_access(debug_vertex_buffer_id, HostAccessType::Write);
 
-        task_graph.add_edge(update_as_node_id, rt_node_id).unwrap();
+        // task_graph.add_edge(update_as_node_id, rt_node_id).unwrap();
         #[cfg(debug_assertions)]
         task_graph.add_edge(rt_node_id, debug_node_id).unwrap();
 
@@ -581,7 +588,6 @@ impl ApplicationHandler for App {
             // scene_params,
             rt_camera_data,
             rt_sunlight_data,
-            tlas,
             acceleration_structures,
             current_as_index,
             tlas_update_requested: false,
@@ -592,6 +598,8 @@ impl ApplicationHandler for App {
             #[cfg(debug_assertions)]
             viewport,
             swapchain_storage_image_ids,
+
+            channel,
         });
     }
 
@@ -724,7 +732,8 @@ impl ApplicationHandler for App {
                     && let Some(txt) = event.logical_key.to_text()
                     && txt == "r"
                 {
-                    self.rcx.as_mut().unwrap().tlas_update_requested = true;
+                    self.rcx.as_mut().unwrap().channel.send(()).unwrap();
+                    // self.rcx.as_mut().unwrap().tlas_update_requested = true;
                 }
                 self.player_controller.handle_keyboard_event(event)
             }

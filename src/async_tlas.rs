@@ -12,11 +12,11 @@ use vulkano::{acceleration_structure::AccelerationStructure, device::Queue};
 use vulkano_taskgraph::{
     Id, QueueFamilyType,
     graph::{CompileInfo, ExecutableTaskGraph, TaskGraph},
-    resource::{Flight, HostAccessType, Resources},
+    resource::{AccessTypes, Flight, HostAccessType, Resources},
     resource_map,
 };
 
-use crate::tasks::update_as::UpdateAccelerationStructureTask;
+use crate::{app::AsyncRenderContext, tasks::update_as::UpdateAccelerationStructureTask};
 
 fn init_worker(
     update_as_task: UpdateAccelerationStructureTask,
@@ -28,8 +28,14 @@ fn init_worker(
 
     task_graph.add_host_buffer_access(update_as_task.instance_buffer_id, HostAccessType::Write);
 
+    let instance_buffer_id = update_as_task.instance_buffer_id;
+
     task_graph
         .create_task_node("Update TLAS", QueueFamilyType::Compute, update_as_task)
+        .buffer_access(
+            instance_buffer_id,
+            AccessTypes::ACCELERATION_STRUCTURE_BUILD_ACCELERATION_STRUCTURE_WRITE,
+        )
         .build();
 
     unsafe {
@@ -59,10 +65,14 @@ pub fn run_worker(
     thread::spawn(move || {
         let mut last_frame = 0;
 
+        dbg!("Worker running...");
+
         while let Ok(()) = channel.recv() {
+            dbg!("Worker received signal");
+
             let now = Instant::now();
 
-            let graphics_flight = resources.flight(graphics_flight_id).unwrap();
+            let graphics_flight = resources.flight(graphics_flight_id);
 
             while last_frame == graphics_flight.current_frame() {
                 thread::sleep(Duration::from_millis(1));
@@ -71,7 +81,6 @@ pub fn run_worker(
             graphics_flight.wait_for_frame(last_frame, None).unwrap();
 
             let back_index = !current_as_index.load(Ordering::Relaxed);
-            // println!("Updating TLAS at index: {back_index}");
 
             let resource_map = resource_map!(&task_graph).unwrap();
 
@@ -79,18 +88,16 @@ pub fn run_worker(
                 task_graph.execute(
                     resource_map,
                     &AsyncRenderContext {
-                        tlas: acceleration_structures[back_index as usize].clone(),
+                        acceleration_structures: acceleration_structures.clone(),
+                        current_as_index: current_as_index.clone(),
+                        tlas_update_requested: true,
                     },
                     || {},
                 )
             }
             .unwrap();
 
-            resources
-                .flight(compute_flight_id)
-                .unwrap()
-                .wait_idle()
-                .unwrap();
+            resources.flight(compute_flight_id).wait_idle().unwrap();
 
             last_frame = graphics_flight.current_frame();
 

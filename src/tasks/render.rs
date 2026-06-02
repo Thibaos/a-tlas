@@ -4,7 +4,7 @@ use crate::{
     utils,
     world::voxel::{get_palette, triangles_from_box},
 };
-use glam::Vec3;
+use glam::{IVec3, Vec3};
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
@@ -77,29 +77,12 @@ impl RayTracingRenderTask {
             app.compute_flight_id,
         );
 
-        // let render_instances: Vec<AccelerationStructureInstance> = app.world.to_instances(
-        //     0,
-        //     &IVec3::ZERO,
-        //     blas.device_address().into(),
-        //     max_instance_count,
-        // );
-
-        let radius: f32 = max_instance_count.ilog2().pow(3) as f32;
-        let render_instances = (0..max_instance_count)
-            .map(|_| {
-                let (x, y, z) = utils::sample_uniform_sphere(radius);
-
-                AccelerationStructureInstance {
-                    acceleration_structure_reference: blas.device_address().into(),
-                    instance_custom_index_and_mask: Packed24_8::new(
-                        rand::random::<u8>() as u32,
-                        0xFF,
-                    ),
-                    transform: [[1.0, 0.0, 0.0, x], [0.0, 1.0, 0.0, y], [0.0, 0.0, 1.0, z]],
-                    ..Default::default()
-                }
-            })
-            .collect::<Vec<_>>();
+        let render_instances: Vec<AccelerationStructureInstance> = app.world.to_instances(
+            0,
+            &IVec3::ZERO,
+            blas.device_address().into(),
+            max_instance_count,
+        );
 
         let instance_buffer_id = app
             .resources

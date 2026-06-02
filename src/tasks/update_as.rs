@@ -19,7 +19,7 @@ use vulkano_taskgraph::{
 };
 
 use crate::{
-    app::{App, RenderContext},
+    app::{App, AsyncRenderContext},
     utils,
 };
 
@@ -83,7 +83,7 @@ impl UpdateAccelerationStructureTask {
 }
 
 impl Task for UpdateAccelerationStructureTask {
-    type World = RenderContext;
+    type World = AsyncRenderContext;
 
     unsafe fn execute(
         &self,
