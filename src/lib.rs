@@ -1,9 +1,9 @@
 pub mod app;
 mod async_tlas;
 mod physics;
-mod player_controller;
+mod player;
 mod rt;
+mod schedule;
 mod tasks;
-mod timer;
 mod utils;
 mod world;

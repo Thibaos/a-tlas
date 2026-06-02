@@ -49,10 +49,10 @@ use winit::{
 use crate::{
     async_tlas::run_worker,
     physics::PhysicsController,
-    player_controller::PlayerController,
+    player::PlayerController,
     rt::raygen,
+    schedule::ScheduleController,
     tasks::{render::RayTracingRenderTask, update_as::UpdateAccelerationStructureTask},
-    timer::ScheduleController,
     world::{Vertex3DColor, chunk::Chunks, voxel::open_file},
 };
 
