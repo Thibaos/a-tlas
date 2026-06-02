@@ -1,7 +1,7 @@
 use glam::{Mat4, vec3};
 use std::{
     f32::consts::PI,
-    sync::Arc,
+    sync::{Arc, atomic::AtomicBool},
     time::{Duration, Instant},
 };
 use vulkano::{
@@ -57,6 +57,7 @@ pub const MAX_FRAMES_IN_FLIGHT: u32 = 2;
 pub const MIN_SWAPCHAIN_IMAGES: u32 = MAX_FRAMES_IN_FLIGHT + 1;
 pub const TICKS_PER_SECOND: u32 = 1;
 pub const MAX_DEBUG_LINES: u32 = 4096;
+pub const MAX_INSTANCE_COUNT: u64 = 2u64.pow(20);
 
 pub struct App {
     close_requested: bool,
@@ -79,7 +80,6 @@ pub struct App {
     delta_time: Duration,
     focused: bool,
 
-    pub max_instance_count: u64,
     pub voxel_data: dot_vox::DotVoxData,
     world: Chunks,
 
@@ -98,6 +98,8 @@ pub struct RenderContext {
     pub rt_camera_data: raygen::Camera,
     pub rt_sunlight_data: raygen::Sunlight,
     pub tlas: Arc<AccelerationStructure>,
+    pub acceleration_structures: [Arc<AccelerationStructure>; 2],
+    pub current_as_index: Arc<AtomicBool>,
     pub tlas_update_requested: bool,
     #[cfg(debug_assertions)]
     pub debug_constant_data: debug::shader::vert::PushConstants,
@@ -243,16 +245,6 @@ impl App {
         let graphics_flight_id = resources.create_flight(MAX_FRAMES_IN_FLIGHT).unwrap();
         let compute_flight_id = resources.create_flight(1).unwrap();
 
-        // let max_instance_count = device
-        //     .physical_device()
-        //     .properties()
-        //     .max_instance_count
-        //     .expect("Max instance count not found");
-
-        let max_instance_count = 16384;
-
-        dbg!(max_instance_count);
-
         let voxel_data = open_file("assets/castle.vox");
         let world = Chunks::new(&voxel_data);
 
@@ -280,7 +272,6 @@ impl App {
             player_controller: PlayerController::default(),
             physics_controller: PhysicsController::new(),
 
-            max_instance_count,
             voxel_data,
             world,
 
@@ -437,17 +428,18 @@ impl ApplicationHandler for App {
 
         let virtual_swapchain_id = task_graph.add_swapchain(&SwapchainCreateInfo::default());
 
-        let rt_pass =
-            RayTracingRenderTask::new(self, virtual_swapchain_id, self.max_instance_count);
+        let rt_pass = RayTracingRenderTask::new(self, virtual_swapchain_id, MAX_INSTANCE_COUNT);
 
         let update_as_task = UpdateAccelerationStructureTask::new(
             self,
-            self.max_instance_count as u32,
+            MAX_INSTANCE_COUNT as u32,
             rt_pass.instance_buffer_id,
             rt_pass.blas.device_address().into(),
         );
 
-        let tlas = rt_pass.acceleration_structures[0].clone();
+        let acceleration_structures = rt_pass.acceleration_structures.clone();
+        let current_as_index = rt_pass.current_as_index.clone();
+        let tlas = acceleration_structures[0].clone();
 
         let instance_buffer_id = update_as_task.instance_buffer_id;
         let scratch_buffer_id = update_as_task.scratch_buffer_id;
@@ -590,6 +582,8 @@ impl ApplicationHandler for App {
             rt_camera_data,
             rt_sunlight_data,
             tlas,
+            acceleration_structures,
+            current_as_index,
             tlas_update_requested: false,
             #[cfg(debug_assertions)]
             debug_constant_data,
@@ -729,9 +723,10 @@ impl ApplicationHandler for App {
             WindowEvent::KeyboardInput { event, .. } => {
                 if event.state == ElementState::Pressed
                     && let Some(txt) = event.logical_key.to_text()
-                        && txt == "r" {
-                            self.rcx.as_mut().unwrap().tlas_update_requested = true;
-                        }
+                    && txt == "r"
+                {
+                    self.rcx.as_mut().unwrap().tlas_update_requested = true;
+                }
                 self.player_controller.handle_keyboard_event(event)
             }
             _ => {}

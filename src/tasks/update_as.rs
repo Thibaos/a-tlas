@@ -1,3 +1,5 @@
+use std::sync::atomic::Ordering;
+
 use vulkano::{
     DeviceSize, Packed24_8,
     acceleration_structure::{
@@ -109,17 +111,13 @@ impl Task for UpdateAccelerationStructureTask {
         )?;
 
         for instance in write_instance_buffer.iter_mut() {
-            let radius = self.instance_count.ilog2().pow(3) as f32;
+            let radius = self.instance_count.ilog2().pow(2) as f32;
             let (x, y, z) = utils::sample_uniform_sphere(radius);
 
             *instance = AccelerationStructureInstance {
                 acceleration_structure_reference: self.blas_reference,
                 instance_custom_index_and_mask: Packed24_8::new(1, 0xFF),
-                transform: [
-                    [1.0, 0.0, 0.0, x as f32],
-                    [0.0, 1.0, 0.0, y as f32],
-                    [0.0, 0.0, 1.0, z as f32],
-                ],
+                transform: [[1.0, 0.0, 0.0, x], [0.0, 1.0, 0.0, y], [0.0, 0.0, 1.0, z]],
                 ..Default::default()
             };
         }
@@ -147,10 +145,15 @@ impl Task for UpdateAccelerationStructureTask {
         let scratch_buffer =
             Subbuffer::new(tcx.buffer(self.scratch_buffer_id).unwrap().buffer().clone());
 
-        build_geometry_info.mode = BuildAccelerationStructureMode::Update(rcx.tlas.clone());
+        // Build a fresh TLAS into the back buffer (the one NOT currently rendered),
+        // then flip the index so the render task uses the new one.
+        let back_index = usize::from(!rcx.current_as_index.load(Ordering::Relaxed));
+        let dst = rcx.acceleration_structures[back_index].clone();
+
+        build_geometry_info.mode = BuildAccelerationStructureMode::Build;
         build_geometry_info.flags = BuildAccelerationStructureFlags::PREFER_FAST_TRACE
             | BuildAccelerationStructureFlags::ALLOW_UPDATE;
-        build_geometry_info.dst_acceleration_structure = Some(rcx.tlas.clone());
+        build_geometry_info.dst_acceleration_structure = Some(dst);
         build_geometry_info.scratch_data = Some(scratch_buffer);
 
         unsafe {
@@ -185,6 +188,12 @@ impl Task for UpdateAccelerationStructureTask {
                 ..Default::default()
             })
         }?;
+
+        // Flip the index so the render task traces against the freshly-built TLAS.
+        rcx.current_as_index.store(
+            !rcx.current_as_index.load(Ordering::Relaxed),
+            Ordering::Relaxed,
+        );
 
         Ok(())
     }

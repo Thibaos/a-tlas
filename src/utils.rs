@@ -1,14 +1,11 @@
-use glam::Vec3;
-
 pub fn sample_uniform_sphere(radius: f32) -> (f32, f32, f32) {
-    let sample = Vec3::new(
-        rand::random_range(-1.0..=1.0),
-        rand::random_range(-1.0..=1.0),
-        rand::random_range(-1.0..=1.0),
-    )
-    .normalize()
-        * rand::random_range(0.0..=1.0)
-        * radius;
+    let theta = rand::random_range(0.0..=2.0 * std::f32::consts::PI);
+    let phi = (rand::random_range::<f32, _>(0.0..=1.0) * 2.0 - 1.0).acos();
+    let r = rand::random_range::<f32, _>(0.0..=1.0).powf(1.0 / 3.0) * radius;
 
-    (sample.x.floor(), sample.y.floor(), sample.z.floor())
+    let x = r * phi.sin() * theta.cos();
+    let y = r * phi.sin() * theta.sin();
+    let z = r * phi.cos();
+
+    (x.floor(), y.floor(), z.floor())
 }
