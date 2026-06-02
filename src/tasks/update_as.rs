@@ -18,7 +18,7 @@ use vulkano_taskgraph::{
     command_buffer::{DependencyInfo, MemoryBarrier, RecordingCommandBuffer},
 };
 
-use crate::app::{App, AsyncRenderContext, MAX_INSTANCE_COUNT};
+use crate::app::{App, AsyncRenderContext};
 
 const AS_SIZE: DeviceSize = size_of::<AccelerationStructureInstance>() as DeviceSize;
 
@@ -93,9 +93,12 @@ impl Task for UpdateAccelerationStructureTask {
             0..(self.instance_count as u64 * AS_SIZE),
         );
 
-        let new_instances =
-            rcx.world
-                .to_instances(0, &rcx.position, self.blas_reference, MAX_INSTANCE_COUNT);
+        let new_instances = rcx.world.to_instances(
+            0,
+            &rcx.position,
+            self.blas_reference,
+            self.instance_count as u64,
+        );
 
         write_instance_buffer
             .iter_mut()

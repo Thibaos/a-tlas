@@ -4,5 +4,6 @@ mod physics;
 mod player_controller;
 mod rt;
 mod tasks;
+mod timer;
 mod utils;
 mod world;

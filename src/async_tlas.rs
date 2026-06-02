@@ -71,6 +71,8 @@ pub fn run_worker(
         let mut last_frame = 0;
 
         while let Ok(position) = channel.recv() {
+            let now = std::time::Instant::now();
+
             worker_available.store(false, Ordering::Release);
 
             let graphics_flight = resources.flight(graphics_flight_id);
@@ -106,6 +108,8 @@ pub fn run_worker(
             current_as_index.store(back_index, Ordering::Release);
 
             worker_available.store(true, Ordering::Release);
+
+            println!("async tlas update took: {:.2}ms", now.elapsed().as_millis())
         }
     });
 }

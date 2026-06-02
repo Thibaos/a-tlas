@@ -6,7 +6,7 @@ use std::{
         atomic::{AtomicBool, Ordering},
         mpsc,
     },
-    time::{Duration, Instant},
+    time::Duration,
 };
 use vulkano::{
     VulkanError, VulkanLibrary,
@@ -52,6 +52,7 @@ use crate::{
     player_controller::PlayerController,
     rt::raygen,
     tasks::{render::RayTracingRenderTask, update_as::UpdateAccelerationStructureTask},
+    timer::ScheduleController,
     world::{Vertex3DColor, chunk::Chunks, voxel::open_file},
 };
 
@@ -62,7 +63,7 @@ pub const MAX_FRAMES_IN_FLIGHT: u32 = 2;
 pub const MIN_SWAPCHAIN_IMAGES: u32 = MAX_FRAMES_IN_FLIGHT + 1;
 pub const TICKS_PER_SECOND: u32 = 1;
 pub const MAX_DEBUG_LINES: u32 = 4096;
-pub const MAX_INSTANCE_COUNT: u64 = 2u64.pow(20);
+// pub const MAX_INSTANCE_COUNT: u64 = 2u64.pow(22);
 
 pub struct App {
     close_requested: bool,
@@ -80,8 +81,6 @@ pub struct App {
     pub graphics_flight_id: Id<Flight>,
     pub compute_flight_id: Id<Flight>,
 
-    last_frame_update: Instant,
-    next_log_update: Instant,
     delta_time: Duration,
     focused: bool,
 
@@ -90,8 +89,10 @@ pub struct App {
 
     player_controller: PlayerController,
     physics_controller: PhysicsController,
+    schedule_controller: ScheduleController,
 
     worker_available: Arc<AtomicBool>,
+    async_sender: Option<mpsc::Sender<IVec3>>,
 
     rcx: Option<RenderContext>,
 }
@@ -115,8 +116,6 @@ pub struct RenderContext {
     pub viewport: Viewport,
     recreate_swapchain: bool,
     task_graph: ExecutableTaskGraph<Self>,
-
-    channel: mpsc::Sender<IVec3>,
 }
 
 pub struct AsyncRenderContext {
@@ -263,6 +262,10 @@ impl App {
         let voxel_data = open_file("assets/castle.vox");
         let world = Arc::new(Chunks::new(&voxel_data));
 
+        let mut schedule_controller = ScheduleController::new();
+        schedule_controller.add_schedule("delta", None);
+        schedule_controller.add_schedule("log", Some(Duration::from_secs(1)));
+
         App {
             close_requested: false,
 
@@ -279,18 +282,18 @@ impl App {
             graphics_flight_id,
             compute_flight_id,
 
-            last_frame_update: Instant::now(),
-            next_log_update: Instant::now().checked_add(Duration::from_secs(1)).unwrap(),
             delta_time: Duration::ZERO,
             focused: false,
 
             player_controller: PlayerController::default(),
             physics_controller: PhysicsController::new(),
+            schedule_controller,
 
             voxel_data,
             world,
 
             worker_available: Arc::new(AtomicBool::new(true)),
+            async_sender: None,
 
             rcx: None,
         }
@@ -314,25 +317,21 @@ impl App {
         }
     }
 
-    fn update_log_instant(&mut self) {
-        let now = Instant::now();
-        if !now.duration_since(self.next_log_update).is_zero() {
-            self.next_log_update = Instant::now().checked_add(Duration::from_secs(1)).unwrap();
+    fn update_delta_time(&mut self) {
+        self.delta_time = self
+            .schedule_controller
+            .check("delta")
+            .expect("Delta time calculation returned None!");
+    }
+
+    fn request_log(&mut self) {
+        if self.schedule_controller.check("log").is_some() {
+            println!("delta_time: {}", self.delta_time.as_secs_f32());
+            println!("{:.2} fps", 1.0 / self.delta_time.as_secs_f32());
         }
     }
 
-    pub fn update_delta_time(&mut self) {
-        let now = Instant::now();
-        let delta = now.duration_since(self.last_frame_update);
-        if !now.duration_since(self.next_log_update).is_zero() {
-            #[cfg(debug_assertions)]
-            println!("{:.2} fps", 1.0 / delta.as_secs_f32());
-        }
-        self.last_frame_update = now;
-        self.delta_time = delta;
-    }
-
-    pub fn update_camera(&mut self) {
+    fn update_camera(&mut self) {
         let rcx = self.rcx.as_mut().unwrap();
 
         self.player_controller.fly_movement(self.delta_time);
@@ -372,6 +371,18 @@ impl App {
     #[cfg(debug_assertions)]
     pub fn update_debug_lines(&mut self) {
         self.rcx.as_mut().unwrap().debug_lines = self.world.debug_lines();
+    }
+
+    fn request_async_tlas_update(&mut self) {
+        if self.schedule_controller.check("tlas_update").is_some()
+            && self.worker_available.load(Ordering::Acquire)
+        {
+            self.async_sender
+                .as_mut()
+                .unwrap()
+                .send(self.player_controller.translation.as_ivec3())
+                .unwrap();
+        }
     }
 }
 
@@ -445,11 +456,21 @@ impl ApplicationHandler for App {
 
         let virtual_swapchain_id = task_graph.add_swapchain(&SwapchainCreateInfo::default());
 
-        let rt_pass = RayTracingRenderTask::new(self, virtual_swapchain_id, MAX_INSTANCE_COUNT);
+        let max_instance_count = self
+            .device
+            .physical_device()
+            .properties()
+            .max_instance_count
+            .unwrap()
+            / 512;
+
+        dbg!(max_instance_count);
+
+        let rt_pass = RayTracingRenderTask::new(self, virtual_swapchain_id, max_instance_count);
 
         let update_as_task = UpdateAccelerationStructureTask::new(
             self,
-            MAX_INSTANCE_COUNT as u32,
+            max_instance_count as u32,
             rt_pass.instance_buffer_id,
             rt_pass.blas.device_address().into(),
         );
@@ -459,10 +480,12 @@ impl ApplicationHandler for App {
 
         let instance_buffer_id = rt_pass.instance_buffer_id;
 
-        let (channel, receiver) = mpsc::channel();
+        let (async_sender, async_receiver) = mpsc::channel();
+
+        self.async_sender = Some(async_sender);
 
         run_worker(
-            receiver,
+            async_receiver,
             update_as_task,
             self.compute_queue.clone(),
             self.resources.clone(),
@@ -529,12 +552,9 @@ impl ApplicationHandler for App {
             .buffer_access(debug_vertex_buffer_id, AccessTypes::VERTEX_ATTRIBUTE_READ)
             .build();
 
-        // task_graph.add_host_buffer_access(instance_buffer_id, HostAccessType::Write);
-
         #[cfg(debug_assertions)]
         task_graph.add_host_buffer_access(debug_vertex_buffer_id, HostAccessType::Write);
 
-        // task_graph.add_edge(update_as_node_id, rt_node_id).unwrap();
         #[cfg(debug_assertions)]
         task_graph.add_edge(rt_node_id, debug_node_id).unwrap();
 
@@ -594,7 +614,6 @@ impl ApplicationHandler for App {
             virtual_swapchain_id,
             recreate_swapchain: false,
             task_graph,
-            // scene_params,
             rt_camera_data,
             rt_sunlight_data,
             acceleration_structures,
@@ -606,8 +625,6 @@ impl ApplicationHandler for App {
             #[cfg(debug_assertions)]
             viewport,
             swapchain_storage_image_ids,
-
-            channel,
         });
     }
 
@@ -638,7 +655,8 @@ impl ApplicationHandler for App {
                 self.update_delta_time();
                 self.update_camera();
                 self.physics_controller.request_update();
-                self.update_log_instant();
+                self.request_log();
+                self.request_async_tlas_update();
 
                 {
                     let rcx = self.rcx.as_mut().unwrap();
@@ -724,18 +742,6 @@ impl ApplicationHandler for App {
                 ..
             } => self.player_controller.handle_speed_change(y),
             WindowEvent::KeyboardInput { event, .. } => {
-                if event.state == ElementState::Pressed
-                    && let Some(txt) = event.logical_key.to_text()
-                    && txt == "r"
-                    && self.worker_available.load(Ordering::Acquire)
-                {
-                    self.rcx
-                        .as_mut()
-                        .unwrap()
-                        .channel
-                        .send(self.player_controller.translation.as_ivec3())
-                        .unwrap();
-                }
                 self.player_controller.handle_keyboard_event(event)
             }
             _ => {}
