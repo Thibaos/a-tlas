@@ -1,3 +1,5 @@
+#![allow(unused)]
+
 pub fn sample_uniform_sphere(radius: f32) -> (f32, f32, f32) {
     let theta = rand::random_range(0.0..=2.0 * std::f32::consts::PI);
     let phi = (rand::random_range::<f32, _>(0.0..=1.0) * 2.0 - 1.0).acos();

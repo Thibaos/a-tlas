@@ -5,7 +5,7 @@ use std::{
         mpsc,
     },
     thread,
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 use glam::IVec3;

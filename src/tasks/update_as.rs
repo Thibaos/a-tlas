@@ -1,7 +1,7 @@
 use std::sync::atomic::Ordering;
 
 use vulkano::{
-    DeviceSize, Packed24_8,
+    DeviceSize,
     acceleration_structure::{
         AccelerationStructureBuildGeometryInfo, AccelerationStructureBuildRangeInfo,
         AccelerationStructureBuildType, AccelerationStructureGeometries,
@@ -18,10 +18,7 @@ use vulkano_taskgraph::{
     command_buffer::{DependencyInfo, MemoryBarrier, RecordingCommandBuffer},
 };
 
-use crate::{
-    app::{App, AsyncRenderContext, MAX_INSTANCE_COUNT},
-    utils,
-};
+use crate::app::{App, AsyncRenderContext, MAX_INSTANCE_COUNT};
 
 const AS_SIZE: DeviceSize = size_of::<AccelerationStructureInstance>() as DeviceSize;
 
