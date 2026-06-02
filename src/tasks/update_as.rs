@@ -66,8 +66,6 @@ impl UpdateAccelerationStructureTask {
             )
             .unwrap();
 
-        // `mode` is ignored by vulkano's size query, so the driver computes for Build mode.
-        // `build_scratch_size` is a safe upper bound for any update operation.
         let scratch_size = build_sizes_info.build_scratch_size;
 
         let scratch_buffer_id = app
@@ -122,9 +120,6 @@ impl Task for UpdateAccelerationStructureTask {
             };
         }
 
-        // Make the instance buffer write (TRANSFER) visible to the AS build's
-        // internal read of the instance buffer (SHADER_READ in AS_BUILD stage),
-        // as well as making the previous frame's AS writes visible to this update.
         let pre_memory_barrier = MemoryBarrier {
             src_access: AccessFlags::ACCELERATION_STRUCTURE_WRITE
                 | AccessFlags::TRANSFER_WRITE
@@ -145,8 +140,6 @@ impl Task for UpdateAccelerationStructureTask {
         let scratch_buffer =
             Subbuffer::new(tcx.buffer(self.scratch_buffer_id).unwrap().buffer().clone());
 
-        // Build a fresh TLAS into the back buffer (the one NOT currently rendered),
-        // then flip the index so the render task uses the new one.
         let back_index = usize::from(!rcx.current_as_index.load(Ordering::Relaxed));
         let dst = rcx.acceleration_structures[back_index].clone();
 
@@ -189,7 +182,6 @@ impl Task for UpdateAccelerationStructureTask {
             })
         }?;
 
-        // Flip the index so the render task traces against the freshly-built TLAS.
         rcx.current_as_index.store(
             !rcx.current_as_index.load(Ordering::Relaxed),
             Ordering::Relaxed,
