@@ -16,7 +16,10 @@ use vulkano_taskgraph::{
     command_buffer::{DependencyInfo, MemoryBarrier, RecordingCommandBuffer},
 };
 
-use crate::app::{App, RenderContext};
+use crate::{
+    app::{App, RenderContext},
+    utils,
+};
 
 const AS_SIZE: DeviceSize = size_of::<AccelerationStructureInstance>() as DeviceSize;
 
@@ -106,10 +109,8 @@ impl Task for UpdateAccelerationStructureTask {
         )?;
 
         for instance in write_instance_buffer.iter_mut() {
-            let range: i32 = self.instance_count.ilog2() as i32;
-            let x = rand::random_range(-range..=range);
-            let y = rand::random_range(-range..=range);
-            let z = rand::random_range(-range..=range);
+            let radius = self.instance_count.ilog2().pow(3) as f32;
+            let (x, y, z) = utils::sample_uniform_sphere(radius);
 
             *instance = AccelerationStructureInstance {
                 acceleration_structure_reference: self.blas_reference,
