@@ -27,6 +27,7 @@ use crate::{
 pub mod shader {
     pub(crate) mod vert {
         vulkano_shaders::shader! {
+            root_path_env: "CARGO_MANIFEST_DIR",
             ty: "vertex",
             path: "shaders/debug/lines/vert.glsl",
             vulkan_version: "1.3"
@@ -35,6 +36,7 @@ pub mod shader {
 
     pub(crate) mod frag {
         vulkano_shaders::shader! {
+            root_path_env: "CARGO_MANIFEST_DIR",
             ty: "fragment",
             path: "shaders/debug/lines/frag.glsl",
             vulkan_version: "1.3"
@@ -45,14 +47,18 @@ pub mod shader {
 pub fn create_debug_pipeline(app: &App, node: &TaskNode<RenderContext>) -> Arc<GraphicsPipeline> {
     let subpass = node.subpass().unwrap().clone();
 
-    let vertex = shader::vert::load(&app.device)
-        .unwrap()
-        .entry_point("main")
-        .unwrap();
-    let fragment = shader::frag::load(&app.device)
-        .unwrap()
-        .entry_point("main")
-        .unwrap();
+    let vertex = unsafe {
+        shader::vert::load(&app.device)
+            .unwrap()
+            .entry_point("main")
+            .unwrap()
+    };
+    let fragment = unsafe {
+        shader::frag::load(&app.device)
+            .unwrap()
+            .entry_point("main")
+            .unwrap()
+    };
 
     let stages = [
         PipelineShaderStageCreateInfo::new(&vertex),
@@ -126,14 +132,14 @@ impl Task for DrawDebugTask {
         tcx.write_buffer::<[Vertex3DColor]>(
             self.vertex_buffer_id,
             0u64..(debug_lines_count as u64 * size_of::<Vertex3DColor>() as u64),
-        )?
+        )
         .copy_from_slice(&rcx.debug_lines);
 
-        unsafe { cbf.set_viewport(0, slice::from_ref(&rcx.viewport)) }?;
-        unsafe { cbf.bind_pipeline_graphics(pipeline) }?;
-        unsafe { cbf.bind_vertex_buffers(0, &[self.vertex_buffer_id], &[0], &[], &[]) }?;
-        unsafe { cbf.push_constants(pipeline.layout(), 0, &push_constants) }?;
-        unsafe { cbf.draw(debug_lines_count, 1, 0, 0) }?;
+        unsafe { cbf.set_viewport(0, slice::from_ref(&rcx.viewport)) };
+        unsafe { cbf.bind_pipeline_graphics(pipeline) };
+        unsafe { cbf.bind_vertex_buffers(0, &[self.vertex_buffer_id], &[0], &[], &[]) };
+        unsafe { cbf.push_constants(pipeline.layout(), 0, &push_constants) };
+        unsafe { cbf.draw(debug_lines_count, 1, 0, 0) };
 
         Ok(())
     }

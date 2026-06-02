@@ -40,14 +40,9 @@ impl UpdateAccelerationStructureTask {
         instance_buffer_id: Id<Buffer>,
         blas_reference: u64,
     ) -> Self {
-        let instance_buffer = Subbuffer::new(
-            app.resources
-                .buffer(instance_buffer_id)
-                .unwrap()
-                .buffer()
-                .clone(),
-        )
-        .cast_aligned::<AccelerationStructureInstance>();
+        let instance_buffer =
+            Subbuffer::new(app.resources.buffer(instance_buffer_id).buffer().clone())
+                .cast_aligned::<AccelerationStructureInstance>();
 
         let geometry_instances_data = AccelerationStructureGeometryInstancesData::new(
             AccelerationStructureGeometryInstancesDataType::Values(Some(instance_buffer.clone())),
@@ -57,14 +52,11 @@ impl UpdateAccelerationStructureTask {
 
         let build_geometry_info = AccelerationStructureBuildGeometryInfo::new(geometries.clone());
 
-        let build_sizes_info = app
-            .device
-            .acceleration_structure_build_sizes(
-                AccelerationStructureBuildType::Device,
-                &build_geometry_info,
-                &[instance_count],
-            )
-            .unwrap();
+        let build_sizes_info = app.device.acceleration_structure_build_sizes(
+            AccelerationStructureBuildType::Device,
+            &build_geometry_info,
+            &[instance_count],
+        );
 
         let scratch_size = build_sizes_info.build_scratch_size;
 
@@ -106,7 +98,7 @@ impl Task for UpdateAccelerationStructureTask {
         let write_instance_buffer = tcx.write_buffer::<[AccelerationStructureInstance]>(
             self.instance_buffer_id,
             0..(self.instance_count as u64 * AS_SIZE),
-        )?;
+        );
 
         for instance in write_instance_buffer.iter_mut() {
             let radius = self.instance_count.ilog2().pow(2) as f32;
@@ -137,8 +129,7 @@ impl Task for UpdateAccelerationStructureTask {
         let mut build_geometry_info =
             AccelerationStructureBuildGeometryInfo::new(self.geometries.clone());
 
-        let scratch_buffer =
-            Subbuffer::new(tcx.buffer(self.scratch_buffer_id).unwrap().buffer().clone());
+        let scratch_buffer = Subbuffer::new(tcx.buffer(self.scratch_buffer_id).buffer().clone());
 
         let back_index = usize::from(!rcx.current_as_index.load(Ordering::Relaxed));
         let dst = rcx.acceleration_structures[back_index].clone();
@@ -154,7 +145,7 @@ impl Task for UpdateAccelerationStructureTask {
                 memory_barriers: &[pre_memory_barrier],
                 ..Default::default()
             })
-        }?;
+        };
 
         unsafe {
             cbf.as_raw().build_acceleration_structure(
@@ -164,7 +155,7 @@ impl Task for UpdateAccelerationStructureTask {
                     ..Default::default()
                 }],
             )
-        }?;
+        };
 
         let post_memory_barrier = MemoryBarrier {
             src_access: AccessFlags::ACCELERATION_STRUCTURE_WRITE,
@@ -180,7 +171,7 @@ impl Task for UpdateAccelerationStructureTask {
                 memory_barriers: &[post_memory_barrier],
                 ..Default::default()
             })
-        }?;
+        };
 
         rcx.current_as_index.store(
             !rcx.current_as_index.load(Ordering::Relaxed),

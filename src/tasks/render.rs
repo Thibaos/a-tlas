@@ -119,14 +119,9 @@ impl RayTracingRenderTask {
             )
             .unwrap();
 
-        let instance_buffer = Subbuffer::new(
-            app.resources
-                .buffer(instance_buffer_id)
-                .expect("Instance buffer not found")
-                .buffer()
-                .clone(),
-        )
-        .cast_aligned::<AccelerationStructureInstance>();
+        let instance_buffer =
+            Subbuffer::new(app.resources.buffer(instance_buffer_id).buffer().clone())
+                .cast_aligned::<AccelerationStructureInstance>();
 
         let palette = get_palette(&app.voxel_data).map(|color| [color.x, color.y, color.z, 1.0]);
 
@@ -152,10 +147,10 @@ impl RayTracingRenderTask {
                 &app.resources,
                 app.graphics_flight_id,
                 |_cbf, tcx| {
-                    *tcx.write_buffer(palette_buffer_id, ..)? = raygen::Palette { colors: palette };
+                    *tcx.write_buffer(palette_buffer_id, ..) = raygen::Palette { colors: palette };
 
-                    let write_instance_buffer = tcx
-                        .write_buffer::<[AccelerationStructureInstance]>(instance_buffer_id, ..)?;
+                    let write_instance_buffer =
+                        tcx.write_buffer::<[AccelerationStructureInstance]>(instance_buffer_id, ..);
 
                     for (dst, src) in write_instance_buffer.iter_mut().zip(render_instances) {
                         *dst = src;
@@ -175,7 +170,6 @@ impl RayTracingRenderTask {
 
         app.resources
             .flight(app.graphics_flight_id)
-            .unwrap()
             .wait_idle()
             .unwrap();
 
@@ -203,22 +197,30 @@ impl RayTracingRenderTask {
         let bcx = app.resources.bindless_context().unwrap();
 
         let pipeline = {
-            let raygen = raygen::load(&app.device)
-                .unwrap()
-                .entry_point("main")
-                .unwrap();
-            let miss = miss::load(&app.device)
-                .unwrap()
-                .entry_point("main")
-                .unwrap();
-            let intersection = intersection::load(&app.device)
-                .unwrap()
-                .entry_point("main")
-                .unwrap();
-            let closest_hit = closest_hit::load(&app.device)
-                .unwrap()
-                .entry_point("main")
-                .unwrap();
+            let raygen = unsafe {
+                raygen::load(&app.device)
+                    .unwrap()
+                    .entry_point("main")
+                    .unwrap()
+            };
+            let miss = unsafe {
+                miss::load(&app.device)
+                    .unwrap()
+                    .entry_point("main")
+                    .unwrap()
+            };
+            let intersection = unsafe {
+                intersection::load(&app.device)
+                    .unwrap()
+                    .entry_point("main")
+                    .unwrap()
+            };
+            let closest_hit = unsafe {
+                closest_hit::load(&app.device)
+                    .unwrap()
+                    .entry_point("main")
+                    .unwrap()
+            };
 
             let stages = [
                 PipelineShaderStageCreateInfo::new(&raygen),
@@ -301,7 +303,7 @@ impl RayTracingRenderTask {
             .create_storage_buffer(
                 camera_buffer_id,
                 0,
-                size_of::<raygen::Camera>() as DeviceSize,
+                Some(size_of::<raygen::Camera>() as DeviceSize),
             )
             .unwrap();
 
@@ -310,7 +312,7 @@ impl RayTracingRenderTask {
             .create_storage_buffer(
                 palette_buffer_id,
                 0,
-                size_of::<raygen::Palette>() as DeviceSize,
+                Some(size_of::<raygen::Palette>() as DeviceSize),
             )
             .unwrap();
 
@@ -319,7 +321,7 @@ impl RayTracingRenderTask {
             .create_storage_buffer(
                 sunlight_buffer_id,
                 0,
-                size_of::<raygen::Sunlight>() as DeviceSize,
+                Some(size_of::<raygen::Sunlight>() as DeviceSize),
             )
             .unwrap();
 
@@ -351,12 +353,12 @@ impl Task for RayTracingRenderTask {
         tcx: &mut TaskContext<'_>,
         rcx: &Self::World,
     ) -> TaskResult {
-        let swapchain_state = tcx.swapchain(self.swapchain_id)?;
+        let swapchain_state = tcx.swapchain(self.swapchain_id);
         let image_index = swapchain_state.current_image_index().unwrap();
         let extent = swapchain_state.images()[0].extent();
 
-        unsafe { cbf.update_buffer(self.camera_buffer_id, 0, &rcx.rt_camera_data) }?;
-        unsafe { cbf.update_buffer(self.sunlight_buffer_id, 0, &rcx.rt_sunlight_data) }?;
+        unsafe { cbf.update_buffer(self.camera_buffer_id, 0, &rcx.rt_camera_data) };
+        unsafe { cbf.update_buffer(self.sunlight_buffer_id, 0, &rcx.rt_sunlight_data) };
 
         let front_index = self.current_as_index.load(Ordering::Relaxed);
 
@@ -379,13 +381,13 @@ impl Task for RayTracingRenderTask {
                     sunlight_buffer_id: self.sunlight_storage_buffer_id,
                 },
             )
-        }?;
+        };
 
         unsafe {
-            cbf.bind_pipeline_ray_tracing(&self.pipeline)?;
+            cbf.bind_pipeline_ray_tracing(&self.pipeline);
         }
 
-        unsafe { cbf.trace_rays(self.shader_binding_table.addresses(), extent) }?;
+        unsafe { cbf.trace_rays(self.shader_binding_table.addresses(), extent) };
 
         let dependency_info = DependencyInfo {
             memory_barriers: &[MemoryBarrier {
@@ -399,7 +401,7 @@ impl Task for RayTracingRenderTask {
             ..Default::default()
         };
 
-        unsafe { cbf.pipeline_barrier(&dependency_info) }?;
+        unsafe { cbf.pipeline_barrier(&dependency_info) };
 
         Ok(())
     }

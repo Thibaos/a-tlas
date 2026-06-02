@@ -54,13 +54,11 @@ pub fn build_acceleration_structure_common(
         ..AccelerationStructureBuildGeometryInfo::new(geometries)
     };
 
-    let as_build_sizes_info = device
-        .acceleration_structure_build_sizes(
-            AccelerationStructureBuildType::Device,
-            &as_build_geometry_info,
-            &[primitive_count],
-        )
-        .expect("acceleration_structure_build_sizes error");
+    let as_build_sizes_info = device.acceleration_structure_build_sizes(
+        AccelerationStructureBuildType::Device,
+        &as_build_geometry_info,
+        &[primitive_count],
+    );
 
     let scratch_buffer = Buffer::new_slice::<u8>(
         &memory_allocator,
@@ -106,8 +104,7 @@ pub fn build_acceleration_structure_common(
             flight_id,
             |cbf, _tcx| {
                 cbf.as_raw()
-                    .build_acceleration_structure(&as_build_geometry_info, &[as_build_range_info])
-                    .unwrap();
+                    .build_acceleration_structure(&as_build_geometry_info, &[as_build_range_info]);
 
                 Ok(())
             },
@@ -128,7 +125,7 @@ pub fn build_acceleration_structure_common(
         _ => {}
     }
 
-    resources.flight(flight_id).unwrap().wait_idle().unwrap();
+    resources.flight(flight_id).wait_idle().unwrap();
 
     let elapsed = now.elapsed();
     println!("{elapsed:.2?}");
