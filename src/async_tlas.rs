@@ -63,6 +63,7 @@ pub fn run_worker(
     acceleration_structures: [Arc<AccelerationStructure>; 2],
     current_as_index: Arc<AtomicBool>,
     world: Arc<Chunks>,
+    worker_available: Arc<AtomicBool>,
 ) {
     let task_graph = init_worker(update_as_task, queue, resources.clone(), compute_flight_id);
 
@@ -70,6 +71,8 @@ pub fn run_worker(
         let mut last_frame = 0;
 
         while let Ok(position) = channel.recv() {
+            worker_available.store(false, Ordering::Release);
+
             let graphics_flight = resources.flight(graphics_flight_id);
 
             while last_frame == graphics_flight.current_frame() {
@@ -101,6 +104,8 @@ pub fn run_worker(
             last_frame = graphics_flight.current_frame();
 
             current_as_index.store(back_index, Ordering::Release);
+
+            worker_available.store(true, Ordering::Release);
         }
     });
 }

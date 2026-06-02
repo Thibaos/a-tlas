@@ -1,7 +1,11 @@
 use glam::{IVec3, Mat4, vec3};
 use std::{
     f32::consts::PI,
-    sync::{Arc, atomic::AtomicBool, mpsc},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    },
     time::{Duration, Instant},
 };
 use vulkano::{
@@ -84,8 +88,10 @@ pub struct App {
     pub voxel_data: dot_vox::DotVoxData,
     pub world: Arc<Chunks>,
 
-    pub player_controller: PlayerController,
+    player_controller: PlayerController,
     physics_controller: PhysicsController,
+
+    worker_available: Arc<AtomicBool>,
 
     rcx: Option<RenderContext>,
 }
@@ -284,6 +290,8 @@ impl App {
             voxel_data,
             world,
 
+            worker_available: Arc::new(AtomicBool::new(true)),
+
             rcx: None,
         }
     }
@@ -463,6 +471,7 @@ impl ApplicationHandler for App {
             rt_pass.acceleration_structures.clone(),
             rt_pass.current_as_index.clone(),
             self.world.clone(),
+            self.worker_available.clone(),
         );
 
         let rt_node_id = task_graph
@@ -672,16 +681,6 @@ impl ApplicationHandler for App {
                         rcx.swapchain_storage_image_ids =
                             window_size_dependent_setup(&self.resources, rcx.swapchain_id);
 
-                        // let renderer = rcx
-                        //     .task_graph
-                        //     .task_node_mut(rcx.renderer_node_id)
-                        //     .unwrap()
-                        //     .task_mut()
-                        //     .downcast_mut::<RayTracingPass>()
-                        //     .unwrap();
-
-                        // renderer.swapchain_id = rcx.swapchain_id;
-
                         rcx.recreate_swapchain = false;
                     }
                 }
@@ -728,6 +727,7 @@ impl ApplicationHandler for App {
                 if event.state == ElementState::Pressed
                     && let Some(txt) = event.logical_key.to_text()
                     && txt == "r"
+                    && self.worker_available.load(Ordering::Acquire)
                 {
                     self.rcx
                         .as_mut()
