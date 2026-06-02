@@ -362,10 +362,6 @@ impl Task for RayTracingRenderTask {
 
         let front_index = self.current_as_index.load(Ordering::Relaxed);
 
-        // if self.show_current_index.load(Ordering::Relaxed) {
-        //     println!("Now rendering TLAS with index: {front_index}");
-        // }
-
         self.show_current_index.store(false, Ordering::Relaxed);
 
         unsafe {
