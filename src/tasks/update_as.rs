@@ -107,18 +107,6 @@ impl Task for UpdateAccelerationStructureTask {
                 *instance = new_instance;
             });
 
-        for instance in write_instance_buffer.iter_mut() {
-            let radius = self.instance_count.ilog2().pow(2) as f32;
-            let (x, y, z) = utils::sample_uniform_sphere(radius);
-
-            *instance = AccelerationStructureInstance {
-                acceleration_structure_reference: self.blas_reference,
-                instance_custom_index_and_mask: Packed24_8::new(1, 0xFF),
-                transform: [[1.0, 0.0, 0.0, x], [0.0, 1.0, 0.0, y], [0.0, 0.0, 1.0, z]],
-                ..Default::default()
-            };
-        }
-
         let pre_memory_barrier = MemoryBarrier {
             src_access: AccessFlags::ACCELERATION_STRUCTURE_WRITE
                 | AccessFlags::TRANSFER_WRITE
