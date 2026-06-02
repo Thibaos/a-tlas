@@ -1,7 +1,6 @@
 use crate::{
     app::{App, RenderContext},
     rt::{acceleration_structure, closest_hit, intersection, miss, raygen},
-    utils,
     world::voxel::{get_palette, triangles_from_box},
 };
 use glam::{IVec3, Vec3};
@@ -10,7 +9,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 use vulkano::{
-    DeviceSize, Packed24_8,
+    DeviceSize,
     acceleration_structure::{AccelerationStructure, AccelerationStructureInstance},
     buffer::{Buffer, BufferCreateInfo, BufferUsage, Subbuffer},
     memory::allocator::{AllocationCreateInfo, DeviceLayout, MemoryTypeFilter},
@@ -44,7 +43,6 @@ pub struct RayTracingRenderTask {
     pub blas: Arc<AccelerationStructure>,
     pub acceleration_structures: [Arc<AccelerationStructure>; 2],
     pub current_as_index: Arc<AtomicBool>,
-    pub show_current_index: Arc<AtomicBool>,
     pipeline: Arc<RayTracingPipeline>,
 }
 
@@ -321,7 +319,6 @@ impl RayTracingRenderTask {
             blas,
             acceleration_structures,
             current_as_index: Arc::new(AtomicBool::new(false)),
-            show_current_index: Arc::new(AtomicBool::new(true)),
             pipeline,
         }
     }
@@ -343,9 +340,7 @@ impl Task for RayTracingRenderTask {
         unsafe { cbf.update_buffer(self.camera_buffer_id, 0, &rcx.rt_camera_data) };
         unsafe { cbf.update_buffer(self.sunlight_buffer_id, 0, &rcx.rt_sunlight_data) };
 
-        let front_index = self.current_as_index.load(Ordering::Relaxed);
-
-        self.show_current_index.store(false, Ordering::Relaxed);
+        let front_index = self.current_as_index.load(Ordering::Acquire);
 
         unsafe {
             cbf.push_constants(

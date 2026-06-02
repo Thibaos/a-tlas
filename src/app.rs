@@ -1,4 +1,4 @@
-use glam::{Mat4, vec3};
+use glam::{IVec3, Mat4, vec3};
 use std::{
     f32::consts::PI,
     sync::{Arc, atomic::AtomicBool, mpsc},
@@ -82,9 +82,9 @@ pub struct App {
     focused: bool,
 
     pub voxel_data: dot_vox::DotVoxData,
-    pub world: Chunks,
+    pub world: Arc<Chunks>,
 
-    player_controller: PlayerController,
+    pub player_controller: PlayerController,
     physics_controller: PhysicsController,
 
     rcx: Option<RenderContext>,
@@ -101,7 +101,6 @@ pub struct RenderContext {
     // pub tlas: Arc<AccelerationStructure>,
     pub acceleration_structures: [Arc<AccelerationStructure>; 2],
     pub current_as_index: Arc<AtomicBool>,
-    pub tlas_update_requested: bool,
     #[cfg(debug_assertions)]
     pub debug_constant_data: debug::shader::vert::PushConstants,
     #[cfg(debug_assertions)]
@@ -111,13 +110,14 @@ pub struct RenderContext {
     recreate_swapchain: bool,
     task_graph: ExecutableTaskGraph<Self>,
 
-    channel: mpsc::Sender<()>,
+    channel: mpsc::Sender<IVec3>,
 }
 
 pub struct AsyncRenderContext {
     pub acceleration_structures: [Arc<AccelerationStructure>; 2],
     pub current_as_index: Arc<AtomicBool>,
-    pub tlas_update_requested: bool,
+    pub world: Arc<Chunks>,
+    pub position: glam::IVec3,
 }
 
 impl App {
@@ -255,7 +255,7 @@ impl App {
         let compute_flight_id = resources.create_flight(1).unwrap();
 
         let voxel_data = open_file("assets/castle.vox");
-        let world = Chunks::new(&voxel_data);
+        let world = Arc::new(Chunks::new(&voxel_data));
 
         App {
             close_requested: false,
@@ -462,7 +462,7 @@ impl ApplicationHandler for App {
             self.compute_flight_id,
             rt_pass.acceleration_structures.clone(),
             rt_pass.current_as_index.clone(),
-            rt_pass.show_current_index.clone(),
+            self.world.clone(),
         );
 
         let rt_node_id = task_graph
@@ -590,7 +590,6 @@ impl ApplicationHandler for App {
             rt_sunlight_data,
             acceleration_structures,
             current_as_index,
-            tlas_update_requested: false,
             #[cfg(debug_assertions)]
             debug_constant_data,
             #[cfg(debug_assertions)]
@@ -704,9 +703,7 @@ impl ApplicationHandler for App {
                 };
 
                 match execute_result {
-                    Ok(()) => {
-                        self.rcx.as_mut().unwrap().tlas_update_requested = false;
-                    }
+                    Ok(()) => {}
                     Err(ExecuteError::Swapchain {
                         error: VulkanError::OutOfDate,
                         ..
@@ -732,8 +729,12 @@ impl ApplicationHandler for App {
                     && let Some(txt) = event.logical_key.to_text()
                     && txt == "r"
                 {
-                    self.rcx.as_mut().unwrap().channel.send(()).unwrap();
-                    // self.rcx.as_mut().unwrap().tlas_update_requested = true;
+                    self.rcx
+                        .as_mut()
+                        .unwrap()
+                        .channel
+                        .send(self.player_controller.translation.as_ivec3())
+                        .unwrap();
                 }
                 self.player_controller.handle_keyboard_event(event)
             }

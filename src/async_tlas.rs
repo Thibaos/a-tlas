@@ -8,6 +8,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use glam::IVec3;
 use vulkano::{acceleration_structure::AccelerationStructure, device::Queue};
 use vulkano_taskgraph::{
     Id, QueueFamilyType,
@@ -16,7 +17,10 @@ use vulkano_taskgraph::{
     resource_map,
 };
 
-use crate::{app::AsyncRenderContext, tasks::update_as::UpdateAccelerationStructureTask};
+use crate::{
+    app::AsyncRenderContext, tasks::update_as::UpdateAccelerationStructureTask,
+    world::chunk::Chunks,
+};
 
 fn init_worker(
     update_as_task: UpdateAccelerationStructureTask,
@@ -50,7 +54,7 @@ fn init_worker(
 
 #[allow(clippy::too_many_arguments)]
 pub fn run_worker(
-    channel: mpsc::Receiver<()>,
+    channel: mpsc::Receiver<IVec3>,
     update_as_task: UpdateAccelerationStructureTask,
     queue: Arc<Queue>,
     resources: Arc<Resources>,
@@ -58,20 +62,14 @@ pub fn run_worker(
     compute_flight_id: Id<Flight>,
     acceleration_structures: [Arc<AccelerationStructure>; 2],
     current_as_index: Arc<AtomicBool>,
-    show_current_index: Arc<AtomicBool>,
+    world: Arc<Chunks>,
 ) {
     let task_graph = init_worker(update_as_task, queue, resources.clone(), compute_flight_id);
 
     thread::spawn(move || {
         let mut last_frame = 0;
 
-        dbg!("Worker running...");
-
-        while let Ok(()) = channel.recv() {
-            dbg!("Worker received signal");
-
-            let now = Instant::now();
-
+        while let Ok(position) = channel.recv() {
             let graphics_flight = resources.flight(graphics_flight_id);
 
             while last_frame == graphics_flight.current_frame() {
@@ -80,7 +78,7 @@ pub fn run_worker(
 
             graphics_flight.wait_for_frame(last_frame, None).unwrap();
 
-            let back_index = !current_as_index.load(Ordering::Relaxed);
+            let back_index = !current_as_index.load(Ordering::Acquire);
 
             let resource_map = resource_map!(&task_graph).unwrap();
 
@@ -90,7 +88,8 @@ pub fn run_worker(
                     &AsyncRenderContext {
                         acceleration_structures: acceleration_structures.clone(),
                         current_as_index: current_as_index.clone(),
-                        tlas_update_requested: true,
+                        world: world.clone(),
+                        position,
                     },
                     || {},
                 )
@@ -101,12 +100,7 @@ pub fn run_worker(
 
             last_frame = graphics_flight.current_frame();
 
-            current_as_index.store(back_index, Ordering::Relaxed);
-            show_current_index.store(true, Ordering::Relaxed);
-            println!(
-                "TLAS update took: {:.2}ms",
-                now.elapsed().as_micros() as f64 / 1000.
-            );
+            current_as_index.store(back_index, Ordering::Release);
         }
     });
 }

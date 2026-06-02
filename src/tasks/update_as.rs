@@ -19,7 +19,7 @@ use vulkano_taskgraph::{
 };
 
 use crate::{
-    app::{App, AsyncRenderContext},
+    app::{App, AsyncRenderContext, MAX_INSTANCE_COUNT},
     utils,
 };
 
@@ -91,14 +91,21 @@ impl Task for UpdateAccelerationStructureTask {
         tcx: &mut TaskContext<'_>,
         rcx: &Self::World,
     ) -> TaskResult {
-        if !rcx.tlas_update_requested {
-            return Ok(());
-        }
-
         let write_instance_buffer = tcx.write_buffer::<[AccelerationStructureInstance]>(
             self.instance_buffer_id,
             0..(self.instance_count as u64 * AS_SIZE),
         );
+
+        let new_instances =
+            rcx.world
+                .to_instances(0, &rcx.position, self.blas_reference, MAX_INSTANCE_COUNT);
+
+        write_instance_buffer
+            .iter_mut()
+            .zip(new_instances)
+            .for_each(|(instance, new_instance)| {
+                *instance = new_instance;
+            });
 
         for instance in write_instance_buffer.iter_mut() {
             let radius = self.instance_count.ilog2().pow(2) as f32;
@@ -131,7 +138,7 @@ impl Task for UpdateAccelerationStructureTask {
 
         let scratch_buffer = Subbuffer::new(tcx.buffer(self.scratch_buffer_id).buffer().clone());
 
-        let back_index = usize::from(!rcx.current_as_index.load(Ordering::Relaxed));
+        let back_index = usize::from(!rcx.current_as_index.load(Ordering::Acquire));
         let dst = rcx.acceleration_structures[back_index].clone();
 
         build_geometry_info.mode = BuildAccelerationStructureMode::Build;
@@ -172,11 +179,6 @@ impl Task for UpdateAccelerationStructureTask {
                 ..Default::default()
             })
         };
-
-        rcx.current_as_index.store(
-            !rcx.current_as_index.load(Ordering::Relaxed),
-            Ordering::Relaxed,
-        );
 
         Ok(())
     }
