@@ -63,7 +63,6 @@ pub const MAX_FRAMES_IN_FLIGHT: u32 = 2;
 pub const MIN_SWAPCHAIN_IMAGES: u32 = MAX_FRAMES_IN_FLIGHT + 1;
 pub const TICKS_PER_SECOND: u32 = 1;
 pub const MAX_DEBUG_LINES: u32 = 4096;
-// pub const MAX_INSTANCE_COUNT: u64 = 2u64.pow(22);
 
 pub struct App {
     close_requested: bool,
@@ -102,10 +101,8 @@ pub struct RenderContext {
     swapchain_id: Id<Swapchain>,
     virtual_swapchain_id: Id<Swapchain>,
     pub swapchain_storage_image_ids: Vec<StorageImageId>,
-    // scene_params: tree64::SceneParams,
     pub rt_camera_data: raygen::Camera,
     pub rt_sunlight_data: raygen::Sunlight,
-    // pub tlas: Arc<AccelerationStructure>,
     pub acceleration_structures: [Arc<AccelerationStructure>; 2],
     pub current_as_index: Arc<AtomicBool>,
     #[cfg(debug_assertions)]
@@ -265,6 +262,7 @@ impl App {
         let mut schedule_controller = ScheduleController::new();
         schedule_controller.add_schedule("delta", None);
         schedule_controller.add_schedule("log", Some(Duration::from_secs(1)));
+        schedule_controller.add_schedule("tlas_update", Some(Duration::from_secs(1)));
 
         App {
             close_requested: false,
@@ -326,7 +324,6 @@ impl App {
 
     fn request_log(&mut self) {
         if self.schedule_controller.check("log").is_some() {
-            println!("delta_time: {}", self.delta_time.as_secs_f32());
             println!("{:.2} fps", 1.0 / self.delta_time.as_secs_f32());
         }
     }

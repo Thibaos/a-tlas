@@ -1,4 +1,4 @@
-use std::{sync::Arc, time::Instant};
+use std::sync::Arc;
 
 use vulkano::{
     acceleration_structure::{
@@ -33,8 +33,6 @@ pub fn build_acceleration_structure_common(
     resources: &Arc<Resources>,
     flight_id: Id<Flight>,
 ) -> Arc<AccelerationStructure> {
-    let now = Instant::now();
-
     let flags = match ty {
         AccelerationStructureType::TopLevel => {
             BuildAccelerationStructureFlags::PREFER_FAST_TRACE
@@ -115,20 +113,7 @@ pub fn build_acceleration_structure_common(
         .unwrap()
     };
 
-    match ty {
-        AccelerationStructureType::TopLevel => {
-            print!("build tlas ");
-        }
-        AccelerationStructureType::BottomLevel => {
-            print!("build blas ");
-        }
-        _ => {}
-    }
-
     resources.flight(flight_id).wait_idle().unwrap();
-
-    let elapsed = now.elapsed();
-    println!("{elapsed:.2?}");
 
     acceleration
 }
