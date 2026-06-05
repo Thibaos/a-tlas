@@ -509,12 +509,37 @@ impl Chunks {
 
     pub fn to_instances(
         &self,
-        lod: u32,
         origin: &IVec3,
         acceleration_structure_reference: u64,
         max_instance_count: u64,
         frustum: Option<&Frustum>,
     ) -> Vec<AccelerationStructureInstance> {
+        /// Distance in chunk-grid units at which each LOD level applies.
+        const LOD_DISTANCE_THRESHOLDS: &[i32] = &[
+            2,  // lod 0: distance 0–2  (within ~128 world units)
+            4,  // lod 1: distance 3–4  (~128–256)
+            8,  // lod 2: distance 5–8  (~256–512)
+            16, // lod 3: distance 9–16 (~512–1024)
+        ];
+
+        const fn lod_for_distance(grid_distance: i32) -> u32 {
+            let mut lod = 0;
+            loop {
+                if lod > 3 {
+                    return u32::MAX;
+                }
+
+                let threshold = LOD_DISTANCE_THRESHOLDS[lod];
+                if grid_distance <= threshold {
+                    return lod as u32;
+                }
+
+                lod += 1;
+            }
+
+            u32::MAX
+        }
+
         let mut chunks: Vec<_> = self
             .active_chunks()
             .filter(|grid_pos| {
@@ -532,23 +557,44 @@ impl Chunks {
         chunks.sort_by(|a, b| {
             let distance_a = Chunks::distance_to_chunk(a, origin);
             let distance_b = Chunks::distance_to_chunk(b, origin);
-
             distance_a.cmp(&distance_b)
         });
 
-        chunks
-            .iter()
-            .map(|grid_position| (grid_position, self.inner.get(grid_position).unwrap()))
-            .flat_map(|(grid_position, chunk)| {
-                chunk.to_instances(
+        let mut instances = Vec::with_capacity(max_instance_count as usize);
+        let mut remaining = max_instance_count;
+
+        for grid_position in &chunks {
+            let grid_distance = Chunks::distance_to_chunk(grid_position, origin);
+            let mut lod = lod_for_distance(grid_distance);
+            if lod == u32::MAX {
+                break;
+            }
+
+            let chunk = self.inner.get(grid_position).unwrap();
+
+            loop {
+                let chunk_instances = chunk.to_instances(
                     lod,
                     **grid_position,
                     acceleration_structure_reference,
                     &self.inner,
-                )
-            })
-            .take(max_instance_count as usize)
-            .collect()
+                );
+                let count = chunk_instances.len() as u64;
+
+                if count <= remaining {
+                    instances.extend(chunk_instances);
+                    remaining -= count;
+                    break;
+                }
+
+                lod += 1;
+                if lod > 3 {
+                    return instances;
+                }
+            }
+        }
+
+        instances
     }
 
     pub fn set_chunk_visibility(&mut self, grid_position: IVec3, visible: bool) {

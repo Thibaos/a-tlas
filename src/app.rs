@@ -1,4 +1,3 @@
-use either::Either;
 use glam::{IVec3, Mat4, vec3};
 use std::{
     f32::consts::PI,
@@ -266,7 +265,7 @@ impl App {
         let mut schedule_controller = ScheduleController::new();
         schedule_controller.add_schedule_frames("delta", 1);
         schedule_controller.add_schedule_duration("log", Duration::from_secs(1));
-        schedule_controller.add_schedule_frames("tlas_update", 1000);
+        schedule_controller.add_schedule_frames("tlas_update", 10);
 
         App {
             close_requested: false,

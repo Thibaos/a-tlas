@@ -76,7 +76,6 @@ impl RayTracingRenderTask {
         );
 
         let render_instances: Vec<AccelerationStructureInstance> = app.world.to_instances(
-            0,
             &IVec3::ZERO,
             blas.device_address().into(),
             max_instance_count,

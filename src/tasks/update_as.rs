@@ -94,7 +94,6 @@ impl Task for UpdateAccelerationStructureTask {
         );
 
         let new_instances = rcx.world.to_instances(
-            0,
             &rcx.position,
             self.blas_reference,
             self.instance_count as u64,
