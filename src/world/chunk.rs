@@ -3,9 +3,9 @@ use std::{collections::HashMap, fmt::Display};
 
 use dot_vox::DotVoxData;
 use glam::{IVec3, UVec3, Vec4, Vec4Swizzles};
-use vulkano::{Packed24_8, acceleration_structure::AccelerationStructureInstance};
+use vulkano::{acceleration_structure::AccelerationStructureInstance, Packed24_8};
 
-use crate::world::{HostVoxel, loader::SceneGraphTraverser};
+use crate::world::{loader::SceneGraphTraverser, HostVoxel};
 
 #[cfg(debug_assertions)]
 use super::Vertex3DColor;
@@ -63,19 +63,83 @@ impl Chunk {
         self.voxels.contains_key(position)
     }
 
+    /// Returns true if at least one of the 6 face-neighbors is empty (air),
+    /// meaning this voxel has an exposed face and should be rendered.
+    pub fn is_surface_voxel(
+        &self,
+        local_position: &UVec3,
+        grid_position: IVec3,
+        world: &ChunksInner,
+    ) -> bool {
+        let cw = CHUNK_WIDTH as i32;
+        let local = IVec3::new(
+            local_position.x as i32,
+            local_position.y as i32,
+            local_position.z as i32,
+        );
+
+        let directions = [
+            IVec3::X,
+            IVec3::NEG_X,
+            IVec3::Y,
+            IVec3::NEG_Y,
+            IVec3::Z,
+            IVec3::NEG_Z,
+        ];
+
+        for dir in directions {
+            let neighbor_local = local + dir;
+
+            // Same chunk?
+            if neighbor_local.x >= 0
+                && neighbor_local.x < cw
+                && neighbor_local.y >= 0
+                && neighbor_local.y < cw
+                && neighbor_local.z >= 0
+                && neighbor_local.z < cw
+            {
+                let npos = UVec3::new(
+                    neighbor_local.x as u32,
+                    neighbor_local.y as u32,
+                    neighbor_local.z as u32,
+                );
+                if !self.voxels.contains_key(&npos) {
+                    return true;
+                }
+            } else {
+                // Cross chunk boundary
+                let global_neighbor = grid_position * cw + neighbor_local;
+                if Chunks::in_bounds(&global_neighbor) {
+                    let (neighbor_grid, neighbor_inner) =
+                        Chunks::translation_to_position(&global_neighbor);
+                    if let Some(neighbor_chunk) = world.get(&neighbor_grid)
+                        && !neighbor_chunk.contains(&neighbor_inner) {
+                            return true;
+                        }
+                } else {
+                    return true; // out of world bounds = exposed to void
+                }
+            }
+        }
+
+        false // all 6 neighbors solid -> buried
+    }
+
     pub fn to_instances(
         &self,
         lod: u32,
         grid_position: IVec3,
         acceleration_structure_reference: u64,
+        world: &ChunksInner,
     ) -> Vec<AccelerationStructureInstance> {
         let lod_exponent = 2u32.pow(lod);
-        let offset: f32 = (0..lod).map(|sublod| sublod as f32 / 2.0).sum();
+        let offset: f32 = (2.0_f32.powi(lod as i32) - 1.0) / 2.0;
 
         self.voxels
             .iter()
             .filter_map(|(local_position, voxel)| {
                 if self.voxels.contains_key(local_position)
+                    && self.is_surface_voxel(local_position, grid_position, world)
                     && local_position.x % lod_exponent == 0
                     && local_position.y % lod_exponent == 0
                     && local_position.z % lod_exponent == 0
@@ -313,7 +377,8 @@ impl Chunks {
     }
 
     fn distance_to_chunk(grid_position: &IVec3, position: &IVec3) -> i32 {
-        (position / CHUNK_WIDTH as i32)
+        position
+            .div_euclid(IVec3::splat(CHUNK_WIDTH as i32))
             .distance_squared(*grid_position)
             .isqrt()
     }
@@ -458,7 +523,7 @@ impl Chunks {
             .iter()
             .map(|grid_position| (grid_position, self.inner.get(grid_position).unwrap()))
             .flat_map(|(grid_position, chunk)| {
-                chunk.to_instances(lod, **grid_position, acceleration_structure_reference)
+                chunk.to_instances(lod, **grid_position, acceleration_structure_reference, &self.inner)
             })
             .take(max_instance_count as usize)
             .collect()
@@ -526,8 +591,8 @@ impl Display for Chunks {
 mod test {
     use glam::{IVec3, UVec3};
 
-    use super::{CHUNK_WIDTH, Chunk, Chunks};
-    use crate::world::{HostVoxel, chunk::WORLD_WIDTH};
+    use super::{Chunk, Chunks, CHUNK_WIDTH};
+    use crate::world::{chunk::WORLD_WIDTH, HostVoxel};
 
     #[test]
     fn chunk_insert() {
