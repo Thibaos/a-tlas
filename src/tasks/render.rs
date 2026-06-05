@@ -5,29 +5,29 @@ use crate::{
 };
 use glam::{IVec3, Vec3};
 use std::sync::{
-    Arc,
     atomic::{AtomicBool, Ordering},
+    Arc,
 };
 use vulkano::{
-    DeviceSize,
     acceleration_structure::{AccelerationStructure, AccelerationStructureInstance},
     buffer::{Buffer, BufferCreateInfo, BufferUsage, Subbuffer},
     memory::allocator::{AllocationCreateInfo, DeviceLayout, MemoryTypeFilter},
     pipeline::{
-        Pipeline, PipelineShaderStageCreateInfo,
         ray_tracing::{
             RayTracingPipeline, RayTracingPipelineCreateInfo, RayTracingShaderGroupCreateInfo,
             ShaderBindingTable,
         },
+        Pipeline, PipelineShaderStageCreateInfo,
     },
     swapchain::Swapchain,
     sync::{AccessFlags, PipelineStages},
+    DeviceSize,
 };
 use vulkano_taskgraph::{
-    Id, Task, TaskContext, TaskResult,
     command_buffer::{DependencyInfo, MemoryBarrier, RecordingCommandBuffer},
     descriptor_set::{AccelerationStructureId, StorageBufferId},
     resource::HostAccessType,
+    Id, Task, TaskContext, TaskResult,
 };
 
 pub struct RayTracingRenderTask {
@@ -80,6 +80,7 @@ impl RayTracingRenderTask {
             &IVec3::ZERO,
             blas.device_address().into(),
             max_instance_count,
+            None,
         );
 
         let instance_buffer_id = app

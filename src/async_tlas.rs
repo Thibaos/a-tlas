@@ -1,8 +1,7 @@
 use std::{
     sync::{
-        Arc,
         atomic::{AtomicBool, Ordering},
-        mpsc,
+        mpsc, Arc,
     },
     thread,
     time::Duration,
@@ -11,14 +10,13 @@ use std::{
 use glam::IVec3;
 use vulkano::{acceleration_structure::AccelerationStructure, device::Queue};
 use vulkano_taskgraph::{
-    Id, QueueFamilyType,
     graph::{CompileInfo, ExecutableTaskGraph, TaskGraph},
     resource::{AccessTypes, Flight, HostAccessType, Resources},
-    resource_map,
+    resource_map, Id, QueueFamilyType,
 };
 
 use crate::{
-    app::AsyncRenderContext, tasks::update_as::UpdateAccelerationStructureTask,
+    app::AsyncRenderContext, frustum::Frustum, tasks::update_as::UpdateAccelerationStructureTask,
     world::chunk::Chunks,
 };
 
@@ -54,7 +52,7 @@ fn init_worker(
 
 #[allow(clippy::too_many_arguments)]
 pub fn run_worker(
-    channel: mpsc::Receiver<IVec3>,
+    channel: mpsc::Receiver<(IVec3, Option<Frustum>)>,
     update_as_task: UpdateAccelerationStructureTask,
     queue: Arc<Queue>,
     resources: Arc<Resources>,
@@ -70,7 +68,7 @@ pub fn run_worker(
     thread::spawn(move || {
         let mut last_frame = 0;
 
-        while let Ok(position) = channel.recv() {
+        while let Ok((position, frustum)) = channel.recv() {
             worker_available.store(false, Ordering::Release);
 
             let graphics_flight = resources.flight(graphics_flight_id);
@@ -93,6 +91,7 @@ pub fn run_worker(
                         current_as_index: current_as_index.clone(),
                         world: world.clone(),
                         position,
+                        frustum,
                     },
                     || {},
                 )

@@ -1,3 +1,4 @@
+use either::Either;
 use glam::{IVec3, Mat4, vec3};
 use std::{
     f32::consts::PI,
@@ -48,6 +49,7 @@ use winit::{
 
 use crate::{
     async_tlas::run_worker,
+    frustum::Frustum,
     physics::PhysicsController,
     player::PlayerController,
     rt::raygen,
@@ -91,7 +93,7 @@ pub struct App {
     schedule_controller: ScheduleController,
 
     worker_available: Arc<AtomicBool>,
-    async_sender: Option<mpsc::Sender<IVec3>>,
+    async_sender: Option<mpsc::Sender<(IVec3, Option<Frustum>)>>,
 
     rcx: Option<RenderContext>,
 }
@@ -103,6 +105,7 @@ pub struct RenderContext {
     pub swapchain_storage_image_ids: Vec<StorageImageId>,
     pub rt_camera_data: raygen::Camera,
     pub rt_sunlight_data: raygen::Sunlight,
+    pub view_proj: Mat4,
     pub acceleration_structures: [Arc<AccelerationStructure>; 2],
     pub current_as_index: Arc<AtomicBool>,
     #[cfg(debug_assertions)]
@@ -120,6 +123,7 @@ pub struct AsyncRenderContext {
     pub current_as_index: Arc<AtomicBool>,
     pub world: Arc<Chunks>,
     pub position: glam::IVec3,
+    pub frustum: Option<Frustum>,
 }
 
 impl App {
@@ -256,13 +260,13 @@ impl App {
         let graphics_flight_id = resources.create_flight(MAX_FRAMES_IN_FLIGHT).unwrap();
         let compute_flight_id = resources.create_flight(1).unwrap();
 
-        let voxel_data = open_file("assets/nuke.vox");
+        let voxel_data = open_file("assets/castle.vox");
         let world = Arc::new(Chunks::new(&voxel_data));
 
         let mut schedule_controller = ScheduleController::new();
-        schedule_controller.add_schedule("delta", None);
-        schedule_controller.add_schedule("log", Some(Duration::from_secs(1)));
-        schedule_controller.add_schedule("tlas_update", Some(Duration::from_secs(1)));
+        schedule_controller.add_schedule_frames("delta", 1);
+        schedule_controller.add_schedule_duration("log", Duration::from_secs(1));
+        schedule_controller.add_schedule_frames("tlas_update", 10);
 
         App {
             close_requested: false,
@@ -343,6 +347,8 @@ impl App {
             10000.0,
         );
 
+        rcx.view_proj = proj * view;
+
         rcx.rt_camera_data = raygen::Camera {
             proj_inverse: proj.inverse().to_cols_array_2d(),
             view_inverse: view.inverse().to_cols_array_2d(),
@@ -374,10 +380,14 @@ impl App {
         if self.schedule_controller.check("tlas_update").is_some()
             && self.worker_available.load(Ordering::Acquire)
         {
+            let position = self.player_controller.translation.as_ivec3();
+            let frustum = Some(Frustum::from_view_projection(
+                &self.rcx.as_ref().unwrap().view_proj,
+            ));
             self.async_sender
                 .as_mut()
                 .unwrap()
-                .send(self.player_controller.translation.as_ivec3())
+                .send((position, frustum))
                 .unwrap();
         }
     }
@@ -613,6 +623,7 @@ impl ApplicationHandler for App {
             task_graph,
             rt_camera_data,
             rt_sunlight_data,
+            view_proj: Mat4::IDENTITY,
             acceleration_structures,
             current_as_index,
             #[cfg(debug_assertions)]

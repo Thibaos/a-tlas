@@ -2,10 +2,13 @@
 use std::{collections::HashMap, fmt::Display};
 
 use dot_vox::DotVoxData;
-use glam::{IVec3, UVec3, Vec4, Vec4Swizzles};
+use glam::{IVec3, UVec3, Vec3, Vec4, Vec4Swizzles};
 use vulkano::{acceleration_structure::AccelerationStructureInstance, Packed24_8};
 
-use crate::world::{loader::SceneGraphTraverser, HostVoxel};
+use crate::{
+    frustum::Frustum,
+    world::{loader::SceneGraphTraverser, HostVoxel},
+};
 
 #[cfg(debug_assertions)]
 use super::Vertex3DColor;
@@ -509,8 +512,22 @@ impl Chunks {
         origin: &IVec3,
         acceleration_structure_reference: u64,
         max_instance_count: u64,
+        frustum: Option<&Frustum>,
     ) -> Vec<AccelerationStructureInstance> {
-        let mut chunks = self.active_chunks().collect::<Vec<_>>();
+        let mut chunks: Vec<_> = self
+            .active_chunks()
+            .filter(|grid_pos| {
+                if let Some(f) = frustum {
+                    let min =
+                        (**grid_pos * CHUNK_WIDTH as i32).as_vec3() - Vec3::splat(0.5);
+                    let max = ((**grid_pos + IVec3::ONE) * CHUNK_WIDTH as i32).as_vec3()
+                        - Vec3::splat(0.5);
+                    f.intersects_aabb(min, max)
+                } else {
+                    true
+                }
+            })
+            .collect();
 
         chunks.sort_by(|a, b| {
             let distance_a = Chunks::distance_to_chunk(a, origin);

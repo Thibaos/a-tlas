@@ -1,7 +1,6 @@
 use std::sync::atomic::Ordering;
 
 use vulkano::{
-    DeviceSize,
     acceleration_structure::{
         AccelerationStructureBuildGeometryInfo, AccelerationStructureBuildRangeInfo,
         AccelerationStructureBuildType, AccelerationStructureGeometries,
@@ -12,10 +11,11 @@ use vulkano::{
     buffer::{Buffer, BufferCreateInfo, BufferUsage, Subbuffer},
     memory::allocator::{AllocationCreateInfo, DeviceLayout},
     sync::{AccessFlags, PipelineStages},
+    DeviceSize,
 };
 use vulkano_taskgraph::{
-    Id, Task, TaskContext, TaskResult,
     command_buffer::{DependencyInfo, MemoryBarrier, RecordingCommandBuffer},
+    Id, Task, TaskContext, TaskResult,
 };
 
 use crate::app::{App, AsyncRenderContext};
@@ -98,6 +98,7 @@ impl Task for UpdateAccelerationStructureTask {
             &rcx.position,
             self.blas_reference,
             self.instance_count as u64,
+            rcx.frustum.as_ref(),
         );
 
         write_instance_buffer
