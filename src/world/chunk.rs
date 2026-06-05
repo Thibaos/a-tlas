@@ -3,11 +3,11 @@ use std::{collections::HashMap, fmt::Display};
 
 use dot_vox::DotVoxData;
 use glam::{IVec3, UVec3, Vec3, Vec4, Vec4Swizzles};
-use vulkano::{acceleration_structure::AccelerationStructureInstance, Packed24_8};
+use vulkano::{Packed24_8, acceleration_structure::AccelerationStructureInstance};
 
 use crate::{
     frustum::Frustum,
-    world::{loader::SceneGraphTraverser, HostVoxel},
+    world::{HostVoxel, loader::SceneGraphTraverser},
 };
 
 #[cfg(debug_assertions)]
@@ -116,9 +116,10 @@ impl Chunk {
                     let (neighbor_grid, neighbor_inner) =
                         Chunks::translation_to_position(&global_neighbor);
                     if let Some(neighbor_chunk) = world.get(&neighbor_grid)
-                        && !neighbor_chunk.contains(&neighbor_inner) {
-                            return true;
-                        }
+                        && !neighbor_chunk.contains(&neighbor_inner)
+                    {
+                        return true;
+                    }
                 } else {
                     return true; // out of world bounds = exposed to void
                 }
@@ -518,8 +519,7 @@ impl Chunks {
             .active_chunks()
             .filter(|grid_pos| {
                 if let Some(f) = frustum {
-                    let min =
-                        (**grid_pos * CHUNK_WIDTH as i32).as_vec3() - Vec3::splat(0.5);
+                    let min = (**grid_pos * CHUNK_WIDTH as i32).as_vec3() - Vec3::splat(0.5);
                     let max = ((**grid_pos + IVec3::ONE) * CHUNK_WIDTH as i32).as_vec3()
                         - Vec3::splat(0.5);
                     f.intersects_aabb(min, max)
@@ -540,7 +540,12 @@ impl Chunks {
             .iter()
             .map(|grid_position| (grid_position, self.inner.get(grid_position).unwrap()))
             .flat_map(|(grid_position, chunk)| {
-                chunk.to_instances(lod, **grid_position, acceleration_structure_reference, &self.inner)
+                chunk.to_instances(
+                    lod,
+                    **grid_position,
+                    acceleration_structure_reference,
+                    &self.inner,
+                )
             })
             .take(max_instance_count as usize)
             .collect()
@@ -608,8 +613,8 @@ impl Display for Chunks {
 mod test {
     use glam::{IVec3, UVec3};
 
-    use super::{Chunk, Chunks, CHUNK_WIDTH};
-    use crate::world::{chunk::WORLD_WIDTH, HostVoxel};
+    use super::{CHUNK_WIDTH, Chunk, Chunks};
+    use crate::world::{HostVoxel, chunk::WORLD_WIDTH};
 
     #[test]
     fn chunk_insert() {

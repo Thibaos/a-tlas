@@ -266,7 +266,7 @@ impl App {
         let mut schedule_controller = ScheduleController::new();
         schedule_controller.add_schedule_frames("delta", 1);
         schedule_controller.add_schedule_duration("log", Duration::from_secs(1));
-        schedule_controller.add_schedule_frames("tlas_update", 10);
+        schedule_controller.add_schedule_frames("tlas_update", 1000);
 
         App {
             close_requested: false,
