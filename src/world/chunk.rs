@@ -515,12 +515,7 @@ impl Chunks {
         frustum: Option<&Frustum>,
     ) -> Vec<AccelerationStructureInstance> {
         /// Distance in chunk-grid units at which each LOD level applies.
-        const LOD_DISTANCE_THRESHOLDS: &[i32] = &[
-            2,  // lod 0: distance 0–2  (within ~128 world units)
-            4,  // lod 1: distance 3–4  (~128–256)
-            8,  // lod 2: distance 5–8  (~256–512)
-            16, // lod 3: distance 9–16 (~512–1024)
-        ];
+        const LOD_DISTANCE_THRESHOLDS: &[i32] = &[4, 8, 16, 32];
 
         const fn lod_for_distance(grid_distance: i32) -> u32 {
             let mut lod = 0;

@@ -50,11 +50,11 @@ impl SceneGraphTraverser<'_> {
 
                 let translation = translation + this_translation;
 
-                self.traverse_recursive(*child, translation, this_rotation);
+                self.traverse_recursive(*child, translation, rotation * this_rotation);
             }
             SceneNode::Group { children, .. } => {
                 for child in children {
-                    self.traverse_recursive(*child, IVec3::ZERO, Rotation::IDENTITY);
+                    self.traverse_recursive(*child, translation, rotation);
                 }
             }
             SceneNode::Shape { models, .. } => {

@@ -259,7 +259,7 @@ impl App {
         let graphics_flight_id = resources.create_flight(MAX_FRAMES_IN_FLIGHT).unwrap();
         let compute_flight_id = resources.create_flight(1).unwrap();
 
-        let voxel_data = open_file("assets/castle.vox");
+        let voxel_data = open_file("assets/nuke.vox");
         let world = Arc::new(Chunks::new(&voxel_data));
 
         let mut schedule_controller = ScheduleController::new();
@@ -468,7 +468,7 @@ impl ApplicationHandler for App {
             .properties()
             .max_instance_count
             .unwrap()
-            / 32;
+            / 8;
 
         dbg!(max_instance_count);
 
