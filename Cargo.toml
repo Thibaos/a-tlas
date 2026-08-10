@@ -16,7 +16,7 @@ glam = { version = "*", features = ["bytemuck"] }
 bytemuck = { version = "*", features = ["extern_crate_alloc"] }
 ply-rs = "*"
 crossterm = "0.29.0"
-either = "1.16.0"
+either = "1.17.0"
 
 [profile.release]
 codegen-units = 1

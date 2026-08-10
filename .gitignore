@@ -23,6 +23,8 @@ Cargo.lock
 .vscode/
 .zed/
 imgui.ini
-docs
+docs/vulkan
 .pi
+.pi-subagents
+.scratch
 nul
