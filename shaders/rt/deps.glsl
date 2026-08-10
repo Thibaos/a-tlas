@@ -28,6 +28,10 @@ VKO_DECLARE_STORAGE_BUFFER(sunlight, Sunlight{
 
 layout(push_constant) uniform PushConstants {
     StorageImageId image_id;
+    // Validation harness only: the ray pass additionally writes payload.t to
+    // this image so the harness can compare t against the CPU reference. The
+    // production raygen never dereferences it (pushed as INVALID).
+    StorageImageId t_image_id;
     AccelerationStructureId acceleration_structure_id;
     StorageBufferId camera_buffer_id;
     StorageBufferId palette_buffer_id;

@@ -24,3 +24,17 @@ pub struct HostVoxel {
     scale: f32,
     material_index: u32,
 }
+
+impl HostVoxel {
+    pub fn new(material_index: u32) -> Self {
+        Self {
+            scale: 1.0,
+            material_index,
+        }
+    }
+
+    /// The palette index of this voxel (0 is a real color).
+    pub(crate) fn material_index(&self) -> u32 {
+        self.material_index
+    }
+}

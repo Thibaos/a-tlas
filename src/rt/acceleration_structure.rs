@@ -101,8 +101,37 @@ pub fn build_acceleration_structure_common(
             resources,
             flight_id,
             |cbf, _tcx| {
+                let pre_memory_barrier = vulkano_taskgraph::command_buffer::MemoryBarrier {
+                    src_access: vulkano::sync::AccessFlags::TRANSFER_WRITE
+                        | vulkano::sync::AccessFlags::SHADER_WRITE,
+                    dst_access: vulkano::sync::AccessFlags::ACCELERATION_STRUCTURE_WRITE
+                        | vulkano::sync::AccessFlags::ACCELERATION_STRUCTURE_READ,
+                    src_stages: vulkano::sync::PipelineStages::ALL_TRANSFER
+                        | vulkano::sync::PipelineStages::COMPUTE_SHADER,
+                    dst_stages: vulkano::sync::PipelineStages::ACCELERATION_STRUCTURE_BUILD,
+                    ..Default::default()
+                };
+                cbf.pipeline_barrier(&vulkano_taskgraph::command_buffer::DependencyInfo {
+                    memory_barriers: &[pre_memory_barrier],
+                    ..Default::default()
+                });
+
                 cbf.as_raw()
                     .build_acceleration_structure(&as_build_geometry_info, &[as_build_range_info]);
+
+                let post_memory_barrier = vulkano_taskgraph::command_buffer::MemoryBarrier {
+                    src_access: vulkano::sync::AccessFlags::ACCELERATION_STRUCTURE_WRITE,
+                    dst_access: vulkano::sync::AccessFlags::ACCELERATION_STRUCTURE_READ
+                        | vulkano::sync::AccessFlags::SHADER_READ,
+                    src_stages: vulkano::sync::PipelineStages::ACCELERATION_STRUCTURE_BUILD,
+                    dst_stages: vulkano::sync::PipelineStages::ACCELERATION_STRUCTURE_BUILD
+                        | vulkano::sync::PipelineStages::RAY_TRACING_SHADER,
+                    ..Default::default()
+                };
+                cbf.pipeline_barrier(&vulkano_taskgraph::command_buffer::DependencyInfo {
+                    memory_barriers: &[post_memory_barrier],
+                    ..Default::default()
+                });
 
                 Ok(())
             },

@@ -65,10 +65,13 @@ pub const MIN_SWAPCHAIN_IMAGES: u32 = MAX_FRAMES_IN_FLIGHT + 1;
 pub const TICKS_PER_SECOND: u32 = 1;
 pub const MAX_DEBUG_LINES: u32 = 4096;
 
-pub struct App {
-    close_requested: bool,
 
-    instance: Arc<Instance>,
+/// The shared GPU stack (instance, device, queues, allocator, taskgraph
+/// resources and flights). Constructed once per event loop by [`App::new`] and
+/// by the offline harness; the harness renders through the same stack so the
+/// device/queue/extension surface it validates is the app's.
+pub struct GpuStack {
+    pub instance: Arc<Instance>,
     pub device: Arc<Device>,
 
     pub graphics_queue: Arc<Queue>,
@@ -80,52 +83,9 @@ pub struct App {
     pub resources: Arc<Resources>,
     pub graphics_flight_id: Id<Flight>,
     pub compute_flight_id: Id<Flight>,
-
-    delta_time: Duration,
-    focused: bool,
-
-    pub voxel_data: dot_vox::DotVoxData,
-    pub world: Arc<Chunks>,
-
-    player_controller: PlayerController,
-    physics_controller: PhysicsController,
-    schedule_controller: ScheduleController,
-
-    worker_available: Arc<AtomicBool>,
-    async_sender: Option<mpsc::Sender<(IVec3, Option<Frustum>)>>,
-
-    rcx: Option<RenderContext>,
 }
 
-pub struct RenderContext {
-    window: Arc<Window>,
-    swapchain_id: Id<Swapchain>,
-    virtual_swapchain_id: Id<Swapchain>,
-    pub swapchain_storage_image_ids: Vec<StorageImageId>,
-    pub rt_camera_data: raygen::Camera,
-    pub rt_sunlight_data: raygen::Sunlight,
-    pub view_proj: Mat4,
-    pub acceleration_structures: [Arc<AccelerationStructure>; 2],
-    pub current_as_index: Arc<AtomicBool>,
-    #[cfg(debug_assertions)]
-    pub debug_constant_data: debug::shader::vert::PushConstants,
-    #[cfg(debug_assertions)]
-    pub debug_lines: Vec<Vertex3DColor>,
-    #[cfg(debug_assertions)]
-    pub viewport: Viewport,
-    recreate_swapchain: bool,
-    task_graph: ExecutableTaskGraph<Self>,
-}
-
-pub struct AsyncRenderContext {
-    pub acceleration_structures: [Arc<AccelerationStructure>; 2],
-    pub current_as_index: Arc<AtomicBool>,
-    pub world: Arc<Chunks>,
-    pub position: glam::IVec3,
-    pub frustum: Option<Frustum>,
-}
-
-impl App {
+impl GpuStack {
     pub fn new(event_loop: &EventLoop<()>) -> Self {
         let required_extensions = Surface::required_extensions(event_loop);
 
@@ -259,6 +219,73 @@ impl App {
         let graphics_flight_id = resources.create_flight(MAX_FRAMES_IN_FLIGHT).unwrap();
         let compute_flight_id = resources.create_flight(1).unwrap();
 
+        Self {
+            instance,
+            device,
+            graphics_queue,
+            compute_queue,
+            transfer_queue,
+            memory_allocator,
+            resources,
+            graphics_flight_id,
+            compute_flight_id,
+        }
+    }
+}
+
+pub struct App {
+    close_requested: bool,
+
+    pub gpu: GpuStack,
+
+    delta_time: Duration,
+    focused: bool,
+
+    pub voxel_data: dot_vox::DotVoxData,
+    pub world: Arc<Chunks>,
+
+    player_controller: PlayerController,
+    physics_controller: PhysicsController,
+    schedule_controller: ScheduleController,
+
+    worker_available: Arc<AtomicBool>,
+    async_sender: Option<mpsc::Sender<(IVec3, Option<Frustum>)>>,
+
+    rcx: Option<RenderContext>,
+}
+
+pub struct RenderContext {
+    window: Arc<Window>,
+    swapchain_id: Id<Swapchain>,
+    virtual_swapchain_id: Id<Swapchain>,
+    pub swapchain_storage_image_ids: Vec<StorageImageId>,
+    pub rt_camera_data: raygen::Camera,
+    pub rt_sunlight_data: raygen::Sunlight,
+    pub view_proj: Mat4,
+    pub acceleration_structures: [Arc<AccelerationStructure>; 2],
+    pub current_as_index: Arc<AtomicBool>,
+    #[cfg(debug_assertions)]
+    pub debug_constant_data: debug::shader::vert::PushConstants,
+    #[cfg(debug_assertions)]
+    pub debug_lines: Vec<Vertex3DColor>,
+    #[cfg(debug_assertions)]
+    pub viewport: Viewport,
+    recreate_swapchain: bool,
+    task_graph: ExecutableTaskGraph<Self>,
+}
+
+pub struct AsyncRenderContext {
+    pub acceleration_structures: [Arc<AccelerationStructure>; 2],
+    pub current_as_index: Arc<AtomicBool>,
+    pub world: Arc<Chunks>,
+    pub position: glam::IVec3,
+    pub frustum: Option<Frustum>,
+}
+
+impl App {
+    pub fn new(event_loop: &EventLoop<()>) -> Self {
+        let gpu = GpuStack::new(event_loop);
+
         let voxel_data = open_file("assets/nuke.vox");
         let world = Arc::new(Chunks::new(&voxel_data));
 
@@ -270,18 +297,7 @@ impl App {
         App {
             close_requested: false,
 
-            instance,
-            device,
-
-            graphics_queue,
-            compute_queue,
-            transfer_queue,
-
-            memory_allocator,
-
-            resources,
-            graphics_flight_id,
-            compute_flight_id,
+            gpu,
 
             delta_time: Duration::ZERO,
             focused: false,
@@ -400,22 +416,25 @@ impl ApplicationHandler for App {
         let window = Arc::new(event_loop.create_window(window_attributes).unwrap());
 
         let window_size = window.inner_size();
-        let surface = Surface::from_window(&self.instance, &window).unwrap();
+        let surface = Surface::from_window(&self.gpu.instance, &window).unwrap();
 
         let (swapchain_id, swapchain_format) = {
             let surface_capabilities = self
+                .gpu
                 .device
                 .physical_device()
                 .surface_capabilities(&surface, &Default::default())
                 .unwrap();
             let (image_format, image_color_space) = self
+                .gpu
                 .device
                 .physical_device()
                 .surface_formats(&surface, &Default::default())
                 .unwrap()
                 .into_iter()
                 .find(|(format, _)| {
-                    self.device
+                    self.gpu
+                    .device
                         .physical_device()
                         .image_format_properties(&ImageFormatInfo {
                             format: *format,
@@ -430,7 +449,7 @@ impl ApplicationHandler for App {
             let present_mode = PresentMode::Immediate;
 
             (
-                self.resources
+                self.gpu.resources
                     .create_swapchain(
                         &surface,
                         &SwapchainCreateInfo {
@@ -456,13 +475,14 @@ impl ApplicationHandler for App {
         };
 
         let swapchain_storage_image_ids =
-            window_size_dependent_setup(&self.resources, swapchain_id);
+            window_size_dependent_setup(&self.gpu.resources, swapchain_id);
 
-        let mut task_graph = TaskGraph::new(&self.resources);
+        let mut task_graph = TaskGraph::new(&self.gpu.resources);
 
         let virtual_swapchain_id = task_graph.add_swapchain(&SwapchainCreateInfo::default());
 
         let max_instance_count = self
+            .gpu
             .device
             .physical_device()
             .properties()
@@ -472,7 +492,7 @@ impl ApplicationHandler for App {
 
         dbg!(max_instance_count);
 
-        let rt_pass = RayTracingRenderTask::new(self, virtual_swapchain_id, max_instance_count);
+        let rt_pass = RayTracingRenderTask::new(&self.gpu, &self.world, &self.voxel_data, virtual_swapchain_id, max_instance_count);
 
         let update_as_task = UpdateAccelerationStructureTask::new(
             self,
@@ -493,10 +513,10 @@ impl ApplicationHandler for App {
         run_worker(
             async_receiver,
             update_as_task,
-            self.compute_queue.clone(),
-            self.resources.clone(),
-            self.graphics_flight_id,
-            self.compute_flight_id,
+            self.gpu.compute_queue.clone(),
+            self.gpu.resources.clone(),
+            self.gpu.graphics_flight_id,
+            self.gpu.compute_flight_id,
             rt_pass.acceleration_structures.clone(),
             rt_pass.current_as_index.clone(),
             self.world.clone(),
@@ -519,6 +539,7 @@ impl ApplicationHandler for App {
         let virtual_framebuffer_id = task_graph.add_framebuffer();
 
         let debug_vertex_buffer_id = self
+            .gpu
             .resources
             .create_buffer(
                 &BufferCreateInfo {
@@ -566,9 +587,9 @@ impl ApplicationHandler for App {
 
         let mut task_graph = unsafe {
             task_graph.compile(&CompileInfo {
-                queues: &[&self.graphics_queue],
-                present_queue: Some(&self.graphics_queue),
-                flight_id: self.graphics_flight_id,
+                queues: &[&self.gpu.graphics_queue],
+                present_queue: Some(&self.gpu.graphics_queue),
+                flight_id: self.gpu.graphics_flight_id,
                 ..Default::default()
             })
         }
@@ -676,6 +697,7 @@ impl ApplicationHandler for App {
 
                     if rcx.recreate_swapchain {
                         rcx.swapchain_id = self
+                            .gpu
                             .resources
                             .recreate_swapchain(rcx.swapchain_id, |create_info| {
                                 SwapchainCreateInfo {
@@ -695,7 +717,7 @@ impl ApplicationHandler for App {
                             };
                         }
 
-                        let mut batch = self.resources.create_deferred_batch();
+                        let mut batch = self.gpu.resources.create_deferred_batch();
 
                         for &id in &rcx.swapchain_storage_image_ids {
                             batch.destroy_storage_image(id);
@@ -704,14 +726,14 @@ impl ApplicationHandler for App {
                         batch.enqueue();
 
                         rcx.swapchain_storage_image_ids =
-                            window_size_dependent_setup(&self.resources, rcx.swapchain_id);
+                            window_size_dependent_setup(&self.gpu.resources, rcx.swapchain_id);
 
                         rcx.recreate_swapchain = false;
                     }
                 }
 
-                self.resources
-                    .flight(self.graphics_flight_id)
+                self.gpu.resources
+                    .flight(self.gpu.graphics_flight_id)
                     .wait_idle()
                     .unwrap();
 
@@ -775,7 +797,7 @@ impl ApplicationHandler for App {
     }
 }
 
-fn window_size_dependent_setup(
+pub(crate) fn window_size_dependent_setup(
     resources: &Resources,
     swapchain_id: Id<Swapchain>,
 ) -> Vec<StorageImageId> {

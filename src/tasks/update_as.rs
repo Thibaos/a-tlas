@@ -38,7 +38,7 @@ impl UpdateAccelerationStructureTask {
         blas_reference: u64,
     ) -> Self {
         let instance_buffer =
-            Subbuffer::new(app.resources.buffer(instance_buffer_id).buffer().clone())
+            Subbuffer::new(app.gpu.resources.buffer(instance_buffer_id).buffer().clone())
                 .cast_aligned::<AccelerationStructureInstance>();
 
         let geometry_instances_data = AccelerationStructureGeometryInstancesData::new(
@@ -49,7 +49,7 @@ impl UpdateAccelerationStructureTask {
 
         let build_geometry_info = AccelerationStructureBuildGeometryInfo::new(geometries.clone());
 
-        let build_sizes_info = app.device.acceleration_structure_build_sizes(
+        let build_sizes_info = app.gpu.device.acceleration_structure_build_sizes(
             AccelerationStructureBuildType::Device,
             &build_geometry_info,
             &[instance_count],
@@ -58,6 +58,7 @@ impl UpdateAccelerationStructureTask {
         let scratch_size = build_sizes_info.build_scratch_size;
 
         let scratch_buffer_id = app
+            .gpu
             .resources
             .create_buffer(
                 &BufferCreateInfo {

@@ -615,6 +615,81 @@ impl Chunks {
         chunk.voxels.get(&local_position)
     }
 
+    /// Like [`Chunks::get_voxel`] but returns `None` instead of panicking for
+    /// positions outside the world bounds (used by the reference tracer's grid
+    /// walk, which may probe one cell past the occupied set).
+    pub(crate) fn try_get_voxel(&self, position: &IVec3) -> Option<&HostVoxel> {
+        if !Chunks::in_bounds(position) {
+            return None;
+        }
+
+        let (grid_position, local_position) = Chunks::translation_to_position(position);
+
+        self.inner.get(&grid_position)?.voxels.get(&local_position)
+    }
+
+    /// Inserts a voxel with the given palette index (test/harness helper).
+    /// Lazily creates the chunk, so small hand-built worlds stay cheap.
+    pub(crate) fn insert_voxel_at(&mut self, position: IVec3, material_index: u32) {
+        let (grid_position, local_position) = Chunks::translation_to_position(&position);
+        self.inner
+            .entry(grid_position)
+            .or_default()
+            .voxels
+            .insert(local_position, HostVoxel::new(material_index));
+    }
+
+    /// Iterates every occupied voxel in the world as (global position, voxel).
+    ///
+    /// The validation harness's reference tracer reads the world side of the
+    /// renderer input contract through this iterator (plus `get_voxel` and the
+    /// palette) — it never touches renderer state.
+    pub fn iter_voxels(&self) -> impl Iterator<Item = (IVec3, &HostVoxel)> + '_ {
+        self.inner.iter().flat_map(|(grid_position, chunk)| {
+            let cw = CHUNK_WIDTH as i32;
+            let chunk_origin = *grid_position * cw;
+
+            chunk
+                .voxels
+                .iter()
+                .map(move |(local_position, voxel)| {
+                    (
+                        IVec3::new(
+                            chunk_origin.x + local_position.x as i32,
+                            chunk_origin.y + local_position.y as i32,
+                            chunk_origin.z + local_position.z as i32,
+                        ),
+                        voxel,
+                    )
+                })
+        })
+    }
+
+    /// The inclusive axis-aligned bounds of the occupied voxel set, or `None`
+    /// for an empty world.
+    pub fn voxel_bounds(&self) -> Option<(IVec3, IVec3)> {
+        let mut min: Option<IVec3> = None;
+        let mut max: Option<IVec3> = None;
+
+        for (position, _) in self.iter_voxels() {
+            min = Some(match min {
+                None => position,
+                Some(m) => m.min(position),
+            });
+            max = Some(match max {
+                None => position,
+                Some(m) => m.max(position),
+            });
+        }
+
+        min.zip(max)
+    }
+
+    /// The number of occupied voxels in the world.
+    pub fn voxel_count(&self) -> usize {
+        self.iter_voxels().count()
+    }
+
     pub fn insert_voxel(
         chunks: &mut ChunksInner,
         position: IVec3,

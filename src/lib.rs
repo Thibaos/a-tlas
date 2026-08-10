@@ -1,6 +1,7 @@
 pub mod app;
 mod async_tlas;
 pub mod frustum;
+pub mod harness;
 mod physics;
 mod player;
 mod rt;

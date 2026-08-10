@@ -48,13 +48,13 @@ pub fn create_debug_pipeline(app: &App, node: &TaskNode<RenderContext>) -> Arc<G
     let subpass = node.subpass().unwrap().clone();
 
     let vertex = unsafe {
-        shader::vert::load(&app.device)
+        shader::vert::load(&app.gpu.device)
             .unwrap()
             .entry_point("main")
             .unwrap()
     };
     let fragment = unsafe {
-        shader::frag::load(&app.device)
+        shader::frag::load(&app.gpu.device)
             .unwrap()
             .entry_point("main")
             .unwrap()
@@ -65,14 +65,14 @@ pub fn create_debug_pipeline(app: &App, node: &TaskNode<RenderContext>) -> Arc<G
         PipelineShaderStageCreateInfo::new(&fragment),
     ];
 
-    let bcx = app.resources.bindless_context().unwrap();
+    let bcx = app.gpu.resources.bindless_context().unwrap();
 
     let debug_pipeline_layout = bcx.pipeline_layout_from_stages(&stages).unwrap();
 
     let vertex_input_state = Vertex3DColor::per_vertex().definition(&vertex).unwrap();
 
     GraphicsPipeline::new(
-        &app.device,
+        &app.gpu.device,
         None,
         &GraphicsPipelineCreateInfo {
             stages: &stages,
