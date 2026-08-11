@@ -1,36 +1,35 @@
-use glam::{IVec3, Mat4, vec3};
+#[cfg(debug_assertions)]
+use glam::Mat4;
 use std::{
     f32::consts::PI,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-        mpsc,
-    },
+    sync::Arc,
     time::Duration,
 };
 use vulkano::{
     VulkanError, VulkanLibrary,
-    acceleration_structure::AccelerationStructure,
-    buffer::{BufferCreateInfo, BufferUsage},
     device::{
         Device, DeviceCreateInfo, DeviceExtensions, DeviceFeatures, Queue, QueueCreateInfo,
         QueueFlags, physical::PhysicalDeviceType,
     },
     image::{ImageFormatInfo, ImageLayout, ImageUsage, view::ImageView},
     instance::{Instance, InstanceCreateFlags, InstanceCreateInfo, InstanceExtensions},
-    memory::allocator::{
-        AllocationCreateInfo, DeviceLayout, MemoryAllocator, MemoryTypeFilter,
-        StandardMemoryAllocator,
-    },
+    memory::allocator::{MemoryAllocator, StandardMemoryAllocator},
     swapchain::{PresentMode, Surface, Swapchain, SwapchainCreateInfo},
 };
+// The debug overlay's imports (app-only, cfg'd out in release).
+#[cfg(debug_assertions)]
+use vulkano::buffer::{BufferCreateInfo, BufferUsage};
+#[cfg(debug_assertions)]
+use vulkano::memory::allocator::{AllocationCreateInfo, DeviceLayout, MemoryTypeFilter};
+#[cfg(debug_assertions)]
+use vulkano_taskgraph::graph::AttachmentInfo;
+#[cfg(debug_assertions)]
+use vulkano_taskgraph::resource::HostAccessType;
 use vulkano_taskgraph::{
     Id, QueueFamilyType,
     descriptor_set::{BindlessContext, StorageImageId},
-    graph::{AttachmentInfo, CompileInfo, ExecutableTaskGraph, ExecuteError, TaskGraph},
-    resource::{
-        AccessTypes, Flight, HostAccessType, ImageLayoutType, Resources, ResourcesCreateInfo,
-    },
+    graph::{CompileInfo, ExecutableTaskGraph, ExecuteError, TaskGraph},
+    resource::{AccessTypes, Flight, ImageLayoutType, Resources, ResourcesCreateInfo},
     resource_map,
 };
 
@@ -47,15 +46,19 @@ use winit::{
 };
 
 use crate::{
-    async_tlas::run_worker,
-    frustum::Frustum,
     physics::PhysicsController,
     player::PlayerController,
-    rt::raygen,
+    region::{
+        input::RendererInput,
+        render::{RegionRenderContext, RegionRenderTask, capture_raygen, production_raygen},
+        residency::RegionStore,
+        snapshot::emit_snapshots,
+    },
     schedule::ScheduleController,
-    tasks::{render::RayTracingRenderTask, update_as::UpdateAccelerationStructureTask},
-    world::{Vertex3DColor, chunk::Chunks, voxel::open_file},
+    world::{chunk::Chunks, voxel::open_file},
 };
+#[cfg(debug_assertions)]
+use crate::world::Vertex3DColor;
 
 #[cfg(debug_assertions)]
 use crate::tasks::debug::{self, DrawDebugTask, create_debug_pipeline};
@@ -247,8 +250,17 @@ pub struct App {
     physics_controller: PhysicsController,
     schedule_controller: ScheduleController,
 
-    worker_available: Arc<AtomicBool>,
-    async_sender: Option<mpsc::Sender<(IVec3, Option<Frustum>)>>,
+    /// The renderer input contract (ticket 03): the world voices its
+    /// initial state as one `submit_batch`; the worker drains it into
+    /// per-Region mirrors. Kept so future world edits flow through the
+    /// same contract (the minimal snapshot emitter stays as the world
+    /// side's seed — ticket 06).
+    input: RendererInput,
+    /// The full static lattice's GPU half (tickets 04/05): residency,
+    /// free lists, the stable TLAS. Built once from the initial batch (the
+    /// one-shot pre-loop build) and rebuilt through the ordered rebuild
+    /// nodes on change cycles.
+    store: RegionStore,
 
     rcx: Option<RenderContext>,
 }
@@ -257,28 +269,12 @@ pub struct RenderContext {
     window: Arc<Window>,
     swapchain_id: Id<Swapchain>,
     virtual_swapchain_id: Id<Swapchain>,
-    pub swapchain_storage_image_ids: Vec<StorageImageId>,
-    pub rt_camera_data: raygen::Camera,
-    pub rt_sunlight_data: raygen::Sunlight,
-    pub view_proj: Mat4,
-    pub acceleration_structures: [Arc<AccelerationStructure>; 2],
-    pub current_as_index: Arc<AtomicBool>,
-    #[cfg(debug_assertions)]
-    pub debug_constant_data: debug::shader::vert::PushConstants,
-    #[cfg(debug_assertions)]
-    pub debug_lines: Vec<Vertex3DColor>,
-    #[cfg(debug_assertions)]
-    pub viewport: Viewport,
     recreate_swapchain: bool,
-    task_graph: ExecutableTaskGraph<Self>,
-}
-
-pub struct AsyncRenderContext {
-    pub acceleration_structures: [Arc<AccelerationStructure>; 2],
-    pub current_as_index: Arc<AtomicBool>,
-    pub world: Arc<Chunks>,
-    pub position: glam::IVec3,
-    pub frustum: Option<Frustum>,
+    task_graph: ExecutableTaskGraph<RegionRenderContext>,
+    /// The per-frame world the graph executes with (camera, storage
+    /// images, the app's debug overlay fields — see
+    /// [`RegionRenderContext`]).
+    region: RegionRenderContext,
 }
 
 impl App {
@@ -288,10 +284,25 @@ impl App {
         let voxel_data = open_file("assets/nuke.vox");
         let world = Arc::new(Chunks::new(&voxel_data));
 
+        // The input contract (ticket 03): the world voices its initial
+        // state as one `submit_batch`; the worker drains it into per-Region
+        // mirrors. The minimal snapshot emitter stays as the world side's
+        // seed for feeding the renderer (ticket 06).
+        let input = RendererInput::new();
+        input.submit_batch(emit_snapshots(&world));
+        input.wait_until_idle();
+
+        // The one-shot pre-loop build (ticket 05): every initial Region
+        // becomes resident through the ordered rebuild graph (pool upload →
+        // BLAS build → TLAS build). The startup batch's published dirty set
+        // is consumed here — the frame loop applies only post-startup
+        // change cycles.
+        let store = RegionStore::new(&gpu, &voxel_data, input.packed_regions());
+        input.take_dirty_regions();
+
         let mut schedule_controller = ScheduleController::new();
         schedule_controller.add_schedule_frames("delta", 1);
         schedule_controller.add_schedule_duration("log", Duration::from_secs(1));
-        schedule_controller.add_schedule_frames("tlas_update", 10);
 
         App {
             close_requested: false,
@@ -308,8 +319,8 @@ impl App {
             voxel_data,
             world,
 
-            worker_available: Arc::new(AtomicBool::new(true)),
-            async_sender: None,
+            input,
+            store,
 
             rcx: None,
         }
@@ -361,16 +372,14 @@ impl App {
             10000.0,
         );
 
-        rcx.view_proj = proj * view;
-
-        rcx.rt_camera_data = raygen::Camera {
+        rcx.region.camera = capture_raygen::Camera {
             proj_inverse: proj.inverse().to_cols_array_2d(),
             view_inverse: view.inverse().to_cols_array_2d(),
         };
 
         #[cfg(debug_assertions)]
         {
-            rcx.debug_constant_data = debug::shader::vert::PushConstants {
+            rcx.region.debug_constant_data = debug::shader::vert::PushConstants {
                 world: Mat4::default().to_cols_array_2d(),
                 view: view.to_cols_array_2d(),
                 proj: proj.to_cols_array_2d(),
@@ -386,23 +395,7 @@ impl App {
 
     #[cfg(debug_assertions)]
     pub fn update_debug_lines(&mut self) {
-        self.rcx.as_mut().unwrap().debug_lines = self.world.debug_lines();
-    }
-
-    fn request_async_tlas_update(&mut self) {
-        if self.schedule_controller.check("tlas_update").is_some()
-            && self.worker_available.load(Ordering::Acquire)
-        {
-            let position = self.player_controller.translation.as_ivec3();
-            let frustum = Some(Frustum::from_view_projection(
-                &self.rcx.as_ref().unwrap().view_proj,
-            ));
-            self.async_sender
-                .as_mut()
-                .unwrap()
-                .send((position, frustum))
-                .unwrap();
-        }
+        self.rcx.as_mut().unwrap().region.debug_lines = self.world.debug_lines();
     }
 }
 
@@ -416,7 +409,7 @@ impl ApplicationHandler for App {
         let window_size = window.inner_size();
         let surface = Surface::from_window(&self.gpu.instance, &window).unwrap();
 
-        let (swapchain_id, swapchain_format) = {
+        let swapchain = {
             let surface_capabilities = self
                 .gpu
                 .device
@@ -473,6 +466,12 @@ impl ApplicationHandler for App {
             )
         };
 
+        let swapchain_id = swapchain.0;
+        // The swapchain format is needed only by the debug overlay's color
+        // attachment (the ray pass writes storage images, format-agnostic).
+        #[cfg(debug_assertions)]
+        let swapchain_format = swapchain.1;
+
         let swapchain_storage_image_ids =
             window_size_dependent_setup(&self.gpu.resources, swapchain_id);
 
@@ -480,54 +479,21 @@ impl ApplicationHandler for App {
 
         let virtual_swapchain_id = task_graph.add_swapchain(&SwapchainCreateInfo::default());
 
-        let max_instance_count = self
-            .gpu
-            .device
-            .physical_device()
-            .properties()
-            .max_instance_count
-            .unwrap()
-            / 8;
+        // The Region render task (the one renderer — ticket 06): ray-passes
+        // the store's stable TLAS with the production raygen (color only;
+        // `t_image_id` stays INVALID and is never dereferenced).
+        let raygen = unsafe {
+            production_raygen::load(&self.gpu.device)
+                .unwrap()
+                .entry_point("main")
+                .unwrap()
+        };
 
-        dbg!(max_instance_count);
+        let rt_pass = RegionRenderTask::new(&self.gpu, &self.store, virtual_swapchain_id, &raygen);
+        let instance_buffer_id = rt_pass.instance_buffer_id();
 
-        let rt_pass = RayTracingRenderTask::new(
-            &self.gpu,
-            &self.world,
-            &self.voxel_data,
-            virtual_swapchain_id,
-            max_instance_count,
-        );
-
-        let update_as_task = UpdateAccelerationStructureTask::new(
-            self,
-            max_instance_count as u32,
-            rt_pass.instance_buffer_id,
-            rt_pass.blas.device_address().into(),
-        );
-
-        let acceleration_structures = rt_pass.acceleration_structures.clone();
-        let current_as_index = rt_pass.current_as_index.clone();
-
-        let instance_buffer_id = rt_pass.instance_buffer_id;
-
-        let (async_sender, async_receiver) = mpsc::channel();
-
-        self.async_sender = Some(async_sender);
-
-        run_worker(
-            async_receiver,
-            update_as_task,
-            self.gpu.compute_queue.clone(),
-            self.gpu.resources.clone(),
-            self.gpu.graphics_flight_id,
-            self.gpu.compute_flight_id,
-            rt_pass.acceleration_structures.clone(),
-            rt_pass.current_as_index.clone(),
-            self.world.clone(),
-            self.worker_available.clone(),
-        );
-
+        // The render node id is needed only by the debug edge below.
+        #[cfg_attr(not(debug_assertions), allow(unused_variables))]
         let rt_node_id = task_graph
             .create_task_node("Render", QueueFamilyType::Graphics, rt_pass)
             .image_access(
@@ -541,8 +507,11 @@ impl ApplicationHandler for App {
             )
             .build();
 
+        // The debug overlay's framebuffer + vertex buffer (app-only).
+        #[cfg(debug_assertions)]
         let virtual_framebuffer_id = task_graph.add_framebuffer();
 
+        #[cfg(debug_assertions)]
         let debug_vertex_buffer_id = self
             .gpu
             .resources
@@ -590,7 +559,7 @@ impl ApplicationHandler for App {
         #[cfg(debug_assertions)]
         task_graph.add_edge(rt_node_id, debug_node_id).unwrap();
 
-        let mut task_graph = unsafe {
+        let task_graph = unsafe {
             task_graph.compile(&CompileInfo {
                 queues: &[&self.gpu.graphics_queue],
                 present_queue: Some(&self.gpu.graphics_queue),
@@ -599,6 +568,11 @@ impl ApplicationHandler for App {
             })
         }
         .unwrap();
+
+        // The debug pipeline is injected into the compiled graph only in
+        // debug builds (the overlay is app-only and cfg'd out in release).
+        #[cfg(debug_assertions)]
+        let mut task_graph = task_graph;
 
         #[cfg(debug_assertions)]
         {
@@ -623,20 +597,28 @@ impl ApplicationHandler for App {
             max_depth: 1.0,
         };
 
-        let rt_camera_data = raygen::Camera {
-            proj_inverse: [[0.0; 4]; 4],
-            view_inverse: [[0.0; 4]; 4],
-        };
-
-        let rt_sunlight_data = raygen::Sunlight {
-            direction: vec3(0.5, -0.5, 0.5).to_array(),
-        };
-
         #[cfg(debug_assertions)]
         let debug_constant_data = debug::shader::vert::PushConstants {
             world: Mat4::default().to_cols_array_2d(),
             view: Mat4::default().to_cols_array_2d(),
             proj: Mat4::default().to_cols_array_2d(),
+        };
+
+        let region = RegionRenderContext {
+            camera: capture_raygen::Camera {
+                proj_inverse: [[0.0; 4]; 4],
+                view_inverse: [[0.0; 4]; 4],
+            },
+            swapchain_storage_image_ids,
+            // The production raygen never dereferences `t_image_id`
+            // (shaders/region/production.rgen) — it stays INVALID.
+            t_image_storage_id: StorageImageId::INVALID,
+            #[cfg(debug_assertions)]
+            debug_constant_data,
+            #[cfg(debug_assertions)]
+            debug_lines: vec![],
+            #[cfg(debug_assertions)]
+            viewport,
         };
 
         self.rcx = Some(RenderContext {
@@ -645,18 +627,7 @@ impl ApplicationHandler for App {
             virtual_swapchain_id,
             recreate_swapchain: false,
             task_graph,
-            rt_camera_data,
-            rt_sunlight_data,
-            view_proj: Mat4::IDENTITY,
-            acceleration_structures,
-            current_as_index,
-            #[cfg(debug_assertions)]
-            debug_constant_data,
-            #[cfg(debug_assertions)]
-            debug_lines: vec![],
-            #[cfg(debug_assertions)]
-            viewport,
-            swapchain_storage_image_ids,
+            region,
         });
     }
 
@@ -688,7 +659,14 @@ impl ApplicationHandler for App {
                 self.update_camera();
                 self.physics_controller.request_update();
                 self.request_log();
-                self.request_async_tlas_update();
+
+                // The change cycle: anything the world voiced since the last
+                // frame is applied through the ordered rebuild nodes (pool
+                // upload → BLAS build → TLAS build on residency transitions)
+                // before the consuming trace (renderer-impl ticket 05).
+                if !self.input.take_dirty_regions().is_empty() {
+                    self.store.apply(&self.gpu, &self.input);
+                }
 
                 {
                     let rcx = self.rcx.as_mut().unwrap();
@@ -713,7 +691,7 @@ impl ApplicationHandler for App {
 
                         #[cfg(debug_assertions)]
                         {
-                            rcx.viewport = Viewport {
+                            rcx.region.viewport = Viewport {
                                 offset: [0.0, 0.0],
                                 extent: window_size.into(),
                                 min_depth: 0.0,
@@ -723,13 +701,13 @@ impl ApplicationHandler for App {
 
                         let mut batch = self.gpu.resources.create_deferred_batch();
 
-                        for &id in &rcx.swapchain_storage_image_ids {
+                        for &id in &rcx.region.swapchain_storage_image_ids {
                             batch.destroy_storage_image(id);
                         }
 
                         batch.enqueue();
 
-                        rcx.swapchain_storage_image_ids =
+                        rcx.region.swapchain_storage_image_ids =
                             window_size_dependent_setup(&self.gpu.resources, rcx.swapchain_id);
 
                         rcx.recreate_swapchain = false;
@@ -750,7 +728,7 @@ impl ApplicationHandler for App {
 
                 let execute_result = unsafe {
                     rcx.task_graph
-                        .execute(resource_map, rcx, || rcx.window.pre_present_notify())
+                        .execute(resource_map, &rcx.region, || rcx.window.pre_present_notify())
                 };
 
                 match execute_result {

@@ -1,7 +1,12 @@
-//! The Region pipeline's GPU half (renderer-impl tickets 02/04): the shared
-//! ray tracing pipeline and the per-frame render task that ray-passes the
-//! swapchain storage images with the capture raygen (color + t-channel for
-//! the validator).
+//! The Region pipeline's GPU half (renderer-impl tickets 02/04, 06): the
+//! shared ray tracing pipeline and the per-frame render task that
+//! ray-passes the swapchain storage images — with the capture raygen
+//! (color + t-channel for the validator) or the production raygen (color
+//! only; `t_image_id` pushed as INVALID and never dereferenced — ticket
+//! 06's app path). The pipeline builder is shared by both raygen stages;
+//! the miss/intersection/closest-hit stages are the Region path's own
+//! (shaders/region), so the retired triangle path's stages (`shaders/rt`
+//! simple.*) are gone.
 //!
 //! All per-Region GPU state — voxel pools, procedural AABB BLASes, the
 //! lattice-static instance set and the stable TLAS — lives in
@@ -15,7 +20,14 @@ use std::sync::Arc;
 use vulkano::{
     acceleration_structure::AccelerationStructure,
     buffer::Buffer,
-    pipeline::ray_tracing::{RayTracingPipeline, ShaderBindingTable},
+    pipeline::{
+        PipelineShaderStageCreateInfo,
+        ray_tracing::{
+            RayTracingPipeline, RayTracingPipelineCreateInfo, RayTracingShaderGroupCreateInfo,
+            ShaderBindingTable,
+        },
+    },
+    shader::EntryPoint,
     swapchain::Swapchain,
 };
 use vulkano_taskgraph::{
@@ -24,15 +36,28 @@ use vulkano_taskgraph::{
     descriptor_set::{AccelerationStructureId, StorageBufferId, StorageImageId},
 };
 
-use crate::{
-    app::GpuStack, region::residency::RegionStore, tasks::render::build_ray_tracing_pipeline,
-};
+#[cfg(debug_assertions)]
+use crate::tasks::debug;
+use crate::{app::GpuStack, region::residency::RegionStore};
+#[cfg(debug_assertions)]
+use crate::world::Vertex3DColor;
+#[cfg(debug_assertions)]
+use vulkano::pipeline::graphics::viewport::Viewport;
 
 pub(crate) mod capture_raygen {
     vulkano_shaders::shader! {
         root_path_env: "CARGO_MANIFEST_DIR",
         ty: "raygen",
         path: "shaders/region/capture.rgen",
+        vulkan_version: "1.3"
+    }
+}
+
+pub(crate) mod production_raygen {
+    vulkano_shaders::shader! {
+        root_path_env: "CARGO_MANIFEST_DIR",
+        ty: "raygen",
+        path: "shaders/region/production.rgen",
         vulkan_version: "1.3"
     }
 }
@@ -64,13 +89,25 @@ pub(crate) mod closest_hit {
     }
 }
 
-/// The per-frame world the Region render task reads.
+/// The per-frame world the Region render task reads (shared by the
+/// validator's graph and the app's graph).
+///
+/// The debug-overlay fields are app-only (the validator's graph never draws
+/// the overlay, but builds the same world type): the app's per-frame debug
+/// lines, push constants, and viewport, behind `debug_assertions`.
 pub struct RegionRenderContext {
     pub camera: capture_raygen::Camera,
     pub swapchain_storage_image_ids: Vec<StorageImageId>,
     /// Validation only: the capture raygen additionally writes payload.t
-    /// here; the production raygen passes INVALID and never dereferences it.
+    /// here; the production raygen passes INVALID and never dereferences it
+    /// (shaders/region/production.rgen — ticket 06).
     pub t_image_storage_id: StorageImageId,
+    #[cfg(debug_assertions)]
+    pub debug_lines: Vec<Vertex3DColor>,
+    #[cfg(debug_assertions)]
+    pub debug_constant_data: debug::shader::vert::PushConstants,
+    #[cfg(debug_assertions)]
+    pub viewport: Viewport,
 }
 
 pub struct RegionRenderTask {
@@ -93,17 +130,18 @@ pub struct RegionRenderTask {
 }
 
 impl RegionRenderTask {
-    /// Builds the shared ray tracing pipeline and binds the store's buffers.
-    /// The store outlives the task, so its ids stay valid for every frame of
-    /// the pass (residency rebuilds rewrite the buffers in place).
-    pub fn new(gpu: &GpuStack, store: &RegionStore, virtual_swapchain_id: Id<Swapchain>) -> Self {
+    /// Builds the shared ray tracing pipeline around the given raygen stage
+    /// (capture for the validator, production for the app) and binds the
+    /// store's buffers. The store outlives the task, so its ids stay valid
+    /// for every frame of the pass (residency rebuilds rewrite the buffers
+    /// in place).
+    pub fn new(
+        gpu: &GpuStack,
+        store: &RegionStore,
+        virtual_swapchain_id: Id<Swapchain>,
+        raygen: &EntryPoint,
+    ) -> Self {
         let pipeline = {
-            let raygen = unsafe {
-                capture_raygen::load(&gpu.device)
-                    .unwrap()
-                    .entry_point("main")
-                    .unwrap()
-            };
             let miss = unsafe {
                 miss::load(&gpu.device)
                     .unwrap()
@@ -123,7 +161,7 @@ impl RegionRenderTask {
                     .unwrap()
             };
 
-            build_ray_tracing_pipeline(gpu, &raygen, &miss, &intersection, &closest_hit)
+            build_ray_tracing_pipeline(gpu, raygen, &miss, &intersection, &closest_hit)
         };
 
         let shader_binding_table =
@@ -147,6 +185,56 @@ impl RegionRenderTask {
     pub fn instance_buffer_id(&self) -> Id<Buffer> {
         self.instance_buffer_id
     }
+}
+
+/// Builds the shared ray tracing pipeline (raygen + miss + procedural hit
+/// group) around the given raygen entry point. The production task and the
+/// validator's capture task differ only in which raygen they pass — the
+/// miss/intersection/closest-hit stages are the Region path's own, so this
+/// is the one pipeline builder for the whole renderer (moved here from the
+/// retired `tasks/render.rs` in ticket 06).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn build_ray_tracing_pipeline(
+    gpu: &GpuStack,
+    raygen: &EntryPoint,
+    miss: &EntryPoint,
+    intersection: &EntryPoint,
+    closest_hit: &EntryPoint,
+) -> Arc<RayTracingPipeline> {
+    let bcx = gpu.resources.bindless_context().unwrap();
+
+    let stages = [
+        PipelineShaderStageCreateInfo::new(raygen),
+        PipelineShaderStageCreateInfo::new(miss),
+        PipelineShaderStageCreateInfo::new(intersection),
+        PipelineShaderStageCreateInfo::new(closest_hit),
+    ];
+
+    let groups = [
+        RayTracingShaderGroupCreateInfo::General { general_shader: 0 },
+        RayTracingShaderGroupCreateInfo::General { general_shader: 1 },
+        RayTracingShaderGroupCreateInfo::ProceduralHit {
+            closest_hit_shader: Some(3),
+            any_hit_shader: None,
+            intersection_shader: 2,
+        },
+    ];
+
+    let layout = bcx.pipeline_layout_from_stages(&stages).unwrap();
+
+    let base_info = RayTracingPipelineCreateInfo::new(&layout);
+
+    RayTracingPipeline::new(
+        &gpu.device,
+        None,
+        &RayTracingPipelineCreateInfo {
+            stages: &stages,
+            groups: &groups,
+            max_pipeline_ray_recursion_depth: 1,
+            ..base_info
+        },
+    )
+    .unwrap()
 }
 
 impl Task for RegionRenderTask {

@@ -765,7 +765,16 @@ impl ValidateApp {
         let mut task_graph = TaskGraph::new(&self.gpu.resources);
         let virtual_swapchain_id = task_graph.add_swapchain(&SwapchainCreateInfo::default());
 
-        let rt_task = RegionRenderTask::new(&self.gpu, store, virtual_swapchain_id);
+        // The validation render task: the same Region render task the app
+        // runs, but with the capture raygen (color + t-channel for the
+        // per-pixel {color, t} comparison).
+        let raygen = unsafe {
+            crate::region::render::capture_raygen::load(&self.gpu.device)
+                .unwrap()
+                .entry_point("main")
+                .unwrap()
+        };
+        let rt_task = RegionRenderTask::new(&self.gpu, store, virtual_swapchain_id, &raygen);
         let instance_buffer_id = rt_task.instance_buffer_id();
 
         let rt_node_id = task_graph
@@ -835,10 +844,34 @@ impl ValidateApp {
         }
         .map_err(|e| format!("compile: {e}"))?;
 
+        // The viewport extent follows the hidden window (the debug overlay
+        // is app-only; the validator never draws it).
+        #[cfg(debug_assertions)]
+        let extent = self.gpu.resources.swapchain(setup.swapchain_id).images()[0].extent();
+        #[cfg(debug_assertions)]
+        let viewport_extent = [extent[0] as f32, extent[1] as f32];
+
         let rcx = RegionRenderContext {
             camera: setup.camera,
             swapchain_storage_image_ids: setup.swapchain_storage_image_ids.clone(),
             t_image_storage_id: setup.t_image_storage_id,
+            // App-only debug overlay fields: the validator never draws the
+            // overlay, but builds the same world type.
+            #[cfg(debug_assertions)]
+            debug_lines: Vec::new(),
+            #[cfg(debug_assertions)]
+            debug_constant_data: crate::tasks::debug::shader::vert::PushConstants {
+                world: glam::Mat4::default().to_cols_array_2d(),
+                view: glam::Mat4::default().to_cols_array_2d(),
+                proj: glam::Mat4::default().to_cols_array_2d(),
+            },
+            #[cfg(debug_assertions)]
+            viewport: vulkano::pipeline::graphics::viewport::Viewport {
+                offset: [0.0, 0.0],
+                extent: viewport_extent,
+                min_depth: 0.0,
+                max_depth: 1.0,
+            },
         };
 
         Ok(ValidateFrame {

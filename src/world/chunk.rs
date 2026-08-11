@@ -2,13 +2,9 @@
 use std::{collections::HashMap, fmt::Display};
 
 use dot_vox::DotVoxData;
-use glam::{IVec3, UVec3, Vec3, Vec4, Vec4Swizzles};
-use vulkano::{Packed24_8, acceleration_structure::AccelerationStructureInstance};
+use glam::{IVec3, UVec3, Vec4, Vec4Swizzles};
 
-use crate::{
-    frustum::Frustum,
-    world::{HostVoxel, loader::SceneGraphTraverser},
-};
+use crate::world::{HostVoxel, loader::SceneGraphTraverser};
 
 #[cfg(debug_assertions)]
 use super::Vertex3DColor;
@@ -36,157 +32,24 @@ impl Bounds {
 
 #[derive(Debug)]
 pub struct Chunk {
-    visible: bool,
     voxels: HashMap<UVec3, HostVoxel>,
 }
 
 impl Default for Chunk {
     fn default() -> Self {
         Chunk {
-            visible: true,
             voxels: HashMap::new(),
         }
     }
 }
 
 impl Chunk {
-    pub fn set_visible(&mut self, value: bool) {
-        self.visible = value;
-    }
-
     pub fn empty(&self) -> bool {
         self.voxels.is_empty()
     }
 
-    pub fn visible(&self) -> bool {
-        self.visible
-    }
-
     pub fn contains(&self, position: &UVec3) -> bool {
         self.voxels.contains_key(position)
-    }
-
-    /// Returns true if at least one of the 6 face-neighbors is empty (air),
-    /// meaning this voxel has an exposed face and should be rendered.
-    pub fn is_surface_voxel(
-        &self,
-        local_position: &UVec3,
-        grid_position: IVec3,
-        world: &ChunksInner,
-    ) -> bool {
-        let cw = CHUNK_WIDTH as i32;
-        let local = IVec3::new(
-            local_position.x as i32,
-            local_position.y as i32,
-            local_position.z as i32,
-        );
-
-        let directions = [
-            IVec3::X,
-            IVec3::NEG_X,
-            IVec3::Y,
-            IVec3::NEG_Y,
-            IVec3::Z,
-            IVec3::NEG_Z,
-        ];
-
-        for dir in directions {
-            let neighbor_local = local + dir;
-
-            // Same chunk?
-            if neighbor_local.x >= 0
-                && neighbor_local.x < cw
-                && neighbor_local.y >= 0
-                && neighbor_local.y < cw
-                && neighbor_local.z >= 0
-                && neighbor_local.z < cw
-            {
-                let npos = UVec3::new(
-                    neighbor_local.x as u32,
-                    neighbor_local.y as u32,
-                    neighbor_local.z as u32,
-                );
-                if !self.voxels.contains_key(&npos) {
-                    return true;
-                }
-            } else {
-                // Cross chunk boundary
-                let global_neighbor = grid_position * cw + neighbor_local;
-                if Chunks::in_bounds(&global_neighbor) {
-                    let (neighbor_grid, neighbor_inner) =
-                        Chunks::translation_to_position(&global_neighbor);
-                    if let Some(neighbor_chunk) = world.get(&neighbor_grid)
-                        && !neighbor_chunk.contains(&neighbor_inner)
-                    {
-                        return true;
-                    }
-                } else {
-                    return true; // out of world bounds = exposed to void
-                }
-            }
-        }
-
-        false // all 6 neighbors solid -> buried
-    }
-
-    pub fn to_instances(
-        &self,
-        lod: u32,
-        grid_position: IVec3,
-        acceleration_structure_reference: u64,
-        world: &ChunksInner,
-    ) -> Vec<AccelerationStructureInstance> {
-        let lod_exponent = 2u32.pow(lod);
-        let offset: f32 = (2.0_f32.powi(lod as i32) - 1.0) / 2.0;
-
-        self.voxels
-            .iter()
-            .filter_map(|(local_position, voxel)| {
-                if self.voxels.contains_key(local_position)
-                    && self.is_surface_voxel(local_position, grid_position, world)
-                    && local_position.x % lod_exponent == 0
-                    && local_position.y % lod_exponent == 0
-                    && local_position.z % lod_exponent == 0
-                {
-                    Some(AccelerationStructureInstance {
-                        acceleration_structure_reference,
-                        instance_custom_index_and_mask: Packed24_8::new(
-                            voxel.material_index,
-                            if self.visible { 0xFF } else { 0x00 },
-                        ),
-                        transform: [
-                            [
-                                voxel.scale * lod_exponent as f32,
-                                0.0,
-                                0.0,
-                                (CHUNK_WIDTH as i32 * grid_position.x + local_position.x as i32)
-                                    as f32
-                                    + offset,
-                            ],
-                            [
-                                0.0,
-                                voxel.scale * lod_exponent as f32,
-                                0.0,
-                                (CHUNK_WIDTH as i32 * grid_position.y + local_position.y as i32)
-                                    as f32
-                                    + offset,
-                            ],
-                            [
-                                0.0,
-                                0.0,
-                                voxel.scale * lod_exponent as f32,
-                                (CHUNK_WIDTH as i32 * grid_position.z + local_position.z as i32)
-                                    as f32
-                                    + offset,
-                            ],
-                        ],
-                        ..Default::default()
-                    })
-                } else {
-                    None
-                }
-            })
-            .collect()
     }
 
     pub fn insert(&mut self, position: UVec3, voxel: HostVoxel) -> bool {
@@ -205,10 +68,8 @@ impl Chunk {
     pub fn debug_lines(&self, grid_position: IVec3) -> Vec<Vertex3DColor> {
         let color = if self.empty() {
             [0.5, 0.5, 0.5, 0.1]
-        } else if self.visible() {
-            [0.0, 1.0, 0.0, 1.0]
         } else {
-            [1.0, 0.0, 0.0, 1.0]
+            [0.0, 1.0, 0.0, 1.0]
         };
 
         let origin = grid_position * CHUNK_WIDTH as i32;
@@ -380,13 +241,6 @@ impl Chunks {
             && Chunks::Z_BOUNDS.inside(position.z)
     }
 
-    fn distance_to_chunk(grid_position: &IVec3, position: &IVec3) -> i32 {
-        position
-            .div_euclid(IVec3::splat(CHUNK_WIDTH as i32))
-            .distance_squared(*grid_position)
-            .isqrt()
-    }
-
     fn create_empty_chunks() -> ChunksInner {
         (-WORLD_WIDTH..WORLD_WIDTH)
             .flat_map(move |x| {
@@ -396,13 +250,6 @@ impl Chunks {
                 })
             })
             .collect()
-    }
-
-    pub fn active_chunks(&self) -> impl Iterator<Item = &IVec3> {
-        self.inner
-            .iter()
-            .filter(|(_, c)| !c.empty() && c.visible())
-            .map(|(p, _)| p)
     }
 
     fn translation_to_position(position: &IVec3) -> (IVec3, UVec3) {
@@ -480,14 +327,7 @@ impl Chunks {
 
                 let p = IVec3::new(position.x, position.y, -position.z);
 
-                Chunks::insert_voxel(
-                    &mut chunks,
-                    p,
-                    HostVoxel {
-                        scale: 1.0,
-                        material_index: voxel.i.into(),
-                    },
-                );
+                Chunks::insert_voxel(&mut chunks, p, HostVoxel::new(voxel.i.into()));
             }
         }
 
@@ -505,98 +345,6 @@ impl Chunks {
             .filter(|(_, c)| !c.empty())
             .flat_map(|(grid_position, chunk)| chunk.debug_lines(*grid_position))
             .collect()
-    }
-
-    pub fn to_instances(
-        &self,
-        origin: &IVec3,
-        acceleration_structure_reference: u64,
-        max_instance_count: u64,
-        frustum: Option<&Frustum>,
-    ) -> Vec<AccelerationStructureInstance> {
-        /// Distance in chunk-grid units at which each LOD level applies.
-        const LOD_DISTANCE_THRESHOLDS: &[i32] = &[4, 8, 16, 32];
-
-        const fn lod_for_distance(grid_distance: i32) -> u32 {
-            let mut lod = 0;
-            loop {
-                if lod > 3 {
-                    return u32::MAX;
-                }
-
-                let threshold = LOD_DISTANCE_THRESHOLDS[lod];
-                if grid_distance <= threshold {
-                    return lod as u32;
-                }
-
-                lod += 1;
-            }
-
-            u32::MAX
-        }
-
-        let mut chunks: Vec<_> = self
-            .active_chunks()
-            .filter(|grid_pos| {
-                if let Some(f) = frustum {
-                    let min = (**grid_pos * CHUNK_WIDTH as i32).as_vec3() - Vec3::splat(0.5);
-                    let max = ((**grid_pos + IVec3::ONE) * CHUNK_WIDTH as i32).as_vec3()
-                        - Vec3::splat(0.5);
-                    f.intersects_aabb(min, max)
-                } else {
-                    true
-                }
-            })
-            .collect();
-
-        chunks.sort_by(|a, b| {
-            let distance_a = Chunks::distance_to_chunk(a, origin);
-            let distance_b = Chunks::distance_to_chunk(b, origin);
-            distance_a.cmp(&distance_b)
-        });
-
-        let mut instances = Vec::with_capacity(max_instance_count as usize);
-        let mut remaining = max_instance_count;
-
-        for grid_position in &chunks {
-            let grid_distance = Chunks::distance_to_chunk(grid_position, origin);
-            let mut lod = lod_for_distance(grid_distance);
-            if lod == u32::MAX {
-                break;
-            }
-
-            let chunk = self.inner.get(grid_position).unwrap();
-
-            loop {
-                let chunk_instances = chunk.to_instances(
-                    lod,
-                    **grid_position,
-                    acceleration_structure_reference,
-                    &self.inner,
-                );
-                let count = chunk_instances.len() as u64;
-
-                if count <= remaining {
-                    instances.extend(chunk_instances);
-                    remaining -= count;
-                    break;
-                }
-
-                lod += 1;
-                if lod > 3 {
-                    return instances;
-                }
-            }
-        }
-
-        instances
-    }
-
-    pub fn set_chunk_visibility(&mut self, grid_position: IVec3, visible: bool) {
-        self.inner
-            .get_mut(&grid_position)
-            .unwrap()
-            .set_visible(visible);
     }
 
     pub fn contains(&self, position: &IVec3) -> bool {
@@ -718,14 +466,10 @@ impl Chunks {
 
 impl Display for Chunks {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        for (grid_position, voxel_count) in
-            self.inner.iter().filter_map(|(grid_position, chunk)| {
-                if chunk.visible() {
-                    Some((grid_position, chunk.voxels.len()))
-                } else {
-                    None
-                }
-            })
+        for (grid_position, voxel_count) in self
+            .inner
+            .iter()
+            .map(|(grid_position, chunk)| (grid_position, chunk.voxels.len()))
         {
             writeln!(f, "({grid_position:?}, voxels: {voxel_count})")?;
         }
@@ -754,7 +498,6 @@ mod test {
                         UVec3::new(x, y, z),
                         HostVoxel {
                             material_index: 0,
-                            scale: 1.0,
                         },
                     );
                 }
@@ -778,7 +521,6 @@ mod test {
                 position,
                 HostVoxel {
                     material_index: 0,
-                    scale: 1.0,
                 },
             );
 

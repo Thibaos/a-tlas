@@ -20,7 +20,8 @@ use vulkano_taskgraph::{
 };
 
 use crate::{
-    app::{App, RenderContext},
+    app::App,
+    region::render::RegionRenderContext,
     world::Vertex3DColor,
 };
 
@@ -44,7 +45,10 @@ pub mod shader {
     }
 }
 
-pub fn create_debug_pipeline(app: &App, node: &TaskNode<RenderContext>) -> Arc<GraphicsPipeline> {
+pub fn create_debug_pipeline(
+    app: &App,
+    node: &TaskNode<RegionRenderContext>,
+) -> Arc<GraphicsPipeline> {
     let subpass = node.subpass().unwrap().clone();
 
     let vertex = unsafe {
@@ -111,7 +115,7 @@ impl DrawDebugTask {
 }
 
 impl Task for DrawDebugTask {
-    type World = RenderContext;
+    type World = RegionRenderContext;
 
     unsafe fn execute(
         &self,

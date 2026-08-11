@@ -18,10 +18,7 @@ impl SceneGraphTraverser<'_> {
                 Chunks::insert_voxel(
                     self.chunks,
                     IVec3::new(voxel.x as i32, voxel.z as i32, voxel.y as i32),
-                    HostVoxel {
-                        scale: 1.0,
-                        material_index: voxel.i as u32,
-                    },
+                    HostVoxel::new(voxel.i as u32),
                 );
             }
         } else {

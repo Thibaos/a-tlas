@@ -37,8 +37,9 @@ pub const BACKGROUND_COLOR: [u8; 4] = [0, 0, 0, 255];
 /// The volume a world voxel occupies, as seen by the renderer under test.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum VoxelShape {
-    /// Unit cube centered on the voxel position: [p - 0.5, p + 0.5]. This is
-    /// what the current triangle-per-voxel path instances.
+    /// Unit cube centered on the voxel position: [p - 0.5, p + 0.5].
+    /// Retired with the triangle-per-voxel path (renderer-impl ticket 06);
+    /// kept so the reference can still trace it for comparison.
     CenteredUnitCube,
     /// The lattice cell [p, p + 1). The destination's in-shader DDA resolves
     /// cell = floor(hit) mod 8, i.e. grid cells.

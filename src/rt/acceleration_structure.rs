@@ -6,13 +6,11 @@ use vulkano::{
         AccelerationStructureBuildRangeInfo, AccelerationStructureBuildType,
         AccelerationStructureCreateInfo, AccelerationStructureGeometry,
         AccelerationStructureGeometryAabbsData, AccelerationStructureGeometryData,
-        AccelerationStructureGeometryInstancesData, AccelerationStructureGeometryTrianglesData,
-        AccelerationStructureInstance, AccelerationStructureType, BuildAccelerationStructureFlags,
-        BuildAccelerationStructureMode,
+        AccelerationStructureGeometryInstancesData, AccelerationStructureInstance,
+        AccelerationStructureType, BuildAccelerationStructureFlags, BuildAccelerationStructureMode,
     },
     buffer::{Buffer, BufferCreateInfo, BufferUsage, Subbuffer},
     device::{Device, Queue},
-    format::Format,
     memory::allocator::{AllocationCreateInfo, MemoryAllocator},
 };
 
@@ -85,11 +83,11 @@ pub(crate) fn build_flags(ty: AccelerationStructureType) -> BuildAccelerationStr
 /// storage was sized for `storage_capacity` at creation; the caller asserts
 /// the new build fits.
 ///
-/// Used by the fresh-build path (`build_acceleration_structure_fresh`,
-/// which creates the storage sized exactly and builds into it — the dummy
-/// BLAS path) and by the retired ticket-04 synchronous rebuild helpers; the
-/// residency manager's ordered rebuild nodes (renderer-impl ticket 05)
-/// record the same in-place builds into ordered taskgraph nodes instead.
+/// Used by the fresh-build path (`build_acceleration_structure_fresh`, which
+/// creates the storage sized exactly and builds into it — the dummy BLAS
+/// path). The residency manager's ordered rebuild nodes (renderer-impl
+/// ticket 05) record the same in-place builds into ordered taskgraph nodes
+/// instead of calling this synchronously.
 #[allow(clippy::too_many_arguments)]
 pub fn build_acceleration_structure_in_place(
     geometries: BuildGeometries,
@@ -310,146 +308,11 @@ pub fn build_acceleration_structure_fresh(
 
     (built, as_build_sizes_info.acceleration_structure_size)
 }
+
 use vulkano_taskgraph::{
     Id,
     resource::{Flight, Resources},
 };
-
-use crate::world::Vertex3D;
-
-#[allow(clippy::too_many_arguments)]
-pub fn build_acceleration_structure_common(
-    geometries: BuildGeometries,
-    mode: BuildAccelerationStructureMode,
-    primitive_count: u32,
-    ty: AccelerationStructureType,
-    memory_allocator: Arc<dyn MemoryAllocator>,
-    device: Arc<Device>,
-    queue: Arc<Queue>,
-    resources: &Arc<Resources>,
-    flight_id: Id<Flight>,
-) -> Arc<AccelerationStructure> {
-    let flags = match ty {
-        AccelerationStructureType::TopLevel => {
-            BuildAccelerationStructureFlags::PREFER_FAST_TRACE
-                | BuildAccelerationStructureFlags::ALLOW_UPDATE
-        }
-        AccelerationStructureType::BottomLevel => {
-            BuildAccelerationStructureFlags::PREFER_FAST_TRACE
-        }
-        _ => {
-            unimplemented!()
-        }
-    };
-
-    let mut as_build_geometry_info = AccelerationStructureBuildGeometryInfo {
-        ty,
-        mode: mode.clone(),
-        flags,
-        geometries: &geometries,
-        ..AccelerationStructureBuildGeometryInfo::new()
-    };
-
-    let as_build_sizes_info = device.acceleration_structure_build_sizes(
-        AccelerationStructureBuildType::Device,
-        &as_build_geometry_info,
-        &[primitive_count],
-    );
-
-    let scratch_buffer = Buffer::new_slice::<u8>(
-        &memory_allocator,
-        &BufferCreateInfo {
-            usage: BufferUsage::SHADER_DEVICE_ADDRESS | BufferUsage::STORAGE_BUFFER,
-            ..Default::default()
-        },
-        &AllocationCreateInfo::default(),
-        as_build_sizes_info.build_scratch_size,
-    )
-    .unwrap();
-
-    let as_buffer = Buffer::new_slice::<u8>(
-        &memory_allocator,
-        &BufferCreateInfo {
-            usage: BufferUsage::ACCELERATION_STRUCTURE_STORAGE | BufferUsage::SHADER_DEVICE_ADDRESS,
-            ..Default::default()
-        },
-        &AllocationCreateInfo::default(),
-        as_build_sizes_info.acceleration_structure_size,
-    )
-    .unwrap();
-
-    let as_create_info = AccelerationStructureCreateInfo {
-        size: as_build_sizes_info.acceleration_structure_size,
-        ty,
-        ..AccelerationStructureCreateInfo::new(as_buffer.buffer())
-    };
-
-    let acceleration = unsafe { AccelerationStructure::new(&device, &as_create_info) }.unwrap();
-
-    as_build_geometry_info.dst_acceleration_structure = Some(&acceleration);
-    as_build_geometry_info.scratch_data = scratch_buffer.device_address().unwrap().get();
-
-    let as_build_range_info = AccelerationStructureBuildRangeInfo {
-        primitive_count,
-        ..Default::default()
-    };
-
-    unsafe {
-        vulkano_taskgraph::execute(
-            &queue,
-            resources,
-            flight_id,
-            |cbf, _tcx| {
-                as_build_barriers(cbf);
-                cbf.as_raw()
-                    .build_acceleration_structure(&as_build_geometry_info, &[as_build_range_info]);
-                Ok(())
-            },
-            [],
-            [],
-            [],
-        )
-        .unwrap()
-    };
-
-    resources.flight(flight_id).wait_idle().unwrap();
-
-    acceleration
-}
-
-pub fn build_blas(
-    vertex_buffer: Subbuffer<[Vertex3D]>,
-    memory_allocator: Arc<dyn MemoryAllocator>,
-    device: Arc<Device>,
-    queue: Arc<Queue>,
-    resources: &Arc<Resources>,
-    flight_id: Id<Flight>,
-) -> Arc<AccelerationStructure> {
-    let primitive_count = (vertex_buffer.len() / 3) as u32;
-    let as_geometry_triangles_data = AccelerationStructureGeometryTrianglesData {
-        vertex_format: Format::R32G32B32_SFLOAT,
-        max_vertex: vertex_buffer.len() as _,
-        vertex_data: vertex_buffer.device_address().unwrap().get(),
-        vertex_stride: size_of::<Vertex3D>() as _,
-        ..Default::default()
-    };
-
-    let geometries = vec![AccelerationStructureGeometry::new(
-        AccelerationStructureGeometryData::Triangles(as_geometry_triangles_data),
-    )];
-
-    build_acceleration_structure_common(
-        geometries,
-        BuildAccelerationStructureMode::Build,
-        primitive_count,
-        AccelerationStructureType::BottomLevel,
-        memory_allocator,
-        device,
-        queue,
-        resources,
-        flight_id,
-    )
-}
 
 // ---------------------------------------------------------------------------
 // Residency-path builders (renderer-impl ticket 04)
