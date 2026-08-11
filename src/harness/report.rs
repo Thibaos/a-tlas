@@ -126,7 +126,12 @@ pub fn write_text_report(
     if report.passes() {
         out.push_str("The GPU frame matches the independent CPU reference tracer.\n");
     } else {
-        out.push_str("See gpu.png (captured frame), reference.png, and diff.png.\n");
+        out.push_str(
+            "See gpu.png (captured frame), reference.png, and diff.png.\n\
+             diff.png is the reference frame with mismatch pixels overlaid: red = hard\n\
+             mismatch (real divergence), yellow = excused edge-silhouette mismatch.\n\
+             When there are no mismatches it is identical to reference.png.\n",
+        );
     }
 
     let mut file = File::create(path)?;
