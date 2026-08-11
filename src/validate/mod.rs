@@ -774,7 +774,17 @@ impl ValidateApp {
                 .entry_point("main")
                 .unwrap()
         };
-        let rt_task = RegionRenderTask::new(&self.gpu, store, virtual_swapchain_id, &raygen);
+        let rt_task = RegionRenderTask::new(
+            &self.gpu,
+            store,
+            virtual_swapchain_id,
+            &raygen,
+            // No measurement pool (renderer-impl ticket 07): the validator
+            // never measures — no timestamp commands are recorded, so the
+            // captured frames are bit-identical with or without measurement
+            // (which runs on demand in the app only).
+            None,
+        );
         let instance_buffer_id = rt_task.instance_buffer_id();
 
         let rt_node_id = task_graph

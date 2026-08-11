@@ -119,3 +119,29 @@ the renderer's DDA/AABB/pool representation, so a divergence points at the
 renderer rather than at shared algorithm assumptions (rendering-core ticket
 06).
 _Avoid_: Reference renderer, oracle
+
+## Measurement
+
+**GPU timestamp**:
+A QueryType::Timestamp sample from the graphics queue (the compute queue's
+rebuild nodes are timestamped the same way). Runs on demand: only the app
+attaches a pool (`atlas-rt --measure`); the validator never measures.
+_Avoid_: Timer, clock (the wall-clock is a different thing, below)
+
+**Per-stage attribution**:
+The FPS log's breakdown of the frame's GPU time into trace_rays, AS rebuild
+(the ordered rebuild nodes' upload+BLAS+TLAS), and flight lines — a rebuild
+spike shows up in the AS-rebuild line, never in trace_rays.
+_Avoid_: Total frame time (that is flight's job)
+
+**Gate**:
+The 16 ms/frame budget; computed as the **GPU timestamp sum** (trace_rays +
+AS rebuilds), with the wall-clock frame interval reported beside it. A
+wall-clock over 16 ms with a small GPU sum means CPU/present-bound — a
+different fix than traversal.
+_Avoid_: FPS target, frame-time target
+
+**Flight**:
+The frame's whole GPU interval on the graphics queue, bracketed around the
+render node's work (the app-only debug overlay draws after and is excluded).
+_Avoid_: Frame interval (the wall-clock's term)

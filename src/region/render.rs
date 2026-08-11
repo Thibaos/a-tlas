@@ -27,8 +27,10 @@ use vulkano::{
             ShaderBindingTable,
         },
     },
+    query::QueryPool,
     shader::EntryPoint,
     swapchain::Swapchain,
+    sync::PipelineStage,
 };
 use vulkano_taskgraph::{
     Id, Task, TaskContext, TaskResult,
@@ -40,7 +42,13 @@ use vulkano_taskgraph::{
 use crate::tasks::debug;
 #[cfg(debug_assertions)]
 use crate::world::Vertex3DColor;
-use crate::{app::GpuStack, region::residency::RegionStore};
+use crate::{
+    app::GpuStack,
+    measure::{
+        FLIGHT_BEGIN_SLOT, FLIGHT_END_SLOT, TIMESTAMP_SLOT_COUNT, TRACE_BEGIN_SLOT, TRACE_END_SLOT,
+    },
+    region::residency::RegionStore,
+};
 #[cfg(debug_assertions)]
 use vulkano::pipeline::graphics::viewport::Viewport;
 
@@ -127,6 +135,13 @@ pub struct RegionRenderTask {
     /// alive for the whole pass — harmless retention.)
     #[allow(dead_code)]
     blases: Vec<Arc<AccelerationStructure>>,
+    /// The measurement pool (renderer-impl ticket 07): when attached, the
+    /// frame's GPU time is attributed per stage — the pool is reset at the
+    /// top of the frame, then flight begin / trace begin-end / flight end
+    /// timestamps are written around the node and the `trace_rays` call
+    /// (slot layout in [`crate::measure`]). `None` (the validator's path)
+    /// records nothing — the harness's captured frames are bit-identical.
+    timestamps: Option<Arc<QueryPool>>,
 }
 
 impl RegionRenderTask {
@@ -135,11 +150,16 @@ impl RegionRenderTask {
     /// store's buffers. The store outlives the task, so its ids stay valid
     /// for every frame of the pass (residency rebuilds rewrite the buffers
     /// in place).
+    ///
+    /// `timestamps` (renderer-impl ticket 07): the measurement pool, when
+    /// the app measures — the task records per-stage timestamps (flight /
+    /// trace_rays) around the node. The validator passes `None`.
     pub fn new(
         gpu: &GpuStack,
         store: &RegionStore,
         virtual_swapchain_id: Id<Swapchain>,
         raygen: &EntryPoint,
+        timestamps: Option<Arc<QueryPool>>,
     ) -> Self {
         let pipeline = {
             let miss = unsafe {
@@ -178,6 +198,7 @@ impl RegionRenderTask {
             shader_binding_table,
             pipeline,
             blases: store.blases(),
+            timestamps,
         }
     }
 
@@ -246,6 +267,17 @@ impl Task for RegionRenderTask {
         tcx: &mut TaskContext<'_>,
         rcx: &Self::World,
     ) -> TaskResult {
+        // Measurement (renderer-impl ticket 07): reset the pool (queries
+        // must be reset between uses — Vulkan spec, queries.adoc) and write
+        // the flight begin as the first command of the node.
+        if let Some(pool) = &self.timestamps {
+            unsafe { cbf.as_raw().reset_query_pool(pool, 0, TIMESTAMP_SLOT_COUNT) };
+            unsafe {
+                cbf.as_raw()
+                    .write_timestamp(pool, FLIGHT_BEGIN_SLOT, PipelineStage::AllCommands)
+            };
+        }
+
         let swapchain_state = tcx.swapchain(self.swapchain_id);
         let image_index = swapchain_state.current_image_index().unwrap();
         let extent = swapchain_state.images()[0].extent();
@@ -287,7 +319,31 @@ impl Task for RegionRenderTask {
             cbf.bind_pipeline(&self.pipeline);
         }
 
+        if let Some(pool) = &self.timestamps {
+            unsafe {
+                cbf.as_raw().write_timestamp(
+                    pool,
+                    TRACE_BEGIN_SLOT,
+                    PipelineStage::RayTracingShader,
+                )
+            };
+        }
+
         unsafe { cbf.trace_rays(self.shader_binding_table.addresses(), extent) };
+
+        if let Some(pool) = &self.timestamps {
+            unsafe {
+                cbf.as_raw()
+                    .write_timestamp(pool, TRACE_END_SLOT, PipelineStage::RayTracingShader)
+            };
+            // The flight end: the last command of the production path's
+            // frame work (the app-only debug overlay, when present, draws
+            // after — excluded from "flight").
+            unsafe {
+                cbf.as_raw()
+                    .write_timestamp(pool, FLIGHT_END_SLOT, PipelineStage::AllCommands)
+            };
+        }
 
         Ok(())
     }
