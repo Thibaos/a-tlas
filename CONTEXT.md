@@ -1,4 +1,4 @@
-# a-tlas
+# atlas-rt
 
 A real-time voxel renderer using hardware ray tracing (Vulkan RT pipelines,
 vulkano). Renders sparse voxel worlds loaded from .vox files.
@@ -29,7 +29,7 @@ _Avoid_: Micro-chunk (below)
 **Micro-chunk**:
 The renderer's 8x8x8 render/acceleration-structure unit, tightly wrapped to
 occupied voxels (owner requirement; named by rendering-core ticket 03). One
-AABB per non-empty micro-chunk; 512 micro-chunks fill one Chunk. a-tlas's
+AABB per non-empty micro-chunk; 512 micro-chunks fill one Chunk. atlas-rt's
 "Chunk" and "Micro-chunk" are different units (storage vs render).
 _Avoid_: Chunk, cell
 
@@ -87,12 +87,12 @@ _Avoid_: Changed region
 **Ray tracing pipeline**:
 The full pipeline-based hardware ray tracing mechanism (ray generation, miss,
 closest-hit, intersection shaders, shader binding table) via vulkano.
-a-tlas's only acceleration mechanism.
+atlas-rt's only acceleration mechanism.
 _Avoid_: Ray query (below)
 
 **Ray query**:
 The inline hardware ray-intersection mechanism (wgpu's ray queries / Vulkan
-ray-query) used without a dedicated pipeline. Not used in a-tlas; reference
+ray-query) used without a dedicated pipeline. Not used in atlas-rt; reference
 term only.
 _Avoid_: Ray tracing pipeline
 

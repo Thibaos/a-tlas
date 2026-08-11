@@ -324,7 +324,7 @@ mod tests {
 
         static COUNTER: AtomicU32 = AtomicU32::new(0);
 
-        let dir = std::env::temp_dir().join("a-tlas-test-worlds");
+        let dir = std::env::temp_dir().join("atlas-rt-test-worlds");
         fs::create_dir_all(&dir).unwrap();
         let path = dir.join(format!(
             "test-{}-{}.vox",
@@ -370,7 +370,7 @@ mod tests {
 
     #[test]
     fn every_test_world_writes_and_loads() {
-        let dir = std::env::temp_dir().join("a-tlas-test-worlds");
+        let dir = std::env::temp_dir().join("atlas-rt-test-worlds");
         let paths = generate_all(&dir).unwrap();
         assert_eq!(paths.len(), 6);
 

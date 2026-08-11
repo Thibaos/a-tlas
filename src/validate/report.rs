@@ -61,7 +61,7 @@ pub fn write_text_report(
 ) -> std::io::Result<()> {
     let mut out = String::new();
 
-    out.push_str(&format!("a-tlas correctness validate report\n"));
+    out.push_str(&format!("atlas-rt correctness validate report\n"));
     out.push_str(&format!("world: {world_name} ({world_path})\n"));
     out.push_str(&format!("camera: {camera_description}\n"));
     out.push_str(&format!(

@@ -7,7 +7,7 @@
 //! the same frame with the independent CPU reference tracer, and writes a
 //! comparison report (PNGs + text) under `--out`.
 //!
-//! Usage (see `a-tlas validate --help`):
+//! Usage (see `atlas-rt validate --help`):
 //!   cargo run -- validate                      # run the whole suite
 //!   cargo run -- validate --world assets/test/single.vox
 //!   cargo run -- validate --gen-test-worlds    # (re)write assets/test/*.vox
@@ -104,14 +104,14 @@ pub struct PassSummary {
 
 pub fn print_help() {
     println!(
-        "a-tlas correctness validator\n\
+        "atlas-rt correctness validator\n\
          \n\
          Renders a test .vox world through the real renderer, captures the raw frame\n\
          before any overlay, traces the same frame with an independent CPU reference\n\
          tracer, and reports per-pixel {{color, t}} mismatches.\n\
          \n\
          USAGE:\n\
-         \x20 a-tlas validate [OPTIONS]\n\
+         \x20 atlas-rt validate [OPTIONS]\n\
          \n\
          OPTIONS:\n\
          \x20 --world <path>       Run a single world (default: the whole suite:\n\
@@ -174,7 +174,7 @@ pub fn parse_args(args: &[String]) -> Result<ValidateOptions, String> {
     Ok(opts)
 }
 
-/// Entry point for `a-tlas validate ...`.
+/// Entry point for `atlas-rt validate ...`.
 pub fn run(args: &[String]) -> Result<(), String> {
     let opts = parse_args(args)?;
 
