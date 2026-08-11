@@ -2,10 +2,11 @@ use std::sync::Arc;
 
 use vulkano::{
     acceleration_structure::{
-        AccelerationStructure, AccelerationStructureBuildGeometryInfo,
+        AabbPositions, AccelerationStructure, AccelerationStructureBuildGeometryInfo,
         AccelerationStructureBuildRangeInfo, AccelerationStructureBuildType,
         AccelerationStructureCreateInfo, AccelerationStructureGeometries,
-        AccelerationStructureGeometryInstancesData, AccelerationStructureGeometryInstancesDataType,
+        AccelerationStructureGeometryAabbsData, AccelerationStructureGeometryInstancesData,
+        AccelerationStructureGeometryInstancesDataType,
         AccelerationStructureGeometryTrianglesData, AccelerationStructureInstance,
         AccelerationStructureType, BuildAccelerationStructureFlags, BuildAccelerationStructureMode,
     },
@@ -14,6 +15,205 @@ use vulkano::{
     format::Format,
     memory::allocator::{AllocationCreateInfo, MemoryAllocator},
 };
+
+// The build's pre/post memory barriers (shared by every build path): the
+// build input (TRANSFER_WRITE | SHADER_WRITE) must be visible before the
+// build, and the built AS must be visible to later traces/rebuilds.
+fn as_build_barriers(cbf: &mut vulkano_taskgraph::command_buffer::RecordingCommandBuffer<'_>) {
+    let pre_memory_barrier = vulkano_taskgraph::command_buffer::MemoryBarrier {
+        src_access: vulkano::sync::AccessFlags::TRANSFER_WRITE
+            | vulkano::sync::AccessFlags::SHADER_WRITE,
+        dst_access: vulkano::sync::AccessFlags::ACCELERATION_STRUCTURE_WRITE
+            | vulkano::sync::AccessFlags::ACCELERATION_STRUCTURE_READ,
+        src_stages: vulkano::sync::PipelineStages::ALL_TRANSFER
+            | vulkano::sync::PipelineStages::COMPUTE_SHADER,
+        dst_stages: vulkano::sync::PipelineStages::ACCELERATION_STRUCTURE_BUILD,
+        ..Default::default()
+    };
+    // SAFETY: `pipeline_barrier` is unsafe (synchronization must be
+    // correct); the caller holds the command buffer inside an execute
+    // closure's recording context, and these are the standard pre/post
+    // build barriers from the original build helper.
+    unsafe {
+        cbf.pipeline_barrier(&vulkano_taskgraph::command_buffer::DependencyInfo {
+            memory_barriers: &[pre_memory_barrier],
+            ..Default::default()
+        });
+    }
+
+    let post_memory_barrier = vulkano_taskgraph::command_buffer::MemoryBarrier {
+        src_access: vulkano::sync::AccessFlags::ACCELERATION_STRUCTURE_WRITE,
+        dst_access: vulkano::sync::AccessFlags::ACCELERATION_STRUCTURE_READ
+            | vulkano::sync::AccessFlags::SHADER_READ,
+        src_stages: vulkano::sync::PipelineStages::ACCELERATION_STRUCTURE_BUILD,
+        dst_stages: vulkano::sync::PipelineStages::ACCELERATION_STRUCTURE_BUILD
+            | vulkano::sync::PipelineStages::RAY_TRACING_SHADER,
+        ..Default::default()
+    };
+    unsafe {
+        cbf.pipeline_barrier(&vulkano_taskgraph::command_buffer::DependencyInfo {
+            memory_barriers: &[post_memory_barrier],
+            ..Default::default()
+        });
+    }
+}
+
+/// The flags for a fresh/in-place build of `ty` (TLAS builds keep
+/// ALLOW_UPDATE so an update-mode build remains possible; BLAS builds do
+/// not need it).
+fn build_flags(ty: AccelerationStructureType) -> BuildAccelerationStructureFlags {
+    match ty {
+        AccelerationStructureType::TopLevel => {
+            BuildAccelerationStructureFlags::PREFER_FAST_TRACE
+                | BuildAccelerationStructureFlags::ALLOW_UPDATE
+        }
+        AccelerationStructureType::BottomLevel => BuildAccelerationStructureFlags::PREFER_FAST_TRACE,
+        _ => unimplemented!(),
+    }
+}
+
+/// Builds `geometries` into the existing AS `dst` (mode Build) — an
+/// **in-place rebuild**: the AS object and its storage never move, so the
+/// device address (and any TLAS instance referencing it) stays valid. The
+/// storage was sized for `storage_capacity` at creation; the caller asserts
+/// the new build fits. Used by the residency manager (renderer-impl ticket
+/// 04) to rebuild region BLASes on content edits and the TLAS on residency
+/// transitions.
+#[allow(clippy::too_many_arguments)]
+pub fn build_acceleration_structure_in_place(
+    geometries: AccelerationStructureGeometries,
+    primitive_count: u32,
+    ty: AccelerationStructureType,
+    dst: &Arc<AccelerationStructure>,
+    storage_capacity: u64,
+    memory_allocator: Arc<dyn MemoryAllocator>,
+    device: Arc<Device>,
+    queue: Arc<Queue>,
+    resources: &Arc<Resources>,
+    flight_id: Id<Flight>,
+) -> Arc<AccelerationStructure> {
+    let mut as_build_geometry_info = AccelerationStructureBuildGeometryInfo {
+        mode: BuildAccelerationStructureMode::Build,
+        flags: build_flags(ty),
+        ..AccelerationStructureBuildGeometryInfo::new(geometries)
+    };
+
+    let as_build_sizes_info = device.acceleration_structure_build_sizes(
+        AccelerationStructureBuildType::Device,
+        &as_build_geometry_info,
+        &[primitive_count],
+    );
+    debug_assert!(
+        as_build_sizes_info.acceleration_structure_size <= storage_capacity,
+        "in-place build of {primitive_count} primitives needs {} bytes but the storage holds {storage_capacity}",
+        as_build_sizes_info.acceleration_structure_size
+    );
+
+    let scratch_buffer = Buffer::new_slice::<u8>(
+        &memory_allocator,
+        &BufferCreateInfo {
+            usage: BufferUsage::SHADER_DEVICE_ADDRESS | BufferUsage::STORAGE_BUFFER,
+            ..Default::default()
+        },
+        &AllocationCreateInfo::default(),
+        as_build_sizes_info.build_scratch_size,
+    )
+    .unwrap();
+
+    as_build_geometry_info.dst_acceleration_structure = Some(dst.clone());
+    as_build_geometry_info.scratch_data = Some(scratch_buffer);
+
+    let as_build_range_info = AccelerationStructureBuildRangeInfo {
+        primitive_count,
+        ..Default::default()
+    };
+
+    unsafe {
+        vulkano_taskgraph::execute(
+            &queue,
+            resources,
+            flight_id,
+            |cbf, _tcx| {
+                as_build_barriers(cbf);
+                cbf.as_raw()
+                    .build_acceleration_structure(&as_build_geometry_info, &[as_build_range_info]);
+                Ok(())
+            },
+            [],
+            [],
+            [],
+        )
+        .unwrap()
+    };
+
+    resources.flight(flight_id).wait_idle().unwrap();
+
+    dst.clone()
+}
+
+/// Creates a fresh AS (storage sized exactly for `primitive_count`) and
+/// builds it. Returns the AS and its storage size (the residency manager
+/// tracks it for free-list reuse checks).
+#[allow(clippy::too_many_arguments)]
+pub fn build_acceleration_structure_fresh(
+    geometries: AccelerationStructureGeometries,
+    primitive_count: u32,
+    ty: AccelerationStructureType,
+    memory_allocator: Arc<dyn MemoryAllocator>,
+    device: Arc<Device>,
+    queue: Arc<Queue>,
+    resources: &Arc<Resources>,
+    flight_id: Id<Flight>,
+) -> (Arc<AccelerationStructure>, u64) {
+    let as_build_geometry_info = AccelerationStructureBuildGeometryInfo {
+        mode: BuildAccelerationStructureMode::Build,
+        flags: build_flags(ty),
+        ..AccelerationStructureBuildGeometryInfo::new(geometries)
+    };
+
+    let as_build_sizes_info = device.acceleration_structure_build_sizes(
+        AccelerationStructureBuildType::Device,
+        &as_build_geometry_info,
+        &[primitive_count],
+    );
+
+    let as_buffer = Buffer::new_slice::<u8>(
+        &memory_allocator,
+        &BufferCreateInfo {
+            usage: BufferUsage::ACCELERATION_STRUCTURE_STORAGE
+                | BufferUsage::SHADER_DEVICE_ADDRESS,
+            ..Default::default()
+        },
+        &AllocationCreateInfo::default(),
+        as_build_sizes_info.acceleration_structure_size,
+    )
+    .unwrap();
+
+    let as_create_info = AccelerationStructureCreateInfo {
+        ty,
+        ..AccelerationStructureCreateInfo::new(&as_buffer)
+    };
+
+    let acceleration = unsafe { AccelerationStructure::new(&device, &as_create_info) }.unwrap();
+
+    let built = build_acceleration_structure_in_place(
+        // The geometry info is re-derived inside; pass the geometries again.
+        // (The call below re-runs build_sizes with the identical geometry,
+        // so the assertion against the freshly-sized storage holds.)
+        as_build_geometry_info.geometries.clone(),
+        primitive_count,
+        ty,
+        &acceleration,
+        as_build_sizes_info.acceleration_structure_size,
+        memory_allocator,
+        device,
+        queue,
+        resources,
+        flight_id,
+    );
+
+    (built, as_build_sizes_info.acceleration_structure_size)
+}
 use vulkano_taskgraph::{
     Id,
     resource::{Flight, Resources},
@@ -101,38 +301,9 @@ pub fn build_acceleration_structure_common(
             resources,
             flight_id,
             |cbf, _tcx| {
-                let pre_memory_barrier = vulkano_taskgraph::command_buffer::MemoryBarrier {
-                    src_access: vulkano::sync::AccessFlags::TRANSFER_WRITE
-                        | vulkano::sync::AccessFlags::SHADER_WRITE,
-                    dst_access: vulkano::sync::AccessFlags::ACCELERATION_STRUCTURE_WRITE
-                        | vulkano::sync::AccessFlags::ACCELERATION_STRUCTURE_READ,
-                    src_stages: vulkano::sync::PipelineStages::ALL_TRANSFER
-                        | vulkano::sync::PipelineStages::COMPUTE_SHADER,
-                    dst_stages: vulkano::sync::PipelineStages::ACCELERATION_STRUCTURE_BUILD,
-                    ..Default::default()
-                };
-                cbf.pipeline_barrier(&vulkano_taskgraph::command_buffer::DependencyInfo {
-                    memory_barriers: &[pre_memory_barrier],
-                    ..Default::default()
-                });
-
+                as_build_barriers(cbf);
                 cbf.as_raw()
                     .build_acceleration_structure(&as_build_geometry_info, &[as_build_range_info]);
-
-                let post_memory_barrier = vulkano_taskgraph::command_buffer::MemoryBarrier {
-                    src_access: vulkano::sync::AccessFlags::ACCELERATION_STRUCTURE_WRITE,
-                    dst_access: vulkano::sync::AccessFlags::ACCELERATION_STRUCTURE_READ
-                        | vulkano::sync::AccessFlags::SHADER_READ,
-                    src_stages: vulkano::sync::PipelineStages::ACCELERATION_STRUCTURE_BUILD,
-                    dst_stages: vulkano::sync::PipelineStages::ACCELERATION_STRUCTURE_BUILD
-                        | vulkano::sync::PipelineStages::RAY_TRACING_SHADER,
-                    ..Default::default()
-                };
-                cbf.pipeline_barrier(&vulkano_taskgraph::command_buffer::DependencyInfo {
-                    memory_barriers: &[post_memory_barrier],
-                    ..Default::default()
-                });
-
                 Ok(())
             },
             [],
@@ -203,5 +374,163 @@ pub fn build_tlas(
         queue,
         resources,
         flight_id,
+    )
+}
+
+// ---------------------------------------------------------------------------
+// Residency-path builders (renderer-impl ticket 04)
+// ---------------------------------------------------------------------------
+
+/// Builds a fresh procedural AABB BLAS over `aabb_buffer` (a taskgraph-owned
+/// build-input buffer) and returns it plus its AS storage size (the residency
+/// manager's free-list reuse unit). Storage is sized exactly for
+/// `primitive_count` AABBs.
+pub fn build_blas_aabbs_fresh(
+    aabb_buffer: Subbuffer<[AabbPositions]>,
+    primitive_count: u32,
+    memory_allocator: Arc<dyn MemoryAllocator>,
+    device: Arc<Device>,
+    queue: Arc<Queue>,
+    resources: &Arc<Resources>,
+    flight_id: Id<Flight>,
+) -> (Arc<AccelerationStructure>, u64) {
+    let aabb_data = AccelerationStructureGeometryAabbsData {
+        data: Some(aabb_buffer.into_bytes()),
+        stride: size_of::<AabbPositions>() as u32,
+        ..Default::default()
+    };
+
+    build_acceleration_structure_fresh(
+        AccelerationStructureGeometries::Aabbs(vec![aabb_data]),
+        primitive_count,
+        AccelerationStructureType::BottomLevel,
+        memory_allocator,
+        device,
+        queue,
+        resources,
+        flight_id,
+    )
+}
+
+/// Rebuilds an existing procedural AABB BLAS **in place** over the (rewritten)
+/// AABB buffer — the AS object and its storage never move, so the device
+/// address stays valid and the TLAS instance referencing it is untouched.
+#[allow(clippy::too_many_arguments)]
+pub fn build_blas_aabbs_in_place(
+    aabb_buffer: Subbuffer<[AabbPositions]>,
+    primitive_count: u32,
+    dst: &Arc<AccelerationStructure>,
+    storage_capacity: u64,
+    memory_allocator: Arc<dyn MemoryAllocator>,
+    device: Arc<Device>,
+    queue: Arc<Queue>,
+    resources: &Arc<Resources>,
+    flight_id: Id<Flight>,
+) -> Arc<AccelerationStructure> {
+    let aabb_data = AccelerationStructureGeometryAabbsData {
+        data: Some(aabb_buffer.into_bytes()),
+        stride: size_of::<AabbPositions>() as u32,
+        ..Default::default()
+    };
+
+    build_acceleration_structure_in_place(
+        AccelerationStructureGeometries::Aabbs(vec![aabb_data]),
+        primitive_count,
+        AccelerationStructureType::BottomLevel,
+        dst,
+        storage_capacity,
+        memory_allocator,
+        device,
+        queue,
+        resources,
+        flight_id,
+    )
+}
+
+/// Rebuilds the TLAS in place over `instance_buffer[..primitive_count]` (the
+/// packed resident-prefix). The AS object and its storage never move, so the
+/// bindless acceleration-structure id stays valid across rebuilds.
+#[allow(clippy::too_many_arguments)]
+pub fn build_tlas_in_place(
+    instance_buffer: Subbuffer<[AccelerationStructureInstance]>,
+    primitive_count: u32,
+    dst: &Arc<AccelerationStructure>,
+    storage_capacity: u64,
+    memory_allocator: Arc<dyn MemoryAllocator>,
+    device: Arc<Device>,
+    queue: Arc<Queue>,
+    resources: &Arc<Resources>,
+    flight_id: Id<Flight>,
+) -> Arc<AccelerationStructure> {
+    let as_geometry_instances_data = AccelerationStructureGeometryInstancesData::new(
+        AccelerationStructureGeometryInstancesDataType::Values(Some(instance_buffer)),
+    );
+
+    build_acceleration_structure_in_place(
+        AccelerationStructureGeometries::Instances(as_geometry_instances_data),
+        primitive_count,
+        AccelerationStructureType::TopLevel,
+        dst,
+        storage_capacity,
+        memory_allocator,
+        device,
+        queue,
+        resources,
+        flight_id,
+    )
+}
+
+/// Creates a TLAS object whose storage is pre-sized for `max_instances` —
+/// the residency manager's **stable TLAS** (renderer-impl ticket 04): rebuilt
+/// in place on every residency transition with up to `max_instances`
+/// instances, so the object, its storage, and the bindless
+/// acceleration-structure id never move. Returns the TLAS and its storage
+/// size.
+pub fn create_tlas_storage(
+    instance_buffer: &Subbuffer<[AccelerationStructureInstance]>,
+    max_instances: u32,
+    memory_allocator: Arc<dyn MemoryAllocator>,
+    device: Arc<Device>,
+) -> (Arc<AccelerationStructure>, u64) {
+    let as_geometry_instances_data = AccelerationStructureGeometryInstancesData::new(
+        AccelerationStructureGeometryInstancesDataType::Values(Some(instance_buffer.clone())),
+    );
+
+    let as_build_geometry_info = AccelerationStructureBuildGeometryInfo {
+        mode: BuildAccelerationStructureMode::Build,
+        flags: build_flags(AccelerationStructureType::TopLevel),
+        ..AccelerationStructureBuildGeometryInfo::new(AccelerationStructureGeometries::Instances(
+            as_geometry_instances_data,
+        ))
+    };
+
+    let as_build_sizes_info = device.acceleration_structure_build_sizes(
+        AccelerationStructureBuildType::Device,
+        &as_build_geometry_info,
+        &[max_instances],
+    );
+
+    let as_buffer = Buffer::new_slice::<u8>(
+        &memory_allocator,
+        &BufferCreateInfo {
+            usage: BufferUsage::ACCELERATION_STRUCTURE_STORAGE
+                | BufferUsage::SHADER_DEVICE_ADDRESS,
+            ..Default::default()
+        },
+        &AllocationCreateInfo::default(),
+        as_build_sizes_info.acceleration_structure_size,
+    )
+    .unwrap();
+
+    let as_create_info = AccelerationStructureCreateInfo {
+        ty: AccelerationStructureType::TopLevel,
+        ..AccelerationStructureCreateInfo::new(&as_buffer)
+    };
+
+    let acceleration = unsafe { AccelerationStructure::new(&device, &as_create_info) }.unwrap();
+
+    (
+        acceleration,
+        as_build_sizes_info.acceleration_structure_size,
     )
 }

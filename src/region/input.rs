@@ -255,13 +255,21 @@ impl RendererInput {
 
     /// The dirty-Region set since the last call: every Region whose mirror
     /// changed (deduped, sorted). Empty between change cycles — the renderer
-    /// does no work when nothing changed. Consumed by tickets 04/05'
-    /// per-region rebuilds; the harness rebuilds wholesale for now.
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// does no work when nothing changed. Consumed by the residency manager
+    /// ([`crate::region::residency::RegionStore::apply`]); the harness
+    /// rebuilds wholesale for now.
     pub fn take_dirty_regions(&self) -> Vec<IVec3> {
         let mut dirty = std::mem::take(&mut *self.queue.inner.applied_regions.lock().unwrap());
         dirty.sort_unstable_by_key(|region| region.to_array());
         dirty
+    }
+
+    /// Packs one Region's mirror into pipeline-consumable [`RegionData`]
+    /// (the per-Region pack the residency manager applies on a change
+    /// cycle); `None` when the mirror is empty (the Region left residency).
+    pub fn packed_region(&self, region_index: IVec3) -> Option<RegionData> {
+        let mirrors = self.queue.inner.mirrors.lock().unwrap();
+        mirrors.get(&region_index).map(RegionMirror::pack)
     }
 
     /// The packing step the Region pipeline consumes: every non-empty mirror

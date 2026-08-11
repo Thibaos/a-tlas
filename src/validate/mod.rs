@@ -46,8 +46,9 @@ use crate::{
     app::{GpuStack, MIN_SWAPCHAIN_IMAGES},
     region::{
         input::RendererInput,
-        pack::{RegionData, pack_regions},
+        pack::pack_regions,
         render::{RegionRenderContext, RegionRenderTask},
+        residency::RegionStore,
         snapshot::{MICRO_CHUNK_EDGE, MicroChunkSnapshot, emit_snapshots},
     },
     validate::{
@@ -483,82 +484,161 @@ impl ValidateApp {
 
         // --- the input contract (renderer-impl ticket 03) ----------------
         // Startup: the world voices its initial state as one submit_batch;
-        // the worker drains it into per-Region mirrors; the Region pipeline
-        // consumes the packed mirrors (never the world directly).
+        // the worker drains it into per-Region mirrors; the residency
+        // manager (ticket 04) builds the lattice from the packed mirrors
+        // (never the world directly).
         let input = RendererInput::new();
         input.submit_batch(emit_snapshots(&world_data));
         input.wait_until_idle();
 
+        let mut store = RegionStore::new(&self.gpu, &voxel_data, input.packed_regions());
+
+        // The task graph is built once per world: the store's buffers are
+        // stable across frames (residency rebuilds rewrite them in place),
+        // so every frame executes the same graph.
+        let mut frame = self.build_validate_frame(&setup, &store)?;
+
         // Frame 1: startup via submit_batch.
-        let regions = input.packed_regions();
-        let frame = self.build_validate_frame(&setup, &voxel_data, &regions)?;
-        let first = self.run_frame(&world_data, &voxel_data, shape, world, frame, "")?;
+        let first = self.run_frame(&world_data, &voxel_data, shape, world, &mut frame, "")?;
 
         let mut frames = vec![first];
 
-        // Frame 2 (edit-at-the-seam, ticket 03): empty one Micro-chunk
-        // through the contract — the world removes its cells, then voices a
-        // zero-mask snapshot — and the next frame must match the reference
-        // over the edited world (that voxel gone, colors exact).
-        if let Some(edit) = world.edit {
-            let mc = edit.remove_microchunk;
-            let cells: Vec<IVec3> = {
-                let world = Arc::get_mut(&mut world_data).expect("the validator owns the world");
-                world
-                    .iter_voxels()
-                    .filter(|(p, _)| {
-                        p.cmpge(mc).all() && p.cmplt(mc + IVec3::splat(MICRO_CHUNK_EDGE)).all()
-                    })
-                    .map(|(p, _)| p)
-                    .collect()
-            };
-            assert!(
-                !cells.is_empty(),
-                "edit-seam: no voxels inside Micro-chunk {mc:?}"
-            );
-            {
-                let world = Arc::get_mut(&mut world_data).expect("the validator owns the world");
-                for position in cells {
+        // Frames 2..N (edit-at-the-seam, tickets 03/04): each step mutates
+        // the world, voices the change through the contract (zero-mask
+        // snapshots for emptied Micro-chunks, fresh snapshots for added
+        // voxels), the residency manager consumes the change cycle, and the
+        // next frame must match the reference over the edited world.
+        if let Some(script) = world.edit.clone() {
+            for step in script.steps {
+                // --- apply the step to the world -------------------------
+                for mc in &step.remove_microchunks {
+                    let cells: Vec<IVec3> = {
+                        let world = Arc::get_mut(&mut world_data).expect("the validator owns the world");
+                        world
+                            .iter_voxels()
+                            .filter(|(p, _)| {
+                                p.cmpge(*mc).all() && p.cmplt(*mc + IVec3::splat(MICRO_CHUNK_EDGE)).all()
+                            })
+                            .map(|(p, _)| p)
+                            .collect()
+                    };
                     assert!(
-                        world.remove_voxel_at(position),
-                        "edit-seam: voxel {position:?} already absent"
+                        !cells.is_empty(),
+                        "edit step {:?}: no voxels inside Micro-chunk {mc:?}",
+                        step.label
                     );
+                    {
+                        let world = Arc::get_mut(&mut world_data).expect("the validator owns the world");
+                        for position in cells {
+                            assert!(
+                                world.remove_voxel_at(position),
+                                "edit step {:?}: voxel {position:?} already absent",
+                                step.label
+                            );
+                        }
+                    }
                 }
+                {
+                    let world = Arc::get_mut(&mut world_data).expect("the validator owns the world");
+                    for &(position, material) in &step.add_voxels {
+                        world.insert_voxel_at(position, material.into());
+                    }
+                }
+                assert!(
+                    world_data.voxel_count() > 0,
+                    "edit step {:?}: the world must survive the edit",
+                    step.label
+                );
+
+                // --- voice the change through the contract ----------------
+                for mc in &step.remove_microchunks {
+                    input.submit_microchunk(MicroChunkSnapshot {
+                        global_coords: *mc,
+                        mask: [0u8; 64],
+                        materials: Vec::new(),
+                    });
+                }
+                if !step.add_voxels.is_empty() {
+                    let affected: std::collections::HashSet<IVec3> = step
+                        .add_voxels
+                        .iter()
+                        .map(|(p, _)| {
+                            p.div_euclid(IVec3::splat(MICRO_CHUNK_EDGE)) * MICRO_CHUNK_EDGE
+                        })
+                        .collect();
+                    let voiced: Vec<_> = emit_snapshots(&world_data)
+                        .into_iter()
+                        .filter(|s| affected.contains(&s.global_coords))
+                        .collect();
+                    assert!(
+                        !voiced.is_empty(),
+                        "edit step {:?}: no snapshots voiced for the added voxels",
+                        step.label
+                    );
+                    input.submit_batch(voiced);
+                }
+                input.wait_until_idle();
+
+                // The seam: the change-path pack equals the direct pack of
+                // the edited world — the exact bytes the pipeline consumes.
+                let expected = pack_regions(&emit_snapshots(&world_data));
+                let actual = input.packed_regions();
+                assert_eq!(actual.len(), expected.len());
+                for (a, b) in actual.iter().zip(&expected) {
+                    assert_eq!(a.region_index, b.region_index);
+                    assert_eq!(a.blocks, b.blocks);
+                    assert_eq!(a.aabbs, b.aabbs);
+                }
+
+                // --- the residency manager consumes the change cycle -----
+                let report = store.apply(&self.gpu, &input);
+
+                // Invariants (every step): the TLAS rebuilds iff a residency
+                // transition or a BLAS capacity replacement happened (the
+                // only instance-set/instance-data changes), and the store's
+                // resident set matches the input contract's mirrors.
+                let transitioned = !report.became_resident.is_empty()
+                    || !report.left_resident.is_empty();
+                assert_eq!(
+                    report.tlas_rebuilt,
+                    transitioned || !report.blas_replaced.is_empty(),
+                    "TLAS instance set/data must change only on residency transitions or BLAS replacements"
+                );
+                // The instance set equals the mirrors' set (sorted by id).
+                let mirror_ids: Vec<u32> = input
+                    .packed_regions()
+                    .iter()
+                    .map(|region| region.region_id())
+                    .collect();
+                assert_eq!(
+                    store.resident_ids(),
+                    mirror_ids.as_slice(),
+                    "the TLAS instance set must match the input contract's mirrors"
+                );
+                assert_eq!(
+                    store.resident_count(),
+                    input.region_count(),
+                    "the store's resident count must match the input contract's mirrors"
+                );
+
+                let summary =
+                    self.run_frame(&world_data, &voxel_data, shape, world, &mut frame, &step.label)?;
+                frames.push(summary);
             }
-            assert!(
-                world_data.voxel_count() > 0,
-                "edit-seam: the world must survive the removal"
-            );
+        }
 
-            input.submit_microchunk(MicroChunkSnapshot {
-                global_coords: mc,
-                mask: [0u8; 64],
-                materials: Vec::new(),
-            });
-            input.wait_until_idle();
-
-            // The seam: the change-path pack equals the direct pack of the
-            // edited world — the exact bytes the pipeline consumes.
-            let expected = pack_regions(&emit_snapshots(&world_data));
-            let actual = input.packed_regions();
-            assert_eq!(actual.len(), expected.len());
-            for (a, b) in actual.iter().zip(&expected) {
-                assert_eq!(a.region_index, b.region_index);
-                assert_eq!(a.blocks, b.blocks);
-                assert_eq!(a.aabbs, b.aabbs);
-            }
-
-            let regions = input.packed_regions();
-            let frame = self.build_validate_frame(&setup, &voxel_data, &regions)?;
-            let second = self.run_frame(
-                &world_data,
-                &voxel_data,
-                shape,
-                world,
-                frame,
-                "-after-edit",
-            )?;
-            frames.push(second);
+        // The residency world's scripted transitions: Region (1,0,0) leaves
+        // residency when emptied, and its re-population re-creates it — from
+        // the free lists, not fresh allocations (the ordering invariant's
+        // probe: freed AS memory is reused only after the rebuild that
+        // dropped the referencing instance executed). Gated on the world
+        // name because only this world's script exercises the empty →
+        // re-populate cycle.
+        if world.name == "residency" && world.edit.is_some() {
+            assert_eq!(store.alloc_stats.pool_allocations, 3, "no fresh pool beyond the initial 3 regions");
+            assert_eq!(store.alloc_stats.blas_allocations, 3, "no fresh BLAS beyond the initial 3 regions");
+            assert_eq!(store.alloc_stats.pool_reuses, 1, "the re-populated Region reuses its freed pool");
+            assert_eq!(store.alloc_stats.blas_reuses, 1, "the re-populated Region reuses its freed BLAS");
         }
 
         Ok(PassSummary {
@@ -572,22 +652,20 @@ impl ValidateApp {
         })
     }
 
-    /// Builds the compiled task graph for one frame over the given packed
-    /// Regions (the input contract's current mirror state). The setup's
-    /// swapchain/images/buffers are shared; each frame gets its own graph
-    /// and RT task. Ticket 03's harness exercises the seam as a fresh build
-    /// from the mirrors; tickets 04/05 replace this with ordered in-place
-    /// rebuilds.
+    /// Builds the compiled task graph over the store's stable buffers (the
+    /// residency manager's lattice, ticket 04). The setup's
+    /// swapchain/images/buffers are shared; the graph is built **once per
+    /// world** and every frame executes it — residency rebuilds rewrite the
+    /// store's buffers in place, so the ids never move.
     fn build_validate_frame(
         &self,
         setup: &FrameSetup,
-        voxel_data: &dot_vox::DotVoxData,
-        regions: &[RegionData],
+        store: &RegionStore,
     ) -> Result<ValidateFrame, String> {
         let mut task_graph = TaskGraph::new(&self.gpu.resources);
         let virtual_swapchain_id = task_graph.add_swapchain(&SwapchainCreateInfo::default());
 
-        let rt_task = RegionRenderTask::new(&self.gpu, voxel_data, regions, virtual_swapchain_id);
+        let rt_task = RegionRenderTask::new(&self.gpu, store, virtual_swapchain_id);
         let instance_buffer_id = rt_task.instance_buffer_id();
 
         let rt_node_id = task_graph
@@ -677,15 +755,14 @@ impl ValidateApp {
 
     /// Executes one frame, captures color + t, traces the reference,
     /// compares, and writes the report artifacts (suffixed by `label`: ""
-    /// for the first/only frame, "-after-edit" for the edit-at-the-seam
-    /// second frame).
+    /// for the first/only frame, the step label for edit-at-the-seam frames).
     fn run_frame(
         &mut self,
         world_data: &Arc<Chunks>,
         voxel_data: &dot_vox::DotVoxData,
         shape: VoxelShape,
         world: &WorldSpec,
-        mut frame: ValidateFrame,
+        frame: &mut ValidateFrame,
         label: &str,
     ) -> Result<FrameSummary, String> {
         let width = self.opts.width;
@@ -706,7 +783,7 @@ impl ValidateApp {
                 .unwrap();
 
         let execute_result =
-            unsafe { frame.task_graph.execute(resource_map, &mut frame.rcx, || {}) };
+            unsafe { frame.task_graph.execute(resource_map, &frame.rcx, || {}) };
 
         if let Err(error) = execute_result {
             return Err(format!("frame execution failed: {error:?}"));

@@ -48,18 +48,33 @@ pub struct WorldSpec {
     pub path: String,
     pub description: String,
     pub camera: WorldCamera,
-    /// Optional edit-at-the-seam script (renderer-impl ticket 03): after the
-    /// first frame passes, the validator removes the given Micro-chunk
-    /// through the input contract (a zero-mask snapshot) and renders a
-    /// second frame compared against the edited world.
-    pub edit: Option<EditSeam>,
+    /// Optional edit-at-the-seam script (renderer-impl tickets 03/04): after
+    /// the first frame passes, each step mutates the world (voxel
+    /// removals/additions), voices the change through the input contract,
+    /// and renders another frame compared against the edited world. The
+    /// edit-seam world empties one Micro-chunk (ticket 03); the residency
+    /// world empties a whole Region and re-populates it (ticket 04).
+    pub edit: Option<EditScript>,
 }
 
-/// The edit-at-the-seam script: which Micro-chunk the harness empties
-/// between frames (global coords, a multiple of 8).
-#[derive(Clone, Copy, Debug)]
-pub struct EditSeam {
-    pub remove_microchunk: IVec3,
+/// One edit step between frames: world edits voiced through the input
+/// contract, then a frame compared against the edited world.
+#[derive(Clone, Debug)]
+pub struct EditStep {
+    /// Suffixes the frame's artifacts ("-after-empty", "-after-repop").
+    pub label: String,
+    /// Micro-chunks to empty: the world removes its voxels, then voices a
+    /// zero-mask snapshot per Micro-chunk (removal = one message).
+    pub remove_microchunks: Vec<IVec3>,
+    /// Voxels to insert (world edit), voiced as fresh snapshots of the
+    /// affected Micro-chunks.
+    pub add_voxels: Vec<(IVec3, u8)>,
+}
+
+/// The edit-at-the-seam script (one step per frame after the first).
+#[derive(Clone, Debug)]
+pub struct EditScript {
+    pub steps: Vec<EditStep>,
 }
 
 /// The edge-case worlds + palette-zero + solid-cube + edit-seam + the smoke
@@ -169,8 +184,52 @@ pub fn test_suite() -> Vec<WorldSpec> {
                 target: [10.0, 0.0, 0.0],
                 up: [0.0, 1.0, 0.0],
             }),
-            edit: Some(EditSeam {
-                remove_microchunk: IVec3::new(8, 0, 0),
+            edit: Some(EditScript {
+                steps: vec![EditStep {
+                    label: "-after-edit".to_string(),
+                    remove_microchunks: vec![IVec3::new(8, 0, 0)],
+                    add_voxels: vec![],
+                }],
+            }),
+        },
+        WorldSpec {
+            name: "multi-region".to_string(),
+            path: "assets/test/multi-region.vox".to_string(),
+            description: "a 3x3 cluster per Region along +x (Regions (-1,0,0)..(3,0,0)) — negative and multi-Region occupancy through the full lattice".to_string(),
+            camera: Some(CameraSpec {
+                eye: [-160.0, 25.0, 60.0],
+                target: [380.0, 0.0, 15.0],
+                up: [0.0, 1.0, 0.0],
+            }),
+            edit: None,
+        },
+        WorldSpec {
+            name: "residency".to_string(),
+            path: "assets/test/residency.vox".to_string(),
+            description: "a 2x2x2 cube per Region along +x (Regions (0,0,0)..(2,0,0)); after the first frame Region (1,0,0) is emptied through the contract (left residency), then re-populated (became resident again) — both frames must match the reference".to_string(),
+            camera: Some(CameraSpec {
+                eye: [-90.0, 25.0, 45.0],
+                target: [256.0, 1.0, 1.0],
+                up: [0.0, 1.0, 0.0],
+            }),
+            edit: Some(EditScript {
+                steps: vec![
+                    EditStep {
+                        label: "-after-empty".to_string(),
+                        remove_microchunks: vec![IVec3::new(256, 0, 0)],
+                        add_voxels: vec![],
+                    },
+                    EditStep {
+                        label: "-after-repop".to_string(),
+                        remove_microchunks: vec![],
+                        add_voxels: vec![(256, 0, 0), (257, 0, 0), (256, 1, 0), (257, 1, 0)]
+                            .into_iter()
+                            .flat_map(|(x, y, z)| {
+                                [(IVec3::new(x, y, z), 2), (IVec3::new(x, y, z + 1), 2)]
+                            })
+                            .collect(),
+                    },
+                ],
             }),
         },
     ]
@@ -214,6 +273,8 @@ pub fn generate_all(out_dir: &Path) -> io::Result<Vec<PathBuf>> {
         ("camera-in-voxel", camera_in_voxel_world()),
         ("far-miss", far_miss_world()),
         ("edit-seam", edit_seam_world()),
+        ("multi-region", multi_region_world()),
+        ("residency", residency_world()),
     ];
 
     let mut written = Vec::new();
@@ -413,6 +474,42 @@ fn edit_seam_world() -> DotVoxData {
     ])
 }
 
+/// A 3x3 cluster per Region along +x: Regions (-1,0,0), (0,0,0), (1,0,0),
+/// (2,0,0), (3,0,0). The negative-coordinate cluster exercises floor-division
+/// Region derivation end-to-end (the renderer derives every Region id from
+/// global coords); the whole world renders as one batch over 5 resident
+/// Regions.
+fn multi_region_world() -> DotVoxData {
+    let mut voxels = Vec::new();
+    for (material, region_x) in (1u8..).zip([-1, 0, 1, 2, 3]) {
+        for dx in 0..3 {
+            for dz in 0..3 {
+                voxels.push((IVec3::new(region_x * 256 + dx, 0, dz), material));
+            }
+        }
+    }
+    transformed_world(&voxels)
+}
+
+/// A 2x2x2 cube per Region along +x: Regions (0,0,0), (1,0,0), (2,0,0). The
+/// validator empties Region (1,0,0)'s Micro-chunk (256,0,0) after the first
+/// frame — its last voxel leaves residency — and re-populates it after the
+/// second (re-created: BLAS + pool buffer, ideally reused from the free
+/// lists). Each frame must match the reference over the world at that point.
+fn residency_world() -> DotVoxData {
+    let mut voxels = Vec::new();
+    for (region_x, material) in [(0, 1), (1, 2), (2, 3)] {
+        for dx in 0..2 {
+            for dy in 0..2 {
+                for dz in 0..2 {
+                    voxels.push((IVec3::new(region_x * 256 + dx, dy, dz), material));
+                }
+            }
+        }
+    }
+    transformed_world(&voxels)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -473,7 +570,7 @@ mod tests {
     fn every_test_world_writes_and_loads() {
         let dir = std::env::temp_dir().join("atlas-rt-test-worlds");
         let paths = generate_all(&dir).unwrap();
-        assert_eq!(paths.len(), 9);
+        assert_eq!(paths.len(), 11);
 
         for path in &paths {
             let data = open_file(path.to_str().unwrap());

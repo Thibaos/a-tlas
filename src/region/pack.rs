@@ -49,7 +49,8 @@ pub fn region_id(region_index: IVec3) -> u32 {
     // bits per axis. Beyond that the 4-bit encoding aliases, so the assert
     // matches the extent.
     debug_assert!(
-        region_index.abs().max_element() < 8,
+        region_index.cmpge(IVec3::splat(-8)).all()
+            && region_index.cmplt(IVec3::splat(8)).all(),
         "region index {region_index} exceeds the v1 ±2048/axis 12-bit budget"
     );
     (((region_index.x + 8) as u32 & 0xF) << 8)
@@ -93,6 +94,7 @@ impl RegionData {
     }
 
     /// The Region's min corner in world coordinates.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn origin(&self) -> IVec3 {
         self.region_index * REGION_EDGE
     }
@@ -231,6 +233,10 @@ mod tests {
         // hull is the unit cell [0, 1)^3.
         assert_eq!(regions[1].aabbs[0].min, [0.0, 0.0, 0.0]);
         assert_eq!(regions[1].aabbs[0].max, [1.0, 1.0, 1.0]);
+
+        // The Region origins are lattice-aligned (the instance transforms).
+        assert_eq!(regions[0].origin(), IVec3::ZERO);
+        assert_eq!(regions[1].origin(), IVec3::new(256, 0, 0));
 
         // Region 0's voxel is at Region-local cell (255, 0, 0).
         assert_eq!(regions[0].aabbs[0].min, [255.0, 0.0, 0.0]);

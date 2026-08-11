@@ -1,21 +1,20 @@
-//! The Region pipeline's GPU half (renderer-impl ticket 02): per-Region voxel
-//! pool buffers + procedural AABB BLASes + one TLAS over the Region
-//! instances, the shared ray tracing pipeline, and the per-frame render task
-//! that ray-passes the swapchain storage images with the capture raygen
-//! (color + t-channel for the validator).
+//! The Region pipeline's GPU half (renderer-impl tickets 02/04): the shared
+//! ray tracing pipeline and the per-frame render task that ray-passes the
+//! swapchain storage images with the capture raygen (color + t-channel for
+//! the validator).
+//!
+//! All per-Region GPU state — voxel pools, procedural AABB BLASes, the
+//! lattice-static instance set and the stable TLAS — lives in
+//! [`RegionStore`](crate::region::residency::RegionStore) (ticket 04: the
+//! full static lattice, residency transitions, free lists). The render task
+//! only holds the ids the push constants and the task graph need; the store
+//! keeps the buffers alive across rebuilds.
 
 use std::sync::Arc;
 
-use dot_vox::DotVoxData;
 use vulkano::{
-    DeviceSize,
-    acceleration_structure::{
-        AabbPositions, AccelerationStructure, AccelerationStructureGeometries,
-        AccelerationStructureGeometryAabbsData, AccelerationStructureInstance,
-        AccelerationStructureType, BuildAccelerationStructureMode,
-    },
-    buffer::{Buffer, BufferCreateInfo, BufferUsage, Subbuffer},
-    memory::allocator::{AllocationCreateInfo, DeviceLayout, MemoryTypeFilter},
+    acceleration_structure::AccelerationStructure,
+    buffer::Buffer,
     pipeline::{
         Pipeline,
         ray_tracing::{RayTracingPipeline, ShaderBindingTable},
@@ -26,15 +25,12 @@ use vulkano_taskgraph::{
     Id, Task, TaskContext, TaskResult,
     command_buffer::{DependencyInfo, MemoryBarrier, RecordingCommandBuffer},
     descriptor_set::{AccelerationStructureId, StorageBufferId, StorageImageId},
-    resource::HostAccessType,
 };
 
 use crate::{
     app::GpuStack,
-    region::{REGION_COUNT, pack::RegionData},
-    rt::acceleration_structure,
+    region::residency::RegionStore,
     tasks::render::build_ray_tracing_pipeline,
-    world::voxel::get_palette,
 };
 
 pub(crate) mod capture_raygen {
@@ -73,326 +69,6 @@ pub(crate) mod closest_hit {
     }
 }
 
-/// The static Region path, built once from the packed mirrors: `RegionData`
-/// (pool blocks + trimmed hull AABBs, see `crate::region::pack`) → per-Region
-/// pool buffers → procedural AABB BLASes → TLAS (ADR 0001/0004), plus the
-/// camera, palette and Region-table buffers.
-///
-/// The caller hands over the packed mirrors produced by the input contract
-/// (ticket 03): `RendererInput::packed_regions()`. The world never reaches
-/// the pipeline directly.
-pub struct RegionPipeline {
-    pub camera_buffer_id: Id<Buffer>,
-    /// The TLAS instance buffer (one instance per Region).
-    pub instance_buffer_id: Id<Buffer>,
-    /// Kept alive here: the instances reference the BLASes by device address,
-    /// which carries no lifetime.
-    pub blases: Vec<Arc<AccelerationStructure>>,
-    pub region_table_storage_id: StorageBufferId,
-    pub camera_storage_id: StorageBufferId,
-    pub palette_storage_id: StorageBufferId,
-    pub acceleration_structure_id: AccelerationStructureId,
-}
-
-impl RegionPipeline {
-    pub fn new(gpu: &GpuStack, voxel_data: &DotVoxData, regions: &[RegionData]) -> Self {
-        // --- per-Region pool buffers + AABB buffers ---------------------
-        let mut pool_buffer_ids = Vec::with_capacity(regions.len());
-        let mut aabb_buffers = Vec::with_capacity(regions.len());
-
-        for region in regions {
-            let pool_id = gpu
-                .resources
-                .create_buffer(
-                    &BufferCreateInfo {
-                        usage: BufferUsage::SHADER_DEVICE_ADDRESS | BufferUsage::STORAGE_BUFFER,
-                        ..Default::default()
-                    },
-                    &AllocationCreateInfo {
-                        memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
-                            | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
-                        ..Default::default()
-                    },
-                    DeviceLayout::new_unsized::<[u8]>(region.blocks.len() as u64).unwrap(),
-                )
-                .unwrap();
-            pool_buffer_ids.push(pool_id);
-
-            let aabb_buffer = Buffer::from_iter(
-                &gpu.memory_allocator,
-                &BufferCreateInfo {
-                    usage: BufferUsage::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY
-                        | BufferUsage::SHADER_DEVICE_ADDRESS,
-                    ..Default::default()
-                },
-                &AllocationCreateInfo {
-                    memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
-                        | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
-                    ..Default::default()
-                },
-                region.aabbs.iter().copied(),
-            )
-            .expect("AABB buffer creation failed");
-            aabb_buffers.push(aabb_buffer);
-        }
-
-        // --- Region table: Region id → pool device address --------------
-        let region_table_buffer_id = gpu
-            .resources
-            .create_buffer(
-                &BufferCreateInfo {
-                    usage: BufferUsage::STORAGE_BUFFER | BufferUsage::TRANSFER_DST,
-                    ..Default::default()
-                },
-                &AllocationCreateInfo {
-                    memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
-                        | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
-                    ..Default::default()
-                },
-                DeviceLayout::new_sized::<capture_raygen::RegionTable>(),
-            )
-            .unwrap();
-
-        let mut table_bdas = vec![0u64; REGION_COUNT];
-        for (region, pool_id) in regions.iter().zip(&pool_buffer_ids) {
-            let address = gpu
-                .resources
-                .buffer(*pool_id)
-                .buffer()
-                .device_address()
-                .get();
-            table_bdas[region.region_id() as usize] = address;
-        }
-        let region_table = capture_raygen::RegionTable {
-            bdas: table_bdas
-                .try_into()
-                .expect("region table length must be REGION_COUNT"),
-        };
-
-        // --- camera + palette buffers -----------------------------------
-        let camera_buffer_id = gpu
-            .resources
-            .create_buffer(
-                &BufferCreateInfo {
-                    usage: BufferUsage::STORAGE_BUFFER | BufferUsage::TRANSFER_DST,
-                    ..Default::default()
-                },
-                &AllocationCreateInfo {
-                    memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
-                        | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
-                    ..Default::default()
-                },
-                DeviceLayout::new_sized::<capture_raygen::Camera>(),
-            )
-            .unwrap();
-
-        let palette = get_palette(voxel_data).map(|color| [color.x, color.y, color.z, 1.0]);
-        let palette_buffer_id = gpu
-            .resources
-            .create_buffer(
-                &BufferCreateInfo {
-                    usage: BufferUsage::STORAGE_BUFFER | BufferUsage::TRANSFER_DST,
-                    ..Default::default()
-                },
-                &AllocationCreateInfo {
-                    memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
-                        | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
-                    ..Default::default()
-                },
-                DeviceLayout::new_sized::<capture_raygen::Palette>(),
-            )
-            .unwrap();
-
-        // --- one-shot upload: table + pools + palette --------------------
-        let mut upload_access = vec![
-            (region_table_buffer_id, HostAccessType::Write),
-            (palette_buffer_id, HostAccessType::Write),
-        ];
-        upload_access.extend(
-            pool_buffer_ids
-                .iter()
-                .copied()
-                .map(|id| (id, HostAccessType::Write)),
-        );
-
-        unsafe {
-            vulkano_taskgraph::execute(
-                &gpu.transfer_queue,
-                &gpu.resources,
-                gpu.graphics_flight_id,
-                |_cbf, tcx| {
-                    *tcx.write_buffer::<capture_raygen::RegionTable>(region_table_buffer_id, ..) =
-                        region_table;
-                    *tcx.write_buffer::<capture_raygen::Palette>(palette_buffer_id, ..) =
-                        capture_raygen::Palette { colors: palette };
-
-                    for (region, pool_id) in regions.iter().zip(&pool_buffer_ids) {
-                        tcx.write_buffer::<[u8]>(*pool_id, ..)
-                            .copy_from_slice(&region.blocks);
-                    }
-
-                    Ok(())
-                },
-                upload_access,
-                [],
-                [],
-            )
-        }
-        .unwrap();
-
-        gpu.resources
-            .flight(gpu.graphics_flight_id)
-            .wait_idle()
-            .unwrap();
-
-        // --- one procedural AABB BLAS per Region -------------------------
-        let mut blases = Vec::with_capacity(regions.len());
-        for aabb_buffer in &aabb_buffers {
-            let aabb_data = AccelerationStructureGeometryAabbsData {
-                data: Some(aabb_buffer.clone().into_bytes()),
-                stride: size_of::<AabbPositions>() as u32,
-                ..Default::default()
-            };
-
-            let blas = acceleration_structure::build_acceleration_structure_common(
-                AccelerationStructureGeometries::Aabbs(vec![aabb_data]),
-                BuildAccelerationStructureMode::Build,
-                aabb_buffer.len() as u32,
-                AccelerationStructureType::BottomLevel,
-                gpu.memory_allocator.clone(),
-                gpu.device.clone(),
-                gpu.compute_queue.clone(),
-                &gpu.resources,
-                gpu.compute_flight_id,
-            );
-            blases.push(blas);
-        }
-
-        // --- TLAS: one lattice-static instance per Region -----------------
-        debug_assert!(!regions.is_empty(), "the harness worlds always have voxels");
-        let instances: Vec<AccelerationStructureInstance> = regions
-            .iter()
-            .zip(&blases)
-            .map(|(region, blas)| {
-                let origin = region.origin().as_vec3().to_array();
-                AccelerationStructureInstance {
-                    transform: [
-                        [1.0, 0.0, 0.0, origin[0]],
-                        [0.0, 1.0, 0.0, origin[1]],
-                        [0.0, 0.0, 1.0, origin[2]],
-                    ],
-                    instance_custom_index_and_mask: vulkano::Packed24_8::new(
-                        region.region_id(),
-                        0xFF,
-                    ),
-                    acceleration_structure_reference: blas.device_address().into(),
-                    ..Default::default()
-                }
-            })
-            .collect();
-
-        let instance_buffer_id =
-            gpu.resources
-                .create_buffer(
-                    &BufferCreateInfo {
-                        usage: BufferUsage::SHADER_DEVICE_ADDRESS
-                            | BufferUsage::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY,
-                        ..Default::default()
-                    },
-                    &AllocationCreateInfo {
-                        memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
-                            | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
-                        ..Default::default()
-                    },
-                    DeviceLayout::new_unsized::<[AccelerationStructureInstance]>(
-                        instances.len() as u64
-                    )
-                    .unwrap(),
-                )
-                .unwrap();
-
-        unsafe {
-            vulkano_taskgraph::execute(
-                &gpu.transfer_queue,
-                &gpu.resources,
-                gpu.graphics_flight_id,
-                |_cbf, tcx| {
-                    let dst =
-                        tcx.write_buffer::<[AccelerationStructureInstance]>(instance_buffer_id, ..);
-                    for (dst, src) in dst.iter_mut().zip(instances.iter().copied()) {
-                        *dst = src;
-                    }
-                    Ok(())
-                },
-                [(instance_buffer_id, HostAccessType::Write)],
-                [],
-                [],
-            )
-        }
-        .unwrap();
-
-        gpu.resources
-            .flight(gpu.graphics_flight_id)
-            .wait_idle()
-            .unwrap();
-
-        let instance_subbuffer =
-            Subbuffer::new(gpu.resources.buffer(instance_buffer_id).buffer().clone())
-                .cast_aligned::<AccelerationStructureInstance>();
-        let tlas = acceleration_structure::build_tlas(
-            instance_subbuffer,
-            instances.len() as u32,
-            gpu.memory_allocator.clone(),
-            gpu.device.clone(),
-            gpu.compute_queue.clone(),
-            &gpu.resources,
-            gpu.compute_flight_id,
-        );
-
-        // --- bindless registrations ---------------------------------------
-        let bcx = gpu.resources.bindless_context().unwrap();
-
-        let region_table_storage_id = bcx
-            .global_set()
-            .create_storage_buffer(
-                region_table_buffer_id,
-                0,
-                Some(size_of::<capture_raygen::RegionTable>() as DeviceSize),
-            )
-            .unwrap();
-
-        let camera_storage_id = bcx
-            .global_set()
-            .create_storage_buffer(
-                camera_buffer_id,
-                0,
-                Some(size_of::<capture_raygen::Camera>() as DeviceSize),
-            )
-            .unwrap();
-
-        let palette_storage_id = bcx
-            .global_set()
-            .create_storage_buffer(
-                palette_buffer_id,
-                0,
-                Some(size_of::<capture_raygen::Palette>() as DeviceSize),
-            )
-            .unwrap();
-
-        let acceleration_structure_id = bcx.global_set().add_acceleration_structure(tlas.clone());
-
-        Self {
-            camera_buffer_id,
-            instance_buffer_id,
-            blases,
-            region_table_storage_id,
-            camera_storage_id,
-            palette_storage_id,
-            acceleration_structure_id,
-        }
-    }
-}
-
 /// The per-frame world the Region render task reads.
 pub struct RegionRenderContext {
     pub camera: capture_raygen::Camera,
@@ -412,21 +88,24 @@ pub struct RegionRenderTask {
     acceleration_structure_id: AccelerationStructureId,
     shader_binding_table: ShaderBindingTable,
     pipeline: Arc<RayTracingPipeline>,
-    /// Keeps the BLAS memory alive: the TLAS instances reference the BLASes
-    /// by device address only.
+    /// Lifetime anchors: the TLAS instances reference the resident BLASes by
+    /// device address only, so the task keeps them alive for the pass. (The
+    /// store keeps every resident and free-listed BLAS alive regardless; this
+    /// is a build-time snapshot, so a BLAS replaced by capacity growth stays
+    /// alive for the whole pass — harmless retention.)
     #[allow(dead_code)]
     blases: Vec<Arc<AccelerationStructure>>,
 }
 
 impl RegionRenderTask {
+    /// Builds the shared ray tracing pipeline and binds the store's buffers.
+    /// The store outlives the task, so its ids stay valid for every frame of
+    /// the pass (residency rebuilds rewrite the buffers in place).
     pub fn new(
         gpu: &GpuStack,
-        voxel_data: &DotVoxData,
-        regions: &[RegionData],
+        store: &RegionStore,
         virtual_swapchain_id: Id<Swapchain>,
     ) -> Self {
-        let pipeline_resources = RegionPipeline::new(gpu, voxel_data, regions);
-
         let pipeline = {
             let raygen = unsafe {
                 capture_raygen::load(&gpu.device)
@@ -461,15 +140,15 @@ impl RegionRenderTask {
 
         Self {
             swapchain_id: virtual_swapchain_id,
-            camera_buffer_id: pipeline_resources.camera_buffer_id,
-            instance_buffer_id: pipeline_resources.instance_buffer_id,
-            camera_storage_id: pipeline_resources.camera_storage_id,
-            palette_storage_id: pipeline_resources.palette_storage_id,
-            region_table_storage_id: pipeline_resources.region_table_storage_id,
-            acceleration_structure_id: pipeline_resources.acceleration_structure_id,
+            camera_buffer_id: store.camera_buffer_id,
+            instance_buffer_id: store.instance_buffer_id,
+            camera_storage_id: store.camera_storage_id,
+            palette_storage_id: store.palette_storage_id,
+            region_table_storage_id: store.region_table_storage_id,
+            acceleration_structure_id: store.acceleration_structure_id,
             shader_binding_table,
             pipeline,
-            blases: pipeline_resources.blases,
+            blases: store.blases(),
         }
     }
 
