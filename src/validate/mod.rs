@@ -44,22 +44,20 @@ use winit::{
 
 use crate::{
     app::{GpuStack, MIN_SWAPCHAIN_IMAGES},
+    region::render::{RegionRenderContext, RegionRenderTask},
     validate::{
         capture::CaptureTask,
         compare::{CompareConfig, CompareReport, compare},
         reference::{CameraInputs, ReferenceTracer, VoxelShape, render_reference},
-        render::{ValidateRenderContext, ValidateRenderTask},
         report::{build_diff_image, write_png, write_text_report},
         test_worlds::{CameraSpec, WorldSpec, all_worlds, generate_all},
     },
-    rt::raygen,
     world::{chunk::Chunks, voxel::{get_palette, open_file}},
 };
 
 pub mod capture;
 pub mod compare;
 pub mod reference;
-pub mod render;
 pub mod report;
 pub mod test_worlds;
 
@@ -294,8 +292,8 @@ struct ValidateFrame {
     swapchain_format: Format,
     color_readback_buffer_id: Id<Buffer>,
     t_readback_buffer_id: Id<Buffer>,
-    task_graph: ExecutableTaskGraph<ValidateRenderContext>,
-    rcx: ValidateRenderContext,
+    task_graph: ExecutableTaskGraph<RegionRenderContext>,
+    rcx: RegionRenderContext,
     camera_inputs: CameraInputs,
 }
 
@@ -353,11 +351,10 @@ impl ValidateApp {
         let voxel_data = open_file(&world.path);
         let world_data = Arc::new(Chunks::new(&voxel_data));
         let voxel_count = world_data.voxel_count();
-        // The reference traces the same voxel shape the renderer under test
-        // instances. The current triangle-per-voxel path centers a unit cube
-        // on each voxel position; ticket 02's DDA uses grid cells — the
-        // validate switches when the renderer does.
-        let shape = VoxelShape::CenteredUnitCube;
+        // The destination path's in-shader DDA resolves grid cells
+        // (renderer-impl ticket 02), so the reference traces the same shape:
+        // [p, p + 1) per voxel.
+        let shape = VoxelShape::GridCell;
 
         println!(
             "[{:>14}] {} ({} voxels) — rendering…",
@@ -389,25 +386,10 @@ impl ValidateApp {
         )
         .map_err(|e| format!("t image: {e}"))?;
 
-        let max_instance_count = self
-            .gpu
-            .device
-            .physical_device()
-            .properties()
-            .max_instance_count
-            .unwrap()
-            / 8;
-
         let mut task_graph = TaskGraph::new(&self.gpu.resources);
         let virtual_swapchain_id = task_graph.add_swapchain(&SwapchainCreateInfo::default());
 
-        let rt_task = ValidateRenderTask::new(
-            &self.gpu,
-            &world_data,
-            &voxel_data,
-            virtual_swapchain_id,
-            max_instance_count,
-        );
+        let rt_task = RegionRenderTask::new(&self.gpu, &world_data, &voxel_data, virtual_swapchain_id);
         let instance_buffer_id = rt_task.instance_buffer_id();
 
         let color_readback_buffer_id = self
@@ -511,11 +493,8 @@ impl ValidateApp {
 
         let (camera, camera_inputs) = build_camera(&world_data, width, height, world.camera);
 
-        let rcx = ValidateRenderContext {
+        let rcx = RegionRenderContext {
             camera,
-            sunlight: raygen::Sunlight {
-                direction: [0.5, -0.5, 0.5],
-            },
             swapchain_storage_image_ids,
             t_image_storage_id,
         };
@@ -820,7 +799,7 @@ fn build_camera(
     width: u32,
     height: u32,
     camera: Option<CameraSpec>,
-) -> (raygen::Camera, CameraInputs) {
+) -> (crate::region::render::capture_raygen::Camera, CameraInputs) {
     let (eye, target, up) = match camera {
         Some(spec) => (
             Vec3::from(spec.eye),
@@ -833,10 +812,9 @@ fn build_camera(
     let view = Mat4::look_to_lh(eye, (target - eye).normalize(), up);
     let proj = Mat4::perspective_lh(PI / 2.0, width as f32 / height as f32, 0.01, 10000.0);
 
-    let gpu_camera = raygen::Camera {
+    let gpu_camera = crate::region::render::capture_raygen::Camera {
         proj_inverse: proj.inverse().to_cols_array_2d(),
         view_inverse: view.inverse().to_cols_array_2d(),
-        view_proj: (view * proj).to_cols_array_2d(),
     };
 
     let inputs = CameraInputs::new(view, proj, width, height);

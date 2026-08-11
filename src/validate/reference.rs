@@ -8,10 +8,11 @@
 //! renderer, never at an assumption both sides share.
 //!
 //! Rays are reconstructed exactly like `shaders/rt/raygen_common.glsl`, and
-//! each voxel is tested as the same shape the renderer uses ([`VoxelShape`]):
-//! today that is a unit cube centered on the voxel position (the
-//! triangle-per-voxel path), the destination uses the unit grid cell. The
-//! validate switches the shape when the renderer switches.
+//! each voxel is tested as the same shape the renderer uses ([`VoxelShape`]).
+//! The validator now runs the destination path (renderer-impl ticket 02),
+//! whose in-shader DDA resolves grid cells — so the validator uses
+//! [`VoxelShape::GridCell`]; [`VoxelShape::CenteredUnitCube`] remains only
+//! for the unit tests and the retired triangle-per-voxel path.
 //!
 //! To stay fast on dense worlds (custom.vox is ~1M voxels) the tracer steps
 //! the ray over the world's grid cells instead of testing every voxel per
@@ -23,11 +24,12 @@ use glam::{IVec3, Mat4, Vec2, Vec3, Vec4};
 
 use crate::world::chunk::Chunks;
 
-/// Ray t-range: matches the current ray pass (shaders/rt/common.glsl EPSILON /
-/// FLT_MAX). ADR 0002 will move the ray pass to the camera's near/far; when it
-/// does, these constants move with it and the validator keeps passing.
-pub const T_MIN: f32 = 0.0001;
-pub const T_MAX: f32 = f32::MAX;
+/// Ray t-range: matches the region ray pass (shaders/region/common.glsl
+/// RAY_T_MIN / RAY_T_MAX). ADR 0002 fixed the range to the camera's
+/// near/far (0.01 / 10000) so the ray pass clips exactly like the camera;
+/// these constants move with the shader and the validator keeps passing.
+pub const T_MIN: f32 = 0.01;
+pub const T_MAX: f32 = 10000.0;
 
 /// What the miss shader produces: black, alpha 1, t 0.
 pub const BACKGROUND_COLOR: [u8; 4] = [0, 0, 0, 255];

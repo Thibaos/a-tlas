@@ -1,0 +1,37 @@
+#version 460
+
+#extension GL_EXT_scalar_block_layout : enable
+#extension GL_EXT_GOOGLE_include_directive : enable
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
+#extension GL_EXT_buffer_reference2 : require
+
+#include "../rt/common.glsl"
+#include "header.glsl"
+#include "common.glsl"
+#include "../rt/raygen_common.glsl"
+
+layout(location = 0) rayPayloadEXT MainPassPayload payload;
+
+// Validation raygen for the Region path (renderer-impl ticket 02). The ray
+// is built by the shared raygen_common.glsl (byte-identical to the
+// production raygen), traverses world-space f32 with
+// Opaque | TerminateOnFirstHit over the camera near/far range (ADR 0002),
+// and writes the primary-visibility result directly to the swapchain storage
+// image plus the committed hit distance to `t_image_id` as rgba32f, so the
+// validator can compare per-pixel {color, t} against the CPU reference
+// tracer.
+void main() {
+    vec3 origin;
+    vec3 direction;
+    build_primary_ray(origin, direction);
+
+    const uint ray_flags = gl_RayFlagsOpaqueEXT | gl_RayFlagsTerminateOnFirstHitEXT;
+
+    payload.color = vec4(0.0);
+    payload.t = -1.0;
+
+    traceRayEXT(vko_accelerationStructureEXT(acceleration_structure_id), ray_flags, 0xFFu, 0u, 0u, 0u, origin, RAY_T_MIN, direction, RAY_T_MAX, 0);
+
+    imageStore(vko_image2D_rgba8(image_id), ivec2(gl_LaunchIDEXT.xy), payload.color);
+    imageStore(vko_image2D_rgba32f(t_image_id), ivec2(gl_LaunchIDEXT.xy), vec4(payload.t, 0.0, 0.0, 1.0));
+}

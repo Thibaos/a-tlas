@@ -6,8 +6,6 @@
 #include <vulkano.glsl>
 
 VKO_DECLARE_STORAGE_BUFFER(camera, Camera{
-    // Camera view * projection
-    mat4 view_proj;
     // Camera inverse view matrix
     mat4 view_inverse;
     // Camera inverse projection matrix

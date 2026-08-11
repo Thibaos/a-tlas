@@ -1,0 +1,198 @@
+#version 460
+
+#extension GL_EXT_nonuniform_qualifier : enable
+#extension GL_EXT_scalar_block_layout : enable
+#extension GL_EXT_GOOGLE_include_directive : enable
+#extension GL_EXT_buffer_reference2 : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
+
+#include "../rt/common.glsl"
+#include "header.glsl"
+#include "common.glsl"
+
+// The lattice DDA (renderer-impl ticket 02 / ADR 0001): resolve the voxel
+// from a procedural-AABB hit entirely here, with zero per-AABB metadata.
+//
+// Hulls are trimmed to their occupied bounds and authored in absolute
+// Region-local coordinates, so the hit position alone yields
+// micro_chunk = floor(hit / 8) and cell = floor(hit) mod 8. The DDA steps
+// the 8^3 lattice (Amanatides-Woo, tie-break x, y, z — the same order as the
+// CPU reference tracer in src/validate/reference.rs), rejects empty cells
+// through the Occupancy mask (the mask, not a sentinel material, defines
+// existence — palette index 0 is a real color), and commits the first
+// occupied cell via reportIntersectionEXT(t, material): the material rides
+// the 8-bit hitKind, so closest-hit stays a palette lookup.
+//
+// Ray ranges: gl_RayTminEXT is the ray's constant t_min and gl_RayTmaxEXT
+// the current t_max — NOT the primitive entry/exit (the intersection shader
+// computes its own hit). The ray lives in object space = Region-local space
+// (the instance transform is a translation), so the Region box [0, 256)^3
+// is a known constant: the DDA slab-tests it to find where the ray enters
+// the lattice and steps from there. A camera inside the Region starts at its
+// own cell (t clamped to t_min), so an in-voxel camera commits the enclosing
+// voxel at t_min (ADR 0002).
+
+const ivec3 REGION_EDGE = ivec3(256);
+const uint MC_STRIDE_Y = 32u;
+const uint MC_STRIDE_Z = 1024u;
+
+// Voxel index within a Micro-chunk: idx = x + 8*y + 64*z (the Occupancy
+// mask's bit order; material bytes follow the same order).
+uint voxel_index(ivec3 cell_in_microchunk) {
+    return uint(cell_in_microchunk.x) + 8u * uint(cell_in_microchunk.y)
+        + 64u * uint(cell_in_microchunk.z);
+}
+
+// Micro-chunk index within a Region: (mc.z * 32 + mc.y) * 32 + mc.x — the
+// offset table's slot order (must match src/region/pack.rs).
+uint microchunk_index(ivec3 mc) {
+    return MC_STRIDE_Z * uint(mc.z) + MC_STRIDE_Y * uint(mc.y) + uint(mc.x);
+}
+
+// The number of set Occupancy-mask bits below `idx` — the material byte
+// offset within the block (materials are popcount-compacted, u8, in bit
+// order, after the 64-byte mask).
+uint material_rank(RegionPool pool, uint block_offset, uint idx) {
+    uint word = idx >> 5u;
+    uint bit = idx & 31u;
+    uint base = block_offset >> 2u;
+    uint count = 0u;
+    for (uint w = 0u; w < word; ++w) {
+        count += bitCount(pool.words[base + w]);
+    }
+    count += bitCount(pool.words[base + word] & ((1u << bit) - 1u));
+    return count;
+}
+
+// Slab test of the ray against the Region box [0, 256)^3 over
+// [tmin, tmax]. Returns false if the ray misses the Region.
+bool region_slab(vec3 origin, vec3 dir, float tmin, float tmax, out float t0, out float t1) {
+    t0 = tmin;
+    t1 = tmax;
+    for (int a = 0; a < 3; ++a) {
+        float d = dir[a];
+        if (d == 0.0) {
+            // Parallel to the axis: the ray must already be inside the slab.
+            if (origin[a] < 0.0 || origin[a] >= 256.0) {
+                return false;
+            }
+        } else {
+            float inv = 1.0 / d;
+            float a0 = (0.0 - origin[a]) * inv;
+            float a1 = (256.0 - origin[a]) * inv;
+            if (a0 > a1) {
+                float tmp = a0;
+                a0 = a1;
+                a1 = tmp;
+            }
+            t0 = max(t0, a0);
+            t1 = min(t1, a1);
+            if (t0 > t1) {
+                return false;
+            }
+        }
+    }
+    return t1 > t0;
+}
+
+void main() {
+    vec3 origin = gl_ObjectRayOriginEXT;
+    vec3 dir = gl_ObjectRayDirectionEXT;
+    float tmin = gl_RayTminEXT;
+    float tmax = gl_RayTmaxEXT;
+    if (tmax <= tmin) {
+        return;
+    }
+
+    // The instance custom index is the 12-bit Region id (ADR 0004); the
+    // Region table maps it to the pool's device address.
+    uint region_id = gl_InstanceCustomIndexEXT & 0xFFFu;
+    uint64_t pool_bda = region_table.bdas[region_id];
+    if (pool_bda == 0ul) {
+        return;
+    }
+    RegionPool pool = RegionPool(pool_bda);
+
+    // Where the ray enters the Region lattice (clamped to the ray t_min, so
+    // a camera inside the Region starts at its own cell).
+    float t0;
+    float t1;
+    if (!region_slab(origin, dir, tmin, tmax, t0, t1)) {
+        return;
+    }
+
+    vec3 entry = origin + dir * t0;
+    ivec3 cell = ivec3(floor(entry));
+
+    // Amanatides-Woo stepping state: per axis, the t of the next crossed
+    // cell boundary and the t to cross one cell.
+    ivec3 step = ivec3(0);
+    vec3 t_next = vec3(0.0);
+    vec3 delta = vec3(0.0);
+    for (int a = 0; a < 3; ++a) {
+        float d = dir[a];
+        if (d == 0.0) {
+            step[a] = 1;
+            t_next[a] = FLT_MAX;
+            delta[a] = FLT_MAX;
+        } else if (d > 0.0) {
+            step[a] = 1;
+            float boundary = float(cell[a] + 1);
+            t_next[a] = (boundary - origin[a]) / d;
+            delta[a] = 1.0 / d;
+        } else {
+            step[a] = -1;
+            float boundary = float(cell[a]);
+            t_next[a] = (boundary - origin[a]) / d;
+            delta[a] = -1.0 / d;
+        }
+    }
+
+    float t_entry = t0;
+    while (true) {
+        // Cells are Region-local. A ray that grazes a Region face exactly
+        // can start at cell 256 — outside the lattice; skip the lookup for
+        // such cells (the DDA steps them past).
+        if (!any(lessThan(cell, ivec3(0))) && !any(greaterThanEqual(cell, REGION_EDGE))) {
+            ivec3 mc = cell >> 3;
+            ivec3 c = cell & 7;
+            uint block_offset = pool.words[microchunk_index(mc)];
+
+            if (block_offset != OFFSET_SENTINEL) {
+                uint idx = voxel_index(c);
+                uint base = block_offset >> 2u;
+                uint word = idx >> 5u;
+                uint bit = idx & 31u;
+                uint mask_word = pool.words[base + word];
+                uint bit_mask = 1u << bit;
+
+                if ((mask_word & bit_mask) != 0u) {
+                    // Occupied: material byte at block + 64 + rank (u8 read
+                    // via the containing u32 word).
+                    uint count = material_rank(pool, block_offset, idx);
+                    uint byte_off = block_offset + 64u + count;
+                    uint byte_word = pool.words[byte_off >> 2u];
+                    uint material = (byte_word >> ((byte_off & 3u) << 3u)) & 0xFFu;
+                    reportIntersectionEXT(t_entry, material);
+                    return;
+                }
+            }
+        }
+
+        int axis;
+        if (t_next.x <= t_next.y && t_next.x <= t_next.z) {
+            axis = 0;
+        } else if (t_next.y <= t_next.z) {
+            axis = 1;
+        } else {
+            axis = 2;
+        }
+        float next_t = t_next[axis];
+        if (next_t >= t1) {
+            return;
+        }
+        cell[axis] += step[axis];
+        t_next[axis] = next_t + delta[axis];
+        t_entry = next_t;
+    }
+}

@@ -367,7 +367,6 @@ impl App {
         rcx.rt_camera_data = raygen::Camera {
             proj_inverse: proj.inverse().to_cols_array_2d(),
             view_inverse: view.inverse().to_cols_array_2d(),
-            view_proj: (view * proj).to_cols_array_2d(),
         };
 
         #[cfg(debug_assertions)]
@@ -621,7 +620,6 @@ impl ApplicationHandler for App {
         let rt_camera_data = raygen::Camera {
             proj_inverse: [[0.0; 4]; 4],
             view_inverse: [[0.0; 4]; 4],
-            view_proj: [[0.0; 4]; 4],
         };
 
         let rt_sunlight_data = raygen::Sunlight {

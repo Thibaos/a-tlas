@@ -4,6 +4,7 @@ pub mod frustum;
 pub mod validate;
 mod physics;
 mod player;
+mod region;
 mod rt;
 mod schedule;
 mod tasks;

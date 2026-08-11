@@ -17,7 +17,7 @@ use vulkano_taskgraph::{
 };
 
 
-use crate::validate::render::ValidateRenderContext;
+use crate::region::render::RegionRenderContext;
 
 pub struct CaptureTask {
     swapchain_id: Id<Swapchain>,
@@ -51,7 +51,7 @@ impl CaptureTask {
 }
 
 impl Task for CaptureTask {
-    type World = ValidateRenderContext;
+    type World = RegionRenderContext;
 
     unsafe fn execute(
         &self,

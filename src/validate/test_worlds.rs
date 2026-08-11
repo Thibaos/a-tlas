@@ -4,7 +4,9 @@
 //! captured frame against the CPU reference tracer. The worlds are chosen to
 //! exercise the renderer input contract's edge cases (rendering-core ticket 06
 //! / ADR 0003): hull-empty space, Micro-chunk/Chunk/Region boundaries,
-//! camera-in-voxel, and far-plane miss. Each world is authored as a
+//! camera-in-voxel, far-plane miss, material index 0 (a real color via the
+//! 8-bit hitKind), and a solid volume with an interior camera (DDA interior
+//! voxels, not hollow shells). Each world is authored as a
 //! deterministic .vox file written to assets/test/ on demand, so the validator
 //! also exercises the real world loader (open_file + Chunks::new).
 //!
@@ -48,7 +50,7 @@ pub struct WorldSpec {
     pub camera: WorldCamera,
 }
 
-/// The six edge-case worlds + the smoke world.
+/// The six edge-case worlds + palette-zero + solid-cube + the smoke world.
 pub fn all_worlds() -> Vec<WorldSpec> {
     let mut worlds = test_suite();
     worlds.push(smoke_world());
@@ -68,12 +70,32 @@ pub fn test_suite() -> Vec<WorldSpec> {
             }),
         },
         WorldSpec {
+            name: "palette-zero".to_string(),
+            path: "assets/test/palette-zero.vox".to_string(),
+            description: "voxels with material index 0 — palette index 0 is a real color, and the 8-bit hitKind must carry it (no sentinel material)".to_string(),
+            camera: Some(CameraSpec {
+                eye: [-6.0, 2.0, 6.0],
+                target: [0.0, 0.0, 0.0],
+                up: [0.0, 1.0, 0.0],
+            }),
+        },
+        WorldSpec {
             name: "hollow-box".to_string(),
             path: "assets/test/hollow-box.vox".to_string(),
             description: "a hollow 12x12x12 box, empty interior (known-good case)".to_string(),
             camera: Some(CameraSpec {
                 eye: [-16.0, 5.0, 16.0],
                 target: [5.5, 5.5, 5.5],
+                up: [0.0, 1.0, 0.0],
+            }),
+        },
+        WorldSpec {
+            name: "solid-cube".to_string(),
+            path: "assets/test/solid-cube.vox".to_string(),
+            description: "a solid 12x12x12 cube with the camera inside — interior voxels (no exposed face) render through the DDA, not a hollow shell; every ray commits the enclosing voxel at t_min".to_string(),
+            camera: Some(CameraSpec {
+                eye: [6.5, 6.5, 6.5],
+                target: [7.0, 6.5, 6.5],
                 up: [0.0, 1.0, 0.0],
             }),
         },
@@ -100,7 +122,7 @@ pub fn test_suite() -> Vec<WorldSpec> {
         WorldSpec {
             name: "camera-in-voxel".to_string(),
             path: "assets/test/camera-in-voxel.vox".to_string(),
-            description: "camera inside a solid voxel (enclosing voxel commits at t_min; the current\n              triangle-per-voxel driver reports the AABB exit t instead — a known divergence\n              that the DDA path (ticket 02) fixes, so this world is expected to FAIL on t until then)".to_string(),
+            description: "camera inside a solid voxel — the DDA commits the enclosing voxel at t_min (the old triangle-per-voxel driver reported the AABB exit t; the DDA path fixes it)".to_string(),
             camera: Some(CameraSpec {
                 eye: [0.2, 0.2, 0.2],
                 target: [1.0, 0.2, 0.2],
@@ -129,9 +151,10 @@ pub fn smoke_world() -> WorldSpec {
     }
 }
 
-/// The shared 256-color test palette. Index 0 is a real color (per CONTEXT.md)
-/// but is unused as a voxel material so background black stays distinct; the
-/// low indices used by the test worlds are distinct, non-black colors.
+/// The shared 256-color test palette. Index 0 is a real color (per
+/// CONTEXT.md) and is exercised as a voxel material by the palette-zero
+/// world; the low indices used by the test worlds are distinct, non-black
+/// colors so background black stays distinct.
 pub fn test_palette() -> [Color; 256] {
     std::array::from_fn(|i| Color {
         r: ((i * 37 + 11) % 256) as u8,
@@ -148,7 +171,9 @@ pub fn generate_all(out_dir: &Path) -> io::Result<Vec<PathBuf>> {
 
     let worlds: Vec<(&str, DotVoxData)> = vec![
         ("single", single_world()),
+        ("palette-zero", palette_zero_world()),
         ("hollow-box", hollow_box_world()),
+        ("solid-cube", solid_cube_world()),
         ("hull-empty", hull_empty_world()),
         ("boundaries", boundaries_world()),
         ("camera-in-voxel", camera_in_voxel_world()),
@@ -270,6 +295,31 @@ fn single_world() -> DotVoxData {
     scene_less_world(&[(IVec3::new(0, 0, 0), 1)])
 }
 
+/// Voxels whose material index is 0: palette index 0 is a real color (the
+/// Occupancy mask — not a sentinel material — defines existence), and the
+/// 8-bit hitKind must carry it through the intersection shader.
+fn palette_zero_world() -> DotVoxData {
+    scene_less_world(&[
+        (IVec3::new(0, 0, 0), 0),
+        (IVec3::new(3, 0, 0), 0),
+    ])
+}
+
+/// A solid 12x12x12 cube with the camera inside: every interior voxel has no
+/// exposed face, so a surface-only path renders this frame black; the DDA
+/// path commits the enclosing voxel at t_min for every ray.
+fn solid_cube_world() -> DotVoxData {
+    let mut voxels = Vec::new();
+    for x in 0..12 {
+        for y in 0..12 {
+            for z in 0..12 {
+                voxels.push((IVec3::new(x, y, z), 7));
+            }
+        }
+    }
+    scene_less_world(&voxels)
+}
+
 fn hollow_box_world() -> DotVoxData {
     // Shell of the box [0, 11]^3: voxels where any coordinate is on a face.
     let mut voxels = Vec::new();
@@ -372,7 +422,7 @@ mod tests {
     fn every_test_world_writes_and_loads() {
         let dir = std::env::temp_dir().join("atlas-rt-test-worlds");
         let paths = generate_all(&dir).unwrap();
-        assert_eq!(paths.len(), 6);
+        assert_eq!(paths.len(), 8);
 
         for path in &paths {
             let data = open_file(path.to_str().unwrap());
