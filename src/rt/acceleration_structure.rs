@@ -451,37 +451,6 @@ pub fn build_blas(
     )
 }
 
-pub fn build_tlas(
-    instance_buffer: Subbuffer<[AccelerationStructureInstance]>,
-    primitive_count: u32,
-    allocator: Arc<dyn MemoryAllocator>,
-    device: Arc<Device>,
-    queue: Arc<Queue>,
-    resources: &Arc<Resources>,
-    flight_id: Id<Flight>,
-) -> Arc<AccelerationStructure> {
-    let as_geometry_instances_data = AccelerationStructureGeometryInstancesData {
-        data: instance_buffer.device_address().unwrap().get(),
-        ..Default::default()
-    };
-
-    let geometries = vec![AccelerationStructureGeometry::new(
-        AccelerationStructureGeometryData::Instances(as_geometry_instances_data),
-    )];
-
-    build_acceleration_structure_common(
-        geometries,
-        BuildAccelerationStructureMode::Build,
-        primitive_count,
-        AccelerationStructureType::TopLevel,
-        allocator,
-        device,
-        queue,
-        resources,
-        flight_id,
-    )
-}
-
 // ---------------------------------------------------------------------------
 // Residency-path builders (renderer-impl ticket 04)
 // ---------------------------------------------------------------------------

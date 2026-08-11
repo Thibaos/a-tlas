@@ -14,7 +14,11 @@ use std::sync::{
 };
 use vulkano::{
     DeviceSize,
-    acceleration_structure::{AccelerationStructure, AccelerationStructureInstance},
+    acceleration_structure::{
+        AccelerationStructure, AccelerationStructureGeometry, AccelerationStructureGeometryData,
+        AccelerationStructureGeometryInstancesData, AccelerationStructureInstance,
+        AccelerationStructureType,
+    },
     buffer::{Buffer, BufferCreateInfo, BufferUsage, Subbuffer},
     memory::allocator::{AllocationCreateInfo, DeviceLayout, MemoryTypeFilter},
     pipeline::{
@@ -162,25 +166,49 @@ pub fn create_render_resources(
         .wait_idle()
         .unwrap();
 
+    // Both TLAS storages are pre-sized for the full async-update budget
+    // (`max_instance_count` instances): the worker
+    // (`UpdateAccelerationStructureTask`) rebuilds the back AS with
+    // `primitive_count == max_instance_count` on every update, so a storage
+    // sized for the startup count alone would trip
+    // VUID-vkCmdBuildAccelerationStructuresKHR-pInfos-03675. The front AS is
+    // then built in place over the startup instances (cheap and correct for
+    // frame 0); the back AS is first built by the worker after the flip.
+    let (front_tlas, front_storage) = acceleration_structure::create_tlas_storage(
+        &instance_buffer,
+        max_instance_count as u32,
+        gpu.memory_allocator.clone(),
+        gpu.device.clone(),
+    );
+    let back_tlas = acceleration_structure::create_tlas_storage(
+        &instance_buffer,
+        max_instance_count as u32,
+        gpu.memory_allocator.clone(),
+        gpu.device.clone(),
+    )
+    .0;
+
+    let tlas_geometries = vec![AccelerationStructureGeometry::new(
+        AccelerationStructureGeometryData::Instances(AccelerationStructureGeometryInstancesData {
+            data: instance_buffer.device_address().unwrap().get(),
+            ..Default::default()
+        }),
+    )];
+
     let acceleration_structures = [
-        acceleration_structure::build_tlas(
-            instance_buffer.clone(),
+        acceleration_structure::build_acceleration_structure_in_place(
+            tlas_geometries,
             tlas_count,
+            AccelerationStructureType::TopLevel,
+            &front_tlas,
+            front_storage,
             gpu.memory_allocator.clone(),
             gpu.device.clone(),
             gpu.compute_queue.clone(),
             &gpu.resources,
             gpu.compute_flight_id,
         ),
-        acceleration_structure::build_tlas(
-            instance_buffer,
-            tlas_count,
-            gpu.memory_allocator.clone(),
-            gpu.device.clone(),
-            gpu.compute_queue.clone(),
-            &gpu.resources,
-            gpu.compute_flight_id,
-        ),
+        back_tlas,
     ];
 
     let bcx = gpu.resources.bindless_context().unwrap();
