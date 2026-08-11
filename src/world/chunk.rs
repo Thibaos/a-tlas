@@ -628,7 +628,7 @@ impl Chunks {
         self.inner.get(&grid_position)?.voxels.get(&local_position)
     }
 
-    /// Inserts a voxel with the given palette index (test/harness helper).
+    /// Inserts a voxel with the given palette index (test/validate helper).
     /// Lazily creates the chunk, so small hand-built worlds stay cheap.
     pub(crate) fn insert_voxel_at(&mut self, position: IVec3, material_index: u32) {
         let (grid_position, local_position) = Chunks::translation_to_position(&position);
@@ -641,7 +641,7 @@ impl Chunks {
 
     /// Iterates every occupied voxel in the world as (global position, voxel).
     ///
-    /// The validation harness's reference tracer reads the world side of the
+    /// The validator's reference tracer reads the world side of the
     /// renderer input contract through this iterator (plus `get_voxel` and the
     /// palette) — it never touches renderer state.
     pub fn iter_voxels(&self) -> impl Iterator<Item = (IVec3, &HostVoxel)> + '_ {

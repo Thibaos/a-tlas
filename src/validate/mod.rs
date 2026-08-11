@@ -1,4 +1,4 @@
-//! The correctness harness (renderer-impl ticket 01): the single test seam
+//! The correctness validator (renderer-impl ticket 01): the single test seam
 //! for the whole rendering effort.
 //!
 //! For each world it loads the .vox through the real world loader, renders
@@ -7,10 +7,10 @@
 //! the same frame with the independent CPU reference tracer, and writes a
 //! comparison report (PNGs + text) under `--out`.
 //!
-//! Usage (see `a-tlas harness --help`):
-//!   cargo run -- harness                      # run the whole suite
-//!   cargo run -- harness --world assets/test/single.vox
-//!   cargo run -- harness --gen-test-worlds    # (re)write assets/test/*.vox
+//! Usage (see `a-tlas validate --help`):
+//!   cargo run -- validate                      # run the whole suite
+//!   cargo run -- validate --world assets/test/single.vox
+//!   cargo run -- validate --gen-test-worlds    # (re)write assets/test/*.vox
 
 use std::{
     f32::consts::PI,
@@ -44,11 +44,11 @@ use winit::{
 
 use crate::{
     app::{GpuStack, MIN_SWAPCHAIN_IMAGES},
-    harness::{
+    validate::{
         capture::CaptureTask,
         compare::{CompareConfig, CompareReport, compare},
         reference::{CameraInputs, ReferenceTracer, VoxelShape, render_reference},
-        render::{HarnessRenderContext, HarnessRenderTask},
+        render::{ValidateRenderContext, ValidateRenderTask},
         report::{build_diff_image, write_png, write_text_report},
         test_worlds::{CameraSpec, WorldSpec, all_worlds, generate_all},
     },
@@ -65,10 +65,10 @@ pub mod test_worlds;
 
 const DEFAULT_WIDTH: u32 = 640;
 const DEFAULT_HEIGHT: u32 = 480;
-const DEFAULT_OUT_DIR: &str = "target/harness";
+const DEFAULT_OUT_DIR: &str = "target/validate";
 
 #[derive(Clone, Debug)]
-pub struct HarnessOptions {
+pub struct ValidateOptions {
     pub world: Option<PathBuf>,
     pub out_dir: PathBuf,
     pub width: u32,
@@ -78,7 +78,7 @@ pub struct HarnessOptions {
     pub help: bool,
 }
 
-impl Default for HarnessOptions {
+impl Default for ValidateOptions {
     fn default() -> Self {
         Self {
             world: None,
@@ -104,14 +104,14 @@ pub struct PassSummary {
 
 pub fn print_help() {
     println!(
-        "a-tlas correctness harness\n\
+        "a-tlas correctness validator\n\
          \n\
          Renders a test .vox world through the real renderer, captures the raw frame\n\
          before any overlay, traces the same frame with an independent CPU reference\n\
          tracer, and reports per-pixel {{color, t}} mismatches.\n\
          \n\
          USAGE:\n\
-         \x20 a-tlas harness [OPTIONS]\n\
+         \x20 a-tlas validate [OPTIONS]\n\
          \n\
          OPTIONS:\n\
          \x20 --world <path>       Run a single world (default: the whole suite:\n\
@@ -126,8 +126,8 @@ pub fn print_help() {
     );
 }
 
-pub fn parse_args(args: &[String]) -> Result<HarnessOptions, String> {
-    let mut opts = HarnessOptions::default();
+pub fn parse_args(args: &[String]) -> Result<ValidateOptions, String> {
+    let mut opts = ValidateOptions::default();
 
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
@@ -174,7 +174,7 @@ pub fn parse_args(args: &[String]) -> Result<HarnessOptions, String> {
     Ok(opts)
 }
 
-/// Entry point for `a-tlas harness ...`.
+/// Entry point for `a-tlas validate ...`.
 pub fn run(args: &[String]) -> Result<(), String> {
     let opts = parse_args(args)?;
 
@@ -234,7 +234,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
     let event_loop = EventLoop::new().map_err(|e| format!("event loop: {e}"))?;
     let gpu = GpuStack::new(&event_loop);
 
-    let mut app = HarnessApp {
+    let mut app = ValidateApp {
         gpu,
         opts: opts.clone(),
         worlds,
@@ -286,7 +286,7 @@ struct PassSpec {
     camera: Option<CameraSpec>,
 }
 
-struct HarnessFrame {
+struct ValidateFrame {
     #[allow(dead_code)]
     window: Arc<Window>,
     virtual_swapchain_id: Id<Swapchain>,
@@ -294,20 +294,20 @@ struct HarnessFrame {
     swapchain_format: Format,
     color_readback_buffer_id: Id<Buffer>,
     t_readback_buffer_id: Id<Buffer>,
-    task_graph: ExecutableTaskGraph<HarnessRenderContext>,
-    rcx: HarnessRenderContext,
+    task_graph: ExecutableTaskGraph<ValidateRenderContext>,
+    rcx: ValidateRenderContext,
     camera_inputs: CameraInputs,
 }
 
-struct HarnessApp {
+struct ValidateApp {
     gpu: GpuStack,
-    opts: HarnessOptions,
+    opts: ValidateOptions,
     worlds: Vec<WorldSpec>,
     results: Vec<Result<PassSummary, String>>,
     done: bool,
 }
 
-impl ApplicationHandler for HarnessApp {
+impl ApplicationHandler for ValidateApp {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.done {
             return;
@@ -339,7 +339,7 @@ impl ApplicationHandler for HarnessApp {
     }
 }
 
-impl HarnessApp {
+impl ValidateApp {
     /// Runs one full pass over a single world: hidden window + swapchain +
     /// ray pass + capture + reference trace + comparison + report files.
     fn run_world(
@@ -356,7 +356,7 @@ impl HarnessApp {
         // The reference traces the same voxel shape the renderer under test
         // instances. The current triangle-per-voxel path centers a unit cube
         // on each voxel position; ticket 02's DDA uses grid cells — the
-        // harness switches when the renderer does.
+        // validate switches when the renderer does.
         let shape = VoxelShape::CenteredUnitCube;
 
         println!(
@@ -372,7 +372,7 @@ impl HarnessApp {
 
         let surface = Surface::from_window(&self.gpu.instance, &window).unwrap();
 
-        let (swapchain_id, swapchain_format) = create_harness_swapchain(
+        let (swapchain_id, swapchain_format) = create_validate_swapchain(
             &self.gpu,
             &surface,
             [width, height],
@@ -401,7 +401,7 @@ impl HarnessApp {
         let mut task_graph = TaskGraph::new(&self.gpu.resources);
         let virtual_swapchain_id = task_graph.add_swapchain(&SwapchainCreateInfo::default());
 
-        let rt_task = HarnessRenderTask::new(
+        let rt_task = ValidateRenderTask::new(
             &self.gpu,
             &world_data,
             &voxel_data,
@@ -443,7 +443,7 @@ impl HarnessApp {
             .unwrap();
 
         let rt_node_id = task_graph
-            .create_task_node("HarnessRender", QueueFamilyType::Graphics, rt_task)
+            .create_task_node("ValidateRender", QueueFamilyType::Graphics, rt_task)
             .image_access(
                 virtual_swapchain_id.current_image_id(),
                 AccessTypes::RAY_TRACING_SHADER_STORAGE_WRITE,
@@ -511,7 +511,7 @@ impl HarnessApp {
 
         let (camera, camera_inputs) = build_camera(&world_data, width, height, world.camera);
 
-        let rcx = HarnessRenderContext {
+        let rcx = ValidateRenderContext {
             camera,
             sunlight: raygen::Sunlight {
                 direction: [0.5, -0.5, 0.5],
@@ -520,7 +520,7 @@ impl HarnessApp {
             t_image_storage_id,
         };
 
-        let frame = HarnessFrame {
+        let frame = ValidateFrame {
             window,
             virtual_swapchain_id,
             swapchain_id,
@@ -543,7 +543,7 @@ impl HarnessApp {
         voxel_data: &dot_vox::DotVoxData,
         shape: VoxelShape,
         world: &WorldSpec,
-        mut frame: HarnessFrame,
+        mut frame: ValidateFrame,
     ) -> Result<PassSummary, String> {
         let width = self.opts.width;
         let height = self.opts.height;
@@ -702,7 +702,7 @@ fn read_host_floats(gpu: &GpuStack, id: Id<Buffer>) -> Vec<f32> {
 // GPU helpers
 // ---------------------------------------------------------------------------
 
-fn create_harness_swapchain(
+fn create_validate_swapchain(
     gpu: &GpuStack,
     surface: &Arc<Surface>,
     extent: [u32; 2],

@@ -11,7 +11,7 @@
 //! each voxel is tested as the same shape the renderer uses ([`VoxelShape`]):
 //! today that is a unit cube centered on the voxel position (the
 //! triangle-per-voxel path), the destination uses the unit grid cell. The
-//! harness switches the shape when the renderer switches.
+//! validate switches the shape when the renderer switches.
 //!
 //! To stay fast on dense worlds (custom.vox is ~1M voxels) the tracer steps
 //! the ray over the world's grid cells instead of testing every voxel per
@@ -25,7 +25,7 @@ use crate::world::chunk::Chunks;
 
 /// Ray t-range: matches the current ray pass (shaders/rt/common.glsl EPSILON /
 /// FLT_MAX). ADR 0002 will move the ray pass to the camera's near/far; when it
-/// does, these constants move with it and the harness keeps passing.
+/// does, these constants move with it and the validator keeps passing.
 pub const T_MIN: f32 = 0.0001;
 pub const T_MAX: f32 = f32::MAX;
 

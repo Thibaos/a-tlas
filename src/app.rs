@@ -68,7 +68,7 @@ pub const MAX_DEBUG_LINES: u32 = 4096;
 
 /// The shared GPU stack (instance, device, queues, allocator, taskgraph
 /// resources and flights). Constructed once per event loop by [`App::new`] and
-/// by the offline harness; the harness renders through the same stack so the
+/// by the offline validator; the validator renders through the same stack so the
 /// device/queue/extension surface it validates is the app's.
 pub struct GpuStack {
     pub instance: Arc<Instance>,

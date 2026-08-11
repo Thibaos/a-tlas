@@ -1,4 +1,4 @@
-//! Report artifacts for a harness run: the captured GPU frame, the reference
+//! Report artifacts for a validation run: the captured GPU frame, the reference
 //! frame, a diff image, and a text report identifying differing pixels.
 
 use std::{
@@ -7,7 +7,7 @@ use std::{
     path::Path,
 };
 
-use crate::harness::compare::CompareReport;
+use crate::validate::compare::CompareReport;
 
 /// Writes an 8-bit RGBA image as a PNG.
 pub fn write_png(path: &Path, rgba: &[u8], width: u32, height: u32) -> std::io::Result<()> {
@@ -61,7 +61,7 @@ pub fn write_text_report(
 ) -> std::io::Result<()> {
     let mut out = String::new();
 
-    out.push_str(&format!("a-tlas correctness harness report\n"));
+    out.push_str(&format!("a-tlas correctness validate report\n"));
     out.push_str(&format!("world: {world_name} ({world_path})\n"));
     out.push_str(&format!("camera: {camera_description}\n"));
     out.push_str(&format!(

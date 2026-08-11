@@ -1,7 +1,7 @@
 //! The capture task: copies the raw ray-pass output into host-readable
 //! buffers before anything else (the debug overlay, when present, runs after
 //! this node on the same image). This is the seam that satisfies "capture
-//! happens before the debug overlay draws" — the harness graph orders
+//! happens before the debug overlay draws" — the validation graph orders
 //! Render → Capture and never lets an overlay touch the copied bytes.
 
 use vulkano::{
@@ -17,11 +17,11 @@ use vulkano_taskgraph::{
 };
 
 
-use crate::harness::render::HarnessRenderContext;
+use crate::validate::render::ValidateRenderContext;
 
 pub struct CaptureTask {
     swapchain_id: Id<Swapchain>,
-    /// The t-channel image (written by the harness raygen).
+    /// The t-channel image (written by the validation raygen).
     t_image_id: Id<Image>,
     t_format: Format,
     pub color_readback_buffer_id: Id<Buffer>,
@@ -51,7 +51,7 @@ impl CaptureTask {
 }
 
 impl Task for CaptureTask {
-    type World = HarnessRenderContext;
+    type World = ValidateRenderContext;
 
     unsafe fn execute(
         &self,

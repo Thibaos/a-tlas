@@ -1,4 +1,4 @@
-//! The harness's ray pass: the same render path as the app (same
+//! The validation ray pass: the same render path as the app (same
 //! acceleration structures, instance buffer, palette, camera buffer), but
 //! with a raygen that additionally writes the committed hit distance to a
 //! t-channel image. The color store is byte-identical to the production
@@ -36,20 +36,20 @@ pub(crate) mod capture_raygen {
     vulkano_shaders::shader! {
         root_path_env: "CARGO_MANIFEST_DIR",
         ty: "raygen",
-        path: "shaders/harness/capture.rgen",
+        path: "shaders/validate/capture.rgen",
         vulkan_version: "1.3"
     }
 }
 
-/// The per-frame context the harness's tasks read.
-pub struct HarnessRenderContext {
+/// The per-frame context the validation tasks read.
+pub struct ValidateRenderContext {
     pub camera: raygen::Camera,
     pub sunlight: raygen::Sunlight,
     pub swapchain_storage_image_ids: Vec<StorageImageId>,
     pub t_image_storage_id: StorageImageId,
 }
 
-pub struct HarnessRenderTask {
+pub struct ValidateRenderTask {
     swapchain_id: Id<Swapchain>,
     camera_buffer_id: Id<Buffer>,
     sunlight_buffer_id: Id<Buffer>,
@@ -63,7 +63,7 @@ pub struct HarnessRenderTask {
     current_as_index: Arc<AtomicBool>,
 }
 
-impl HarnessRenderTask {
+impl ValidateRenderTask {
     /// The instance buffer the TLAS reads (declared in the task graph).
     pub fn instance_buffer_id(&self) -> Id<Buffer> {
         self.instance_buffer_id
@@ -135,8 +135,8 @@ impl HarnessRenderTask {
     }
 }
 
-impl Task for HarnessRenderTask {
-    type World = HarnessRenderContext;
+impl Task for ValidateRenderTask {
+    type World = ValidateRenderContext;
 
     unsafe fn execute(
         &self,

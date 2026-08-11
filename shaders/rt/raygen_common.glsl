@@ -1,8 +1,8 @@
 // Shared primary-visibility ray construction for raygen shaders.
 //
 // Both shaders/rt/simple.rgen (the production ray pass) and
-// shaders/harness/capture.rgen (the validation harness capture pass) include
-// this so the two raygen stages compute byte-identical rays: the harness
+// shaders/validate/capture.rgen (the validation capture pass) include
+// this so the two raygen stages compute byte-identical rays: the validator
 // compares per-pixel {color, t} against the CPU reference tracer, which
 // shares only camera inputs and the palette. Change the camera math here,
 // not in either raygen.

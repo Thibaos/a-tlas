@@ -1,11 +1,11 @@
 //! Hand-authored test worlds (assets/test/) and their cameras.
 //!
-//! The harness renders each world through the real renderer and compares the
+//! The validator renders each world through the real renderer and compares the
 //! captured frame against the CPU reference tracer. The worlds are chosen to
 //! exercise the renderer input contract's edge cases (rendering-core ticket 06
 //! / ADR 0003): hull-empty space, Micro-chunk/Chunk/Region boundaries,
 //! camera-in-voxel, and far-plane miss. Each world is authored as a
-//! deterministic .vox file written to assets/test/ on demand, so the harness
+//! deterministic .vox file written to assets/test/ on demand, so the validator
 //! also exercises the real world loader (open_file + Chunks::new).
 //!
 //! Authoring convention (verified by the unit tests below): a scene-less .vox
@@ -26,7 +26,7 @@ use glam::IVec3;
 
 pub const TEST_WORLDS_DIR: &str = "assets/test";
 
-/// A fixed camera for a test world — part of the harness's camera inputs,
+/// A fixed camera for a test world — part of the validator's camera inputs,
 /// shared verbatim by the GPU ray pass and the reference tracer.
 #[derive(Clone, Copy, Debug)]
 pub struct CameraSpec {

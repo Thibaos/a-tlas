@@ -36,7 +36,7 @@ use vulkano_taskgraph::{
 };
 
 /// Everything the ray pass needs that is independent of which raygen shader is
-/// used. Built once per world; the production task and the harness's capture
+/// used. Built once per world; the production task and the validator's capture
 /// task both construct from it, differing only in their raygen stage.
 pub struct RenderResources {
     pub camera_buffer_id: Id<Buffer>,
@@ -269,7 +269,7 @@ pub fn create_render_resources(
 
 /// Builds the shared ray tracing pipeline (raygen + miss + procedural hit
 /// group) around the given raygen entry point. The production task and the
-/// harness's capture task differ only in which raygen they pass.
+/// validator's capture task differ only in which raygen they pass.
 #[allow(clippy::too_many_arguments)]
 pub fn build_ray_tracing_pipeline(
     gpu: &GpuStack,
@@ -408,7 +408,7 @@ impl Task for RayTracingRenderTask {
 
         // vkCmdUpdateBuffer's writes are not tracked by the taskgraph, so make
         // them visible to the ray pass explicitly. Without this barrier the
-        // camera reads stale memory on early frames (the harness exposed it:
+        // camera reads stale memory on early frames (the validator exposed it:
         // a one-shot frame read all zeros).
         unsafe {
             cbf.pipeline_barrier(&DependencyInfo {

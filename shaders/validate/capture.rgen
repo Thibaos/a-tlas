@@ -9,10 +9,10 @@
 
 layout(location = 0) rayPayloadEXT MainPassPayload payload;
 
-// Validation-harness raygen. Identical to shaders/rt/simple.rgen (the ray is
+// Validation raygen. Identical to shaders/rt/simple.rgen (the ray is
 // built by the shared raygen_common.glsl, the trace is the same call), except
 // it additionally writes the committed hit distance payload.t to `t_image_id`
-// as rgba32f so the harness can compare per-pixel {color, t} against the CPU
+// as rgba32f so the validator can compare per-pixel {color, t} against the CPU
 // reference tracer. The color store is byte-identical to the production
 // raygen, so the captured color frame IS the raw renderer output.
 void main() {
