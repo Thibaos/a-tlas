@@ -11,11 +11,13 @@ use vulkano::{
     swapchain::Swapchain,
 };
 use vulkano_taskgraph::{
-    command_buffer::{BufferImageCopy as TgBufferImageCopy, CopyImageToBufferInfo as TgCopyInfo, RecordingCommandBuffer},
-    resource::ImageLayoutType,
     Id, Task, TaskContext, TaskResult,
+    command_buffer::{
+        BufferImageCopy as TgBufferImageCopy, CopyImageToBufferInfo as TgCopyInfo,
+        RecordingCommandBuffer,
+    },
+    resource::ImageLayoutType,
 };
-
 
 use crate::region::render::RegionRenderContext;
 

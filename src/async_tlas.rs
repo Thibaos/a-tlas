@@ -1,7 +1,8 @@
 use std::{
     sync::{
+        Arc,
         atomic::{AtomicBool, Ordering},
-        mpsc, Arc,
+        mpsc,
     },
     thread,
     time::Duration,
@@ -10,9 +11,10 @@ use std::{
 use glam::IVec3;
 use vulkano::{acceleration_structure::AccelerationStructure, device::Queue};
 use vulkano_taskgraph::{
+    Id, QueueFamilyType,
     graph::{CompileInfo, ExecutableTaskGraph, TaskGraph},
     resource::{AccessTypes, Flight, HostAccessType, Resources},
-    resource_map, Id, QueueFamilyType,
+    resource_map,
 };
 
 use crate::{

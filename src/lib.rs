@@ -1,7 +1,6 @@
 pub mod app;
 mod async_tlas;
 pub mod frustum;
-pub mod validate;
 mod physics;
 mod player;
 mod region;
@@ -9,4 +8,5 @@ mod rt;
 mod schedule;
 mod tasks;
 mod utils;
+pub mod validate;
 mod world;

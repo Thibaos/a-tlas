@@ -34,7 +34,8 @@ pub struct PlayerController {
 
 impl Default for PlayerController {
     fn default() -> Self {
-        let translation = Vec3::new(-16.0, 32.0, -16.0);
+        // Spawn above the world's top (nuke.vox reaches world-y ~542).
+        let translation = Vec3::new(-16.0, 620.0, -16.0);
 
         Self {
             speed: 64.0,
@@ -84,9 +85,9 @@ impl PlayerController {
             velocity -= right;
         }
         if self.is_pressed(UP) {
-            velocity -= glam::Vec3::Y;
-        } else if self.is_pressed(CONTROL) {
             velocity += glam::Vec3::Y;
+        } else if self.is_pressed(CONTROL) {
+            velocity -= glam::Vec3::Y;
         }
 
         velocity = velocity.normalize_or_zero();
@@ -119,7 +120,8 @@ impl PlayerController {
         let forward = rot * Vec3::new(0.0, 0.0, -1.0);
         let up = rot * Vec3::new(0.0, 1.0, 0.0);
 
-        self.view = Mat4::look_at_rh(self.translation, self.translation + forward, up);
+        self.view =
+            glam::camera::lh::view::look_at_mat4(self.translation, self.translation + forward, up);
     }
 
     pub fn handle_speed_change(&mut self, y_delta: f32) {

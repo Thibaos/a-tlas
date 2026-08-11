@@ -1,21 +1,21 @@
 use std::sync::atomic::Ordering;
 
 use vulkano::{
+    DeviceSize,
     acceleration_structure::{
         AccelerationStructureBuildGeometryInfo, AccelerationStructureBuildRangeInfo,
-        AccelerationStructureBuildType, AccelerationStructureGeometries,
-        AccelerationStructureGeometryInstancesData, AccelerationStructureGeometryInstancesDataType,
-        AccelerationStructureInstance, BuildAccelerationStructureFlags,
+        AccelerationStructureBuildType, AccelerationStructureGeometry,
+        AccelerationStructureGeometryData, AccelerationStructureGeometryInstancesData,
+        AccelerationStructureInstance, AccelerationStructureType, BuildAccelerationStructureFlags,
         BuildAccelerationStructureMode,
     },
     buffer::{Buffer, BufferCreateInfo, BufferUsage, Subbuffer},
     memory::allocator::{AllocationCreateInfo, DeviceLayout},
     sync::{AccessFlags, PipelineStages},
-    DeviceSize,
 };
 use vulkano_taskgraph::{
-    command_buffer::{DependencyInfo, MemoryBarrier, RecordingCommandBuffer},
     Id, Task, TaskContext, TaskResult,
+    command_buffer::{DependencyInfo, MemoryBarrier, RecordingCommandBuffer},
 };
 
 use crate::app::{App, AsyncRenderContext};
@@ -27,7 +27,7 @@ pub struct UpdateAccelerationStructureTask {
     blas_reference: u64,
     pub instance_buffer_id: Id<Buffer>,
     pub scratch_buffer_id: Id<Buffer>,
-    geometries: AccelerationStructureGeometries,
+    geometries: Vec<AccelerationStructureGeometry<'static>>,
 }
 
 impl UpdateAccelerationStructureTask {
@@ -37,17 +37,29 @@ impl UpdateAccelerationStructureTask {
         instance_buffer_id: Id<Buffer>,
         blas_reference: u64,
     ) -> Self {
-        let instance_buffer =
-            Subbuffer::new(app.gpu.resources.buffer(instance_buffer_id).buffer().clone())
-                .cast_aligned::<AccelerationStructureInstance>();
+        let instance_buffer = Subbuffer::new(
+            app.gpu
+                .resources
+                .buffer(instance_buffer_id)
+                .buffer()
+                .clone(),
+        )
+        .cast_aligned::<AccelerationStructureInstance>();
 
-        let geometry_instances_data = AccelerationStructureGeometryInstancesData::new(
-            AccelerationStructureGeometryInstancesDataType::Values(Some(instance_buffer.clone())),
-        );
+        let geometry_instances_data = AccelerationStructureGeometryInstancesData {
+            data: instance_buffer.device_address().unwrap().get(),
+            ..Default::default()
+        };
 
-        let geometries = AccelerationStructureGeometries::Instances(geometry_instances_data);
+        let geometries = vec![AccelerationStructureGeometry::new(
+            AccelerationStructureGeometryData::Instances(geometry_instances_data),
+        )];
 
-        let build_geometry_info = AccelerationStructureBuildGeometryInfo::new(geometries.clone());
+        let build_geometry_info = AccelerationStructureBuildGeometryInfo {
+            ty: AccelerationStructureType::TopLevel,
+            geometries: &geometries,
+            ..AccelerationStructureBuildGeometryInfo::new()
+        };
 
         let build_sizes_info = app.gpu.device.acceleration_structure_build_sizes(
             AccelerationStructureBuildType::Device,
@@ -122,19 +134,22 @@ impl Task for UpdateAccelerationStructureTask {
             ..Default::default()
         };
 
-        let mut build_geometry_info =
-            AccelerationStructureBuildGeometryInfo::new(self.geometries.clone());
+        let mut build_geometry_info = AccelerationStructureBuildGeometryInfo {
+            ty: AccelerationStructureType::TopLevel,
+            geometries: &self.geometries,
+            ..AccelerationStructureBuildGeometryInfo::new()
+        };
 
         let scratch_buffer = Subbuffer::new(tcx.buffer(self.scratch_buffer_id).buffer().clone());
 
         let back_index = usize::from(!rcx.current_as_index.load(Ordering::Acquire));
-        let dst = rcx.acceleration_structures[back_index].clone();
 
         build_geometry_info.mode = BuildAccelerationStructureMode::Build;
         build_geometry_info.flags = BuildAccelerationStructureFlags::PREFER_FAST_TRACE
             | BuildAccelerationStructureFlags::ALLOW_UPDATE;
-        build_geometry_info.dst_acceleration_structure = Some(dst);
-        build_geometry_info.scratch_data = Some(scratch_buffer);
+        build_geometry_info.dst_acceleration_structure =
+            Some(&rcx.acceleration_structures[back_index]);
+        build_geometry_info.scratch_data = scratch_buffer.device_address().unwrap().get();
 
         unsafe {
             cbf.pipeline_barrier(&DependencyInfo {

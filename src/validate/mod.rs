@@ -20,7 +20,7 @@ use std::{
     time::Instant,
 };
 
-use glam::{IVec3, Mat4, Vec3};
+use glam::{IVec3, Vec3};
 use vulkano::{
     buffer::{Buffer, BufferCreateInfo, BufferUsage, Subbuffer},
     format::Format,
@@ -58,7 +58,10 @@ use crate::{
         report::{build_diff_image, write_png, write_text_report},
         test_worlds::{CameraSpec, WorldSpec, all_worlds, generate_all},
     },
-    world::{chunk::Chunks, voxel::{get_palette, open_file}},
+    world::{
+        chunk::Chunks,
+        voxel::{get_palette, open_file},
+    },
 };
 
 pub mod capture;
@@ -417,22 +420,16 @@ impl ValidateApp {
 
         let surface = Surface::from_window(&self.gpu.instance, &window).unwrap();
 
-        let (swapchain_id, swapchain_format) = create_validate_swapchain(
-            &self.gpu,
-            &surface,
-            [width, height],
-        )
-        .map_err(|e| format!("swapchain: {e}"))?;
+        let (swapchain_id, swapchain_format) =
+            create_validate_swapchain(&self.gpu, &surface, [width, height])
+                .map_err(|e| format!("swapchain: {e}"))?;
 
         let swapchain_storage_image_ids =
             crate::app::window_size_dependent_setup(&self.gpu.resources, swapchain_id);
 
-        let (t_image_id, t_image_storage_id, t_format) = create_t_image(
-            &self.gpu.resources,
-            width,
-            height,
-        )
-        .map_err(|e| format!("t image: {e}"))?;
+        let (t_image_id, t_image_storage_id, t_format) =
+            create_t_image(&self.gpu.resources, width, height)
+                .map_err(|e| format!("t image: {e}"))?;
 
         let color_readback_buffer_id = self
             .gpu
@@ -513,11 +510,13 @@ impl ValidateApp {
                 // --- apply the step to the world -------------------------
                 for mc in &step.remove_microchunks {
                     let cells: Vec<IVec3> = {
-                        let world = Arc::get_mut(&mut world_data).expect("the validator owns the world");
+                        let world =
+                            Arc::get_mut(&mut world_data).expect("the validator owns the world");
                         world
                             .iter_voxels()
                             .filter(|(p, _)| {
-                                p.cmpge(*mc).all() && p.cmplt(*mc + IVec3::splat(MICRO_CHUNK_EDGE)).all()
+                                p.cmpge(*mc).all()
+                                    && p.cmplt(*mc + IVec3::splat(MICRO_CHUNK_EDGE)).all()
                             })
                             .map(|(p, _)| p)
                             .collect()
@@ -528,7 +527,8 @@ impl ValidateApp {
                         step.label
                     );
                     {
-                        let world = Arc::get_mut(&mut world_data).expect("the validator owns the world");
+                        let world =
+                            Arc::get_mut(&mut world_data).expect("the validator owns the world");
                         for position in cells {
                             assert!(
                                 world.remove_voxel_at(position),
@@ -539,7 +539,8 @@ impl ValidateApp {
                     }
                 }
                 {
-                    let world = Arc::get_mut(&mut world_data).expect("the validator owns the world");
+                    let world =
+                        Arc::get_mut(&mut world_data).expect("the validator owns the world");
                     for &(position, material) in &step.add_voxels {
                         world.insert_voxel_at(position, material.into());
                     }
@@ -597,8 +598,8 @@ impl ValidateApp {
                 // transition or a BLAS capacity replacement happened (the
                 // only instance-set/instance-data changes), and the store's
                 // resident set matches the input contract's mirrors.
-                let transitioned = !report.became_resident.is_empty()
-                    || !report.left_resident.is_empty();
+                let transitioned =
+                    !report.became_resident.is_empty() || !report.left_resident.is_empty();
                 assert_eq!(
                     report.tlas_rebuilt,
                     transitioned || !report.blas_replaced.is_empty(),
@@ -621,8 +622,14 @@ impl ValidateApp {
                     "the store's resident count must match the input contract's mirrors"
                 );
 
-                let summary =
-                    self.run_frame(&world_data, &voxel_data, shape, world, &mut frame, &step.label)?;
+                let summary = self.run_frame(
+                    &world_data,
+                    &voxel_data,
+                    shape,
+                    world,
+                    &mut frame,
+                    &step.label,
+                )?;
                 frames.push(summary);
             }
         }
@@ -635,10 +642,22 @@ impl ValidateApp {
         // name because only this world's script exercises the empty →
         // re-populate cycle.
         if world.name == "residency" && world.edit.is_some() {
-            assert_eq!(store.alloc_stats.pool_allocations, 3, "no fresh pool beyond the initial 3 regions");
-            assert_eq!(store.alloc_stats.blas_allocations, 3, "no fresh BLAS beyond the initial 3 regions");
-            assert_eq!(store.alloc_stats.pool_reuses, 1, "the re-populated Region reuses its freed pool");
-            assert_eq!(store.alloc_stats.blas_reuses, 1, "the re-populated Region reuses its freed BLAS");
+            assert_eq!(
+                store.alloc_stats.pool_allocations, 3,
+                "no fresh pool beyond the initial 3 regions"
+            );
+            assert_eq!(
+                store.alloc_stats.blas_allocations, 3,
+                "no fresh BLAS beyond the initial 3 regions"
+            );
+            assert_eq!(
+                store.alloc_stats.pool_reuses, 1,
+                "the re-populated Region reuses its freed pool"
+            );
+            assert_eq!(
+                store.alloc_stats.blas_reuses, 1,
+                "the re-populated Region reuses its freed BLAS"
+            );
         }
 
         Ok(PassSummary {
@@ -782,8 +801,7 @@ impl ValidateApp {
             resource_map!(&frame.task_graph, frame.virtual_swapchain_id => frame.swapchain_id)
                 .unwrap();
 
-        let execute_result =
-            unsafe { frame.task_graph.execute(resource_map, &frame.rcx, || {}) };
+        let execute_result = unsafe { frame.task_graph.execute(resource_map, &frame.rcx, || {}) };
 
         if let Err(error) = execute_result {
             return Err(format!("frame execution failed: {error:?}"));
@@ -874,7 +892,12 @@ fn write_report(
 ) -> std::io::Result<()> {
     fs::create_dir_all(out_dir)?;
 
-    write_png(&out_dir.join(format!("gpu{label}.png")), gpu_rgba, width, height)?;
+    write_png(
+        &out_dir.join(format!("gpu{label}.png")),
+        gpu_rgba,
+        width,
+        height,
+    )?;
     write_png(
         &out_dir.join(format!("reference{label}.png")),
         reference_rgba,
@@ -883,7 +906,12 @@ fn write_report(
     )?;
 
     let diff = build_diff_image(reference_rgba, report);
-    write_png(&out_dir.join(format!("diff{label}.png")), &diff, width, height)?;
+    write_png(
+        &out_dir.join(format!("diff{label}.png")),
+        &diff,
+        width,
+        height,
+    )?;
 
     let camera_description = pass
         .camera
@@ -913,7 +941,10 @@ fn camera_description(camera: CameraSpec) -> String {
 fn read_host_bytes(gpu: &GpuStack, id: Id<Buffer>) -> Vec<u8> {
     let buffer = gpu.resources.buffer(id).buffer().clone();
     let subbuffer = Subbuffer::new(buffer).cast_aligned::<u8>();
-    subbuffer.read().expect("host read of capture buffer").to_vec()
+    subbuffer
+        .read()
+        .expect("host read of capture buffer")
+        .to_vec()
 }
 
 /// Reads a host-visible buffer as f32s.
@@ -975,7 +1006,9 @@ fn create_validate_swapchain(
         surface,
         &SwapchainCreateInfo {
             present_mode: PresentMode::Immediate,
-            min_image_count: surface_capabilities.min_image_count.max(MIN_SWAPCHAIN_IMAGES),
+            min_image_count: surface_capabilities
+                .min_image_count
+                .max(MIN_SWAPCHAIN_IMAGES),
             image_format,
             image_extent: extent,
             image_usage: ImageUsage::STORAGE
@@ -1058,8 +1091,13 @@ fn build_camera(
         None => frame_world_camera(world),
     };
 
-    let view = Mat4::look_to_lh(eye, (target - eye).normalize(), up);
-    let proj = Mat4::perspective_lh(PI / 2.0, width as f32 / height as f32, 0.01, 10000.0);
+    let view = glam::camera::lh::view::look_to_mat4(eye, (target - eye).normalize(), up);
+    let proj = glam::camera::lh::proj::vulkan::perspective(
+        PI / 2.0,
+        width as f32 / height as f32,
+        0.01,
+        10000.0,
+    );
 
     let gpu_camera = crate::region::render::capture_raygen::Camera {
         proj_inverse: proj.inverse().to_cols_array_2d(),

@@ -478,7 +478,7 @@ impl Chunks {
                 .xyz()
                 .as_ivec3();
 
-                let p = IVec3::new(position.x, -position.y, -position.z);
+                let p = IVec3::new(position.x, position.y, -position.z);
 
                 Chunks::insert_voxel(
                     &mut chunks,
@@ -661,19 +661,16 @@ impl Chunks {
             let cw = CHUNK_WIDTH as i32;
             let chunk_origin = *grid_position * cw;
 
-            chunk
-                .voxels
-                .iter()
-                .map(move |(local_position, voxel)| {
-                    (
-                        IVec3::new(
-                            chunk_origin.x + local_position.x as i32,
-                            chunk_origin.y + local_position.y as i32,
-                            chunk_origin.z + local_position.z as i32,
-                        ),
-                        voxel,
-                    )
-                })
+            chunk.voxels.iter().map(move |(local_position, voxel)| {
+                (
+                    IVec3::new(
+                        chunk_origin.x + local_position.x as i32,
+                        chunk_origin.y + local_position.y as i32,
+                        chunk_origin.z + local_position.z as i32,
+                    ),
+                    voxel,
+                )
+            })
         })
     }
 
@@ -830,3 +827,5 @@ mod test {
         assert!(chunks.contains(&pos2));
     }
 }
+
+

@@ -9,15 +9,15 @@ vulkano = { git = "https://github.com/vulkano-rs/vulkano" }
 vulkano-shaders = { git = "https://github.com/vulkano-rs/vulkano" }
 vulkano-util = { git = "https://github.com/vulkano-rs/vulkano" }
 vulkano-taskgraph = { git = "https://github.com/vulkano-rs/vulkano" }
-rand = "*"
 winit = "0.30"
+rand = "*"
 dot_vox = "*"
 glam = { version = "*", features = ["bytemuck"] }
 bytemuck = { version = "*", features = ["extern_crate_alloc"] }
 ply-rs = "*"
-crossterm = "0.29.0"
-either = "1.17.0"
-png = "0.17"
+crossterm = "*"
+either = "*"
+png = "*"
 
 [profile.release]
 codegen-units = 1

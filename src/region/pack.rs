@@ -49,8 +49,7 @@ pub fn region_id(region_index: IVec3) -> u32 {
     // bits per axis. Beyond that the 4-bit encoding aliases, so the assert
     // matches the extent.
     debug_assert!(
-        region_index.cmpge(IVec3::splat(-8)).all()
-            && region_index.cmplt(IVec3::splat(8)).all(),
+        region_index.cmpge(IVec3::splat(-8)).all() && region_index.cmplt(IVec3::splat(8)).all(),
         "region index {region_index} exceeds the v1 ±2048/axis 12-bit budget"
     );
     (((region_index.x + 8) as u32 & 0xF) << 8)

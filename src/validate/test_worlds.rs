@@ -14,12 +14,11 @@
 //! model voxel (x, y, z) lands at world (x, z, y) — the loader's direct
 //! mapping. Voxel coordinates are u8 in the .vox format, so positions beyond
 //! 255 (the Region boundary) are authored through scene-graph transforms,
-//! whose translation lands at world (t.x, -t.z, t.y + 1) for an unrotated
+//! whose translation lands at world (t.x, t.z, t.y + 1) for an unrotated
 //! 1-voxel model.
 
 use std::{
-    fs,
-    io,
+    fs, io,
     path::{Path, PathBuf},
 };
 
@@ -239,7 +238,8 @@ pub fn smoke_world() -> WorldSpec {
     WorldSpec {
         name: "custom".to_string(),
         path: "assets/custom.vox".to_string(),
-        description: "custom.vox — the smoke world (camera frames the world's bounding box)".to_string(),
+        description: "custom.vox — the smoke world (camera frames the world's bounding box)"
+            .to_string(),
         camera: None,
         edit: None,
     }
@@ -321,7 +321,7 @@ pub(crate) fn scene_less_world(voxels: &[(IVec3, u8)]) -> DotVoxData {
 
 /// A scene-graph .vox world: one 1-voxel model per (world position, material),
 /// each placed through an unrotated transform node. An unrotated 1-voxel model
-/// with frame translation t lands at world (t.x, -t.z, t.y + 1) — verified by
+/// with frame translation t lands at world (t.x, t.z, t.y + 1) — verified by
 /// `scene_graph_placement` below. Used to reach positions beyond u8 (the
 /// Region boundary at x = 256).
 fn transformed_world(voxels: &[(IVec3, u8)]) -> DotVoxData {
@@ -346,12 +346,8 @@ fn transformed_world(voxels: &[(IVec3, u8)]) -> DotVoxData {
     }];
 
     for (index, (world_position, _)) in voxels.iter().enumerate() {
-        // Invert world (wx, wy, wz) = (t.x, -t.z, t.y + 1).
-        let t = IVec3::new(
-            world_position.x,
-            world_position.z - 1,
-            -world_position.y,
-        );
+        // Invert world (wx, wy, wz) = (t.x, t.z, t.y + 1).
+        let t = IVec3::new(world_position.x, world_position.z - 1, world_position.y);
         let mut attributes = Dict::new();
         attributes.insert("_t".to_string(), format!("{} {} {}", t.x, t.y, t.z));
 
@@ -396,10 +392,7 @@ fn single_world() -> DotVoxData {
 /// Occupancy mask — not a sentinel material — defines existence), and the
 /// 8-bit hitKind must carry it through the intersection shader.
 fn palette_zero_world() -> DotVoxData {
-    scene_less_world(&[
-        (IVec3::new(0, 0, 0), 0),
-        (IVec3::new(3, 0, 0), 0),
-    ])
+    scene_less_world(&[(IVec3::new(0, 0, 0), 0), (IVec3::new(3, 0, 0), 0)])
 }
 
 /// A solid 12x12x12 cube with the camera inside: every interior voxel has no
@@ -547,7 +540,7 @@ mod tests {
 
     #[test]
     fn scene_graph_placement() {
-        // Frame translation t lands a 1-voxel model at world (t.x, -t.z, t.y+1).
+        // Frame translation t lands a 1-voxel model at world (t.x, t.z, t.y+1).
         let world = load(transformed_world(&[(IVec3::new(256, 0, 0), 6)]));
         let voxel = world.get_voxel(&IVec3::new(256, 0, 0));
         assert!(voxel.is_some(), "expected voxel at (256, 0, 0)");

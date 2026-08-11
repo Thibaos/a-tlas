@@ -65,7 +65,6 @@ pub const MIN_SWAPCHAIN_IMAGES: u32 = MAX_FRAMES_IN_FLIGHT + 1;
 pub const TICKS_PER_SECOND: u32 = 1;
 pub const MAX_DEBUG_LINES: u32 = 4096;
 
-
 /// The shared GPU stack (instance, device, queues, allocator, taskgraph
 /// resources and flights). Constructed once per event loop by [`App::new`] and
 /// by the offline validator; the validator renders through the same stack so the
@@ -355,7 +354,7 @@ impl App {
 
         let size = rcx.window.inner_size();
 
-        let proj = Mat4::perspective_lh(
+        let proj = glam::camera::lh::proj::vulkan::perspective(
             PI / 2.0,
             (size.width as f32) / (size.height as f32),
             0.01,
@@ -433,7 +432,7 @@ impl ApplicationHandler for App {
                 .into_iter()
                 .find(|(format, _)| {
                     self.gpu
-                    .device
+                        .device
                         .physical_device()
                         .image_format_properties(&ImageFormatInfo {
                             format: *format,
@@ -448,7 +447,8 @@ impl ApplicationHandler for App {
             let present_mode = PresentMode::Immediate;
 
             (
-                self.gpu.resources
+                self.gpu
+                    .resources
                     .create_swapchain(
                         &surface,
                         &SwapchainCreateInfo {
@@ -491,7 +491,13 @@ impl ApplicationHandler for App {
 
         dbg!(max_instance_count);
 
-        let rt_pass = RayTracingRenderTask::new(&self.gpu, &self.world, &self.voxel_data, virtual_swapchain_id, max_instance_count);
+        let rt_pass = RayTracingRenderTask::new(
+            &self.gpu,
+            &self.world,
+            &self.voxel_data,
+            virtual_swapchain_id,
+            max_instance_count,
+        );
 
         let update_as_task = UpdateAccelerationStructureTask::new(
             self,
@@ -730,7 +736,8 @@ impl ApplicationHandler for App {
                     }
                 }
 
-                self.gpu.resources
+                self.gpu
+                    .resources
                     .flight(self.gpu.graphics_flight_id)
                     .wait_idle()
                     .unwrap();

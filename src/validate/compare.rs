@@ -71,8 +71,8 @@ impl CompareReport {
     /// Pass = zero mismatches outside the ≤1% edge-silhouette clusters.
     pub fn passes(&self) -> bool {
         self.hard_mismatches.is_empty()
-            && self.mismatch_count() <= (self.total_pixels() as f32 * self.config.max_mismatch_ratio)
-                as usize
+            && self.mismatch_count()
+                <= (self.total_pixels() as f32 * self.config.max_mismatch_ratio) as usize
     }
 }
 
@@ -153,9 +153,7 @@ pub fn compare(
             let i = y * width as usize + x;
 
             let gpu = PixelSample {
-                color: gpu_rgba[i * 4..i * 4 + 4]
-                    .try_into()
-                    .expect("4-byte color"),
+                color: gpu_rgba[i * 4..i * 4 + 4].try_into().expect("4-byte color"),
                 t: gpu_t[i],
             };
             let reference = PixelSample {
@@ -240,7 +238,11 @@ mod tests {
         let mut reference = vec![0u8; w * h * 4];
         for y in 0..h {
             for x in 0..w {
-                let color = if x < 8 { [255, 0, 0, 255] } else { [0, 0, 255, 255] };
+                let color = if x < 8 {
+                    [255, 0, 0, 255]
+                } else {
+                    [0, 0, 255, 255]
+                };
                 reference[(y * w + x) * 4..(y * w + x) * 4 + 4].copy_from_slice(&color);
             }
         }
@@ -250,7 +252,15 @@ mod tests {
         gpu[(8 * w + 8) * 4..(8 * w + 8) * 4 + 4].copy_from_slice(&[0, 255, 0, 255]);
         let t = flat_t(4.5, w * h);
 
-        let report = compare(&gpu, &t, &reference, &t, w as u32, h as u32, CompareConfig::default());
+        let report = compare(
+            &gpu,
+            &t,
+            &reference,
+            &t,
+            w as u32,
+            h as u32,
+            CompareConfig::default(),
+        );
         assert_eq!(report.mismatch_count(), 1);
         assert_eq!(report.hard_mismatch_count(), 0);
         assert!(report.passes());
@@ -263,7 +273,15 @@ mod tests {
         let mut gpu_t = flat_t(10.0, 16);
         gpu_t[0] = 10.5; // 5% off → beyond 1e-3 * 10
 
-        let report = compare(&rgba, &gpu_t, &rgba, &reference_t, 4, 4, CompareConfig::default());
+        let report = compare(
+            &rgba,
+            &gpu_t,
+            &rgba,
+            &reference_t,
+            4,
+            4,
+            CompareConfig::default(),
+        );
         assert_eq!(report.hard_mismatch_count(), 1);
         assert!(!report.passes());
     }
@@ -275,7 +293,15 @@ mod tests {
         let mut gpu_t = flat_t(10.0, 16);
         gpu_t[0] = 10.0001; // well inside 1e-3 * 10
 
-        let report = compare(&rgba, &gpu_t, &rgba, &reference_t, 4, 4, CompareConfig::default());
+        let report = compare(
+            &rgba,
+            &gpu_t,
+            &rgba,
+            &reference_t,
+            4,
+            4,
+            CompareConfig::default(),
+        );
         assert_eq!(report.hard_mismatch_count(), 0);
         assert!(report.passes());
     }

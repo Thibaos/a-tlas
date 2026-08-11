@@ -3,7 +3,7 @@ use std::sync::Arc;
 use vulkano::{
     buffer::Buffer,
     pipeline::{
-        DynamicState, GraphicsPipeline, Pipeline, PipelineShaderStageCreateInfo,
+        DynamicState, GraphicsPipeline, PipelineShaderStageCreateInfo,
         graphics::{
             GraphicsPipelineCreateInfo,
             color_blend::{ColorBlendAttachmentState, ColorBlendState},
@@ -136,7 +136,7 @@ impl Task for DrawDebugTask {
         .copy_from_slice(&rcx.debug_lines);
 
         unsafe { cbf.set_viewport(0, slice::from_ref(&rcx.viewport)) };
-        unsafe { cbf.bind_pipeline_graphics(pipeline) };
+        unsafe { cbf.bind_pipeline(pipeline) };
         unsafe { cbf.bind_vertex_buffers(0, &[self.vertex_buffer_id], &[0], &[], &[]) };
         unsafe { cbf.push_constants(pipeline.layout(), 0, &push_constants) };
         unsafe { cbf.draw(debug_lines_count, 1, 0, 0) };

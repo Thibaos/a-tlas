@@ -84,11 +84,7 @@ pub fn write_text_report(
     ));
     out.push_str(&format!(
         "verdict: {}\n",
-        if report.passes() {
-            "PASS"
-        } else {
-            "FAIL"
-        }
+        if report.passes() { "PASS" } else { "FAIL" }
     ));
     out.push_str("\n");
 

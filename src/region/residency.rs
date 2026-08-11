@@ -26,9 +26,7 @@ use dot_vox::DotVoxData;
 use glam::IVec3;
 use vulkano::{
     DeviceSize, Packed24_8,
-    acceleration_structure::{
-        AabbPositions, AccelerationStructure, AccelerationStructureInstance,
-    },
+    acceleration_structure::{AabbPositions, AccelerationStructure, AccelerationStructureInstance},
     buffer::{Buffer, BufferCreateInfo, BufferUsage, Subbuffer},
     memory::allocator::{AllocationCreateInfo, DeviceLayout, MemoryTypeFilter},
 };
@@ -417,18 +415,17 @@ impl RegionStore {
     /// Applies a change cycle to the lattice: residency transitions, in-place
     /// BLAS rebuilds for content edits, and the TLAS rebuild on transitions —
     /// then releases the frees whose dropping rebuild executed.
-    fn rebuild(
-        &mut self,
-        gpu: &GpuStack,
-        packs: Vec<(IVec3, Option<RegionData>)>,
-    ) -> ApplyReport {
+    fn rebuild(&mut self, gpu: &GpuStack, packs: Vec<(IVec3, Option<RegionData>)>) -> ApplyReport {
         let mut report = ApplyReport::default();
         let mut tlas_dirty = false;
         let mut table_changed = false;
 
         for (region_index, pack) in packs {
             let id = region_id(region_index) as usize;
-            debug_assert!(id < REGION_COUNT, "region id {id} outside the 12-bit lattice");
+            debug_assert!(
+                id < REGION_COUNT,
+                "region id {id} outside the 12-bit lattice"
+            );
 
             let was_resident = self.regions[id].is_some();
             match (was_resident, pack) {
@@ -497,10 +494,10 @@ impl RegionStore {
                 // the pending frees, and a BLAS replacement moves the
                 // instance address (the only non-transition TLAS rebuild).
                 (true, Some(pack)) => {
-                    let pool_grows = self.regions[id].as_ref().unwrap().pool_capacity
-                        < pack.blocks.len() as u64;
-                    let blas_grows = self.regions[id].as_ref().unwrap().aabb_capacity
-                        < pack.aabbs.len() as u32;
+                    let pool_grows =
+                        self.regions[id].as_ref().unwrap().pool_capacity < pack.blocks.len() as u64;
+                    let blas_grows =
+                        self.regions[id].as_ref().unwrap().aabb_capacity < pack.aabbs.len() as u32;
 
                     let new_pool =
                         pool_grows.then(|| self.allocate_pool(gpu, pack.blocks.len() as u64));
@@ -570,10 +567,9 @@ impl RegionStore {
                                 let region = self.regions[id].as_ref().unwrap();
                                 (region.blas.clone(), region.blas_storage_size)
                             };
-                            let subbuffer = Subbuffer::new(
-                                gpu.resources.buffer(aabb_id).buffer().clone(),
-                            )
-                            .cast_aligned::<AabbPositions>();
+                            let subbuffer =
+                                Subbuffer::new(gpu.resources.buffer(aabb_id).buffer().clone())
+                                    .cast_aligned::<AabbPositions>();
                             acceleration_structure::build_blas_aabbs_in_place(
                                 subbuffer,
                                 pack.aabbs.len() as u32,
@@ -624,8 +620,7 @@ impl RegionStore {
                 .resources
                 .create_buffer(
                     &BufferCreateInfo {
-                        usage: BufferUsage::SHADER_DEVICE_ADDRESS
-                            | BufferUsage::STORAGE_BUFFER,
+                        usage: BufferUsage::SHADER_DEVICE_ADDRESS | BufferUsage::STORAGE_BUFFER,
                         ..Default::default()
                     },
                     &AllocationCreateInfo {
@@ -646,9 +641,9 @@ impl RegionStore {
 
     /// Allocates a (AABB buffer, BLAS storage) pair (best-fit reuse first).
     fn allocate_blas(&mut self, gpu: &GpuStack, aabb_count: u32) -> BlasAllocation {
-        if let Some(freed) =
-            take_best_fit(&mut self.free.blas, aabb_count as u64, |f| f.aabb_capacity as u64)
-        {
+        if let Some(freed) = take_best_fit(&mut self.free.blas, aabb_count as u64, |f| {
+            f.aabb_capacity as u64
+        }) {
             self.alloc_stats.blas_reuses += 1;
             BlasAllocation {
                 aabb_buffer_id: freed.aabb_buffer_id,
@@ -699,7 +694,8 @@ impl RegionStore {
                         .copy_from_slice(&pack.blocks);
                     let dst = tcx.write_buffer::<[AabbPositions]>(
                         aabb_id,
-                        0..(pack.aabbs.len() as DeviceSize * size_of::<AabbPositions>() as DeviceSize),
+                        0..(pack.aabbs.len() as DeviceSize
+                            * size_of::<AabbPositions>() as DeviceSize),
                     );
                     for (slot, aabb) in dst.iter_mut().zip(pack.aabbs.iter().copied()) {
                         *slot = aabb;
@@ -729,9 +725,8 @@ impl RegionStore {
         alloc: &BlasAllocation,
         aabb_count: u32,
     ) -> (Arc<AccelerationStructure>, u64) {
-        let subbuffer =
-            Subbuffer::new(gpu.resources.buffer(alloc.aabb_buffer_id).buffer().clone())
-                .cast_aligned::<AabbPositions>();
+        let subbuffer = Subbuffer::new(gpu.resources.buffer(alloc.aabb_buffer_id).buffer().clone())
+            .cast_aligned::<AabbPositions>();
         match &alloc.as_storage {
             Some((blas, storage_size)) => (
                 acceleration_structure::build_blas_aabbs_in_place(
@@ -805,7 +800,8 @@ impl RegionStore {
                 |_cbf, tcx| {
                     let dst = tcx.write_buffer::<[AccelerationStructureInstance]>(
                         self.instance_buffer_id,
-                        0..(count as DeviceSize * size_of::<AccelerationStructureInstance>() as DeviceSize),
+                        0..(count as DeviceSize
+                            * size_of::<AccelerationStructureInstance>() as DeviceSize),
                     );
                     if self.resident_ids.is_empty() {
                         dst[0] = self.dummy_instance();
@@ -830,9 +826,13 @@ impl RegionStore {
 
     /// Rebuilds the stable TLAS in place over the packed resident prefix.
     fn rebuild_tlas(&self, gpu: &GpuStack) {
-        let instance_subbuffer =
-            Subbuffer::new(gpu.resources.buffer(self.instance_buffer_id).buffer().clone())
-                .cast_aligned::<AccelerationStructureInstance>();
+        let instance_subbuffer = Subbuffer::new(
+            gpu.resources
+                .buffer(self.instance_buffer_id)
+                .buffer()
+                .clone(),
+        )
+        .cast_aligned::<AccelerationStructureInstance>();
         acceleration_structure::build_tlas_in_place(
             instance_subbuffer,
             self.resident_ids.len().max(1) as u32,

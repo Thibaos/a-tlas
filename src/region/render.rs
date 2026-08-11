@@ -15,10 +15,7 @@ use std::sync::Arc;
 use vulkano::{
     acceleration_structure::AccelerationStructure,
     buffer::Buffer,
-    pipeline::{
-        Pipeline,
-        ray_tracing::{RayTracingPipeline, ShaderBindingTable},
-    },
+    pipeline::ray_tracing::{RayTracingPipeline, ShaderBindingTable},
     swapchain::Swapchain,
 };
 use vulkano_taskgraph::{
@@ -28,9 +25,7 @@ use vulkano_taskgraph::{
 };
 
 use crate::{
-    app::GpuStack,
-    region::residency::RegionStore,
-    tasks::render::build_ray_tracing_pipeline,
+    app::GpuStack, region::residency::RegionStore, tasks::render::build_ray_tracing_pipeline,
 };
 
 pub(crate) mod capture_raygen {
@@ -101,11 +96,7 @@ impl RegionRenderTask {
     /// Builds the shared ray tracing pipeline and binds the store's buffers.
     /// The store outlives the task, so its ids stay valid for every frame of
     /// the pass (residency rebuilds rewrite the buffers in place).
-    pub fn new(
-        gpu: &GpuStack,
-        store: &RegionStore,
-        virtual_swapchain_id: Id<Swapchain>,
-    ) -> Self {
+    pub fn new(gpu: &GpuStack, store: &RegionStore, virtual_swapchain_id: Id<Swapchain>) -> Self {
         let pipeline = {
             let raygen = unsafe {
                 capture_raygen::load(&gpu.device)
@@ -205,7 +196,7 @@ impl Task for RegionRenderTask {
         };
 
         unsafe {
-            cbf.bind_pipeline_ray_tracing(&self.pipeline);
+            cbf.bind_pipeline(&self.pipeline);
         }
 
         unsafe { cbf.trace_rays(self.shader_binding_table.addresses(), extent) };

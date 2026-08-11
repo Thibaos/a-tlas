@@ -9,30 +9,30 @@ use crate::{
 use dot_vox::DotVoxData;
 use glam::{IVec3, Vec3};
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
     Arc,
+    atomic::{AtomicBool, Ordering},
 };
 use vulkano::{
+    DeviceSize,
     acceleration_structure::{AccelerationStructure, AccelerationStructureInstance},
     buffer::{Buffer, BufferCreateInfo, BufferUsage, Subbuffer},
     memory::allocator::{AllocationCreateInfo, DeviceLayout, MemoryTypeFilter},
     pipeline::{
+        PipelineShaderStageCreateInfo,
         ray_tracing::{
             RayTracingPipeline, RayTracingPipelineCreateInfo, RayTracingShaderGroupCreateInfo,
             ShaderBindingTable,
         },
-        Pipeline, PipelineShaderStageCreateInfo,
     },
     shader::EntryPoint,
     swapchain::Swapchain,
     sync::{AccessFlags, PipelineStages},
-    DeviceSize,
 };
 use vulkano_taskgraph::{
+    Id, Task, TaskContext, TaskResult,
     command_buffer::{DependencyInfo, MemoryBarrier, RecordingCommandBuffer},
     descriptor_set::{AccelerationStructureId, StorageBufferId, StorageImageId},
     resource::HostAccessType,
-    Id, Task, TaskContext, TaskResult,
 };
 
 /// Everything the ray pass needs that is independent of which raygen shader is
@@ -109,9 +109,8 @@ pub fn create_render_resources(
         .unwrap();
 
     let tlas_count = render_instances.len().max(1) as u32;
-    let instance_buffer =
-        Subbuffer::new(gpu.resources.buffer(instance_buffer_id).buffer().clone())
-            .cast_aligned::<AccelerationStructureInstance>();
+    let instance_buffer = Subbuffer::new(gpu.resources.buffer(instance_buffer_id).buffer().clone())
+        .cast_aligned::<AccelerationStructureInstance>();
 
     let palette = get_palette(voxel_data).map(|color| [color.x, color.y, color.z, 1.0]);
 
@@ -233,7 +232,6 @@ pub fn create_render_resources(
             Some(size_of::<raygen::Camera>() as DeviceSize),
         )
         .unwrap();
-
 
     let palette_storage_buffer_id = bcx
         .global_set()
@@ -414,8 +412,7 @@ impl Task for RayTracingRenderTask {
             cbf.pipeline_barrier(&DependencyInfo {
                 memory_barriers: &[MemoryBarrier {
                     src_access: AccessFlags::TRANSFER_WRITE,
-                    dst_access: AccessFlags::SHADER_READ
-                        | AccessFlags::SHADER_STORAGE_READ,
+                    dst_access: AccessFlags::SHADER_READ | AccessFlags::SHADER_STORAGE_READ,
                     src_stages: PipelineStages::ALL_TRANSFER,
                     dst_stages: PipelineStages::RAY_TRACING_SHADER,
                     ..Default::default()
@@ -443,7 +440,7 @@ impl Task for RayTracingRenderTask {
         };
 
         unsafe {
-            cbf.bind_pipeline_ray_tracing(&self.pipeline);
+            cbf.bind_pipeline(&self.pipeline);
         }
 
         unsafe { cbf.trace_rays(self.shader_binding_table.addresses(), extent) };

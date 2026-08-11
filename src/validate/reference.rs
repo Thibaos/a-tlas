@@ -82,10 +82,9 @@ impl CameraInputs {
         eye_pos /= eye_pos.w;
 
         let origin = (self.view_inverse * Vec4::new(0.0, 0.0, 0.0, 1.0)).truncate();
-        let direction =
-            (self.view_inverse * Vec4::new(eye_pos.x, eye_pos.y, eye_pos.z, 0.0))
-                .truncate()
-                .normalize();
+        let direction = (self.view_inverse * Vec4::new(eye_pos.x, eye_pos.y, eye_pos.z, 0.0))
+            .truncate()
+            .normalize();
 
         (origin, direction)
     }
@@ -258,9 +257,10 @@ impl<'a> ReferenceTracer<'a> {
         best_material: &mut Option<u32>,
     ) {
         let (cube_min, cube_max) = match self.shape {
-            VoxelShape::CenteredUnitCube => {
-                (p.as_vec3() - Vec3::splat(0.5), p.as_vec3() + Vec3::splat(0.5))
-            }
+            VoxelShape::CenteredUnitCube => (
+                p.as_vec3() - Vec3::splat(0.5),
+                p.as_vec3() + Vec3::splat(0.5),
+            ),
             VoxelShape::GridCell => (p.as_vec3(), p.as_vec3() + Vec3::ONE),
         };
 
@@ -413,7 +413,9 @@ mod tests {
         // ndc for pixel (0,0) at 2x2 is (-0.5, -0.5), which won't give +X.
         // Instead construct the ray manually and only use CameraInputs::ray
         // for the reconstruction tests below.
-        let (t, material) = tracer.trace_ray(Vec3::new(-5.0, 0.0, 0.0), Vec3::X).unwrap();
+        let (t, material) = tracer
+            .trace_ray(Vec3::new(-5.0, 0.0, 0.0), Vec3::X)
+            .unwrap();
         assert_eq!(t, 4.5);
         assert_eq!(material, 1);
     }
@@ -425,10 +427,18 @@ mod tests {
         let tracer = ReferenceTracer::new(&world, palette(), VoxelShape::CenteredUnitCube);
 
         // Above the voxel (y = 5 > 0.5).
-        assert!(tracer.trace_ray(Vec3::new(-5.0, 5.0, 0.0), Vec3::X).is_none());
+        assert!(
+            tracer
+                .trace_ray(Vec3::new(-5.0, 5.0, 0.0), Vec3::X)
+                .is_none()
+        );
         // Behind the voxel and looking away from it (the voxel spans
         // z <= 0.5; the ray from z = 5 goes +Z).
-        assert!(tracer.trace_ray(Vec3::new(0.0, 0.0, 5.0), Vec3::Z).is_none());
+        assert!(
+            tracer
+                .trace_ray(Vec3::new(0.0, 0.0, 5.0), Vec3::Z)
+                .is_none()
+        );
     }
 
     /// A ray from inside the voxel commits the voxel at t_min (the camera
@@ -477,7 +487,9 @@ mod tests {
         let world = single_voxel_world();
         let tracer = ReferenceTracer::new(&world, palette(), VoxelShape::GridCell);
 
-        let (t, material) = tracer.trace_ray(Vec3::new(-5.0, 0.0, 0.0), Vec3::X).unwrap();
+        let (t, material) = tracer
+            .trace_ray(Vec3::new(-5.0, 0.0, 0.0), Vec3::X)
+            .unwrap();
         assert_eq!(t, 5.0);
         assert_eq!(material, 1);
     }

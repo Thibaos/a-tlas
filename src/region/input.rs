@@ -397,7 +397,10 @@ mod tests {
             mask[(idx / 8) as usize] |= 1 << (idx % 8);
             materials.push(material);
         }
-        debug_assert_eq!(materials.len(), mask.iter().map(|b| b.count_ones() as usize).sum());
+        debug_assert_eq!(
+            materials.len(),
+            mask.iter().map(|b| b.count_ones() as usize).sum()
+        );
         MicroChunkSnapshot {
             global_coords: coords,
             mask,
@@ -458,7 +461,10 @@ mod tests {
         let region = region_index_of(coords);
 
         let first = snapshot(coords, &[(0, 1)]);
-        assert_eq!(apply_snapshots(&mut mirrors, vec![first.clone()]), vec![region]);
+        assert_eq!(
+            apply_snapshots(&mut mirrors, vec![first.clone()]),
+            vec![region]
+        );
         assert_eq!(mirrors[&region].microchunk(coords), Some(&first));
 
         // Identical re-snapshot: no change, no dirty Region.
@@ -466,11 +472,17 @@ mod tests {
 
         // Update (last-wins replaces the content).
         let second = snapshot(coords, &[(0, 2), (5, 3)]);
-        assert_eq!(apply_snapshots(&mut mirrors, vec![second.clone()]), vec![region]);
+        assert_eq!(
+            apply_snapshots(&mut mirrors, vec![second.clone()]),
+            vec![region]
+        );
         assert_eq!(mirrors[&region].microchunk(coords), Some(&second));
 
         // Removal (zero-mask re-snapshot) empties the mirror.
-        assert_eq!(apply_snapshots(&mut mirrors, vec![zero(coords)]), vec![region]);
+        assert_eq!(
+            apply_snapshots(&mut mirrors, vec![zero(coords)]),
+            vec![region]
+        );
         assert!(mirrors.is_empty(), "emptied mirror must be dropped");
 
         // Removal of a never-present Micro-chunk: no mirror, no dirty Region.
@@ -506,10 +518,7 @@ mod tests {
         let coords_b = IVec3::new(8, 0, 0);
         let coords_c = IVec3::new(16, 0, 0);
 
-        input.submit_batch([
-            snapshot(coords_a, &[(0, 1)]),
-            snapshot(coords_b, &[(0, 2)]),
-        ]);
+        input.submit_batch([snapshot(coords_a, &[(0, 1)]), snapshot(coords_b, &[(0, 2)])]);
         input.submit_microchunk(snapshot(coords_a, &[(1, 9)])); // A updated, out of order
         input.submit_microchunk(snapshot(coords_b, &[(0, 2)])); // B re-sent (identical)
         input.submit_microchunk(snapshot(coords_c, &[(0, 3)]));
@@ -583,12 +592,19 @@ mod tests {
         // to 1016 → region x 0..4, y = t < 8 → region y = 0, z = 0): 128
         // Micro-chunks across 4 resident Regions, region ids derived from
         // global coords.
-        assert_eq!(input.region_count(), 4, "regions derived from global coords");
+        assert_eq!(
+            input.region_count(),
+            4,
+            "regions derived from global coords"
+        );
 
         let expected: Vec<_> = (0..THREADS)
             .flat_map(|t| {
                 (0..PER_THREAD).map(move |m| {
-                    snapshot(IVec3::new((t * PER_THREAD + m) * MICRO_CHUNK_EDGE, t, 0), &[(0, (m % 256) as u8)])
+                    snapshot(
+                        IVec3::new((t * PER_THREAD + m) * MICRO_CHUNK_EDGE, t, 0),
+                        &[(0, (m % 256) as u8)],
+                    )
                 })
             })
             .collect();
@@ -620,7 +636,10 @@ mod tests {
                 false
             }
         });
-        assert!(idle, "worker must block on the condvar when idle (no polling)");
+        assert!(
+            idle,
+            "worker must block on the condvar when idle (no polling)"
+        );
 
         input.submit_microchunk(snapshot(IVec3::new(0, 0, 0), &[(0, 1)]));
         input.wait_until_idle();
@@ -635,7 +654,10 @@ mod tests {
                 false
             }
         });
-        assert!(idle_again, "worker must return to the condvar wait after draining");
+        assert!(
+            idle_again,
+            "worker must return to the condvar wait after draining"
+        );
     }
 
     /// The dirty-Region set dedupes across cycles and clears on take.
@@ -683,7 +705,11 @@ mod tests {
 
         input.submit_microchunk(zero(b));
         input.wait_until_idle();
-        assert_eq!(input.region_count(), 0, "last Micro-chunk removed → mirror dropped");
+        assert_eq!(
+            input.region_count(),
+            0,
+            "last Micro-chunk removed → mirror dropped"
+        );
         assert!(input.packed_regions().is_empty());
     }
 }
