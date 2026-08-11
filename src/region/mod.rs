@@ -18,12 +18,16 @@
 //! world-space f32 rays, traceRay Opaque | TerminateOnFirstHit, to the
 //! swapchain storage images (ADR 0001/0002/0004).
 //!
-//! The ticket-04 rebuilds run synchronously (execute + wait_idle) between
-//! frames; ticket 05 turns them into ordered taskgraph nodes. The worker
-//! keeps only the CPU-side drain/pack.
+//! The ticket-04 rebuilds ran synchronously (execute + wait_idle per step)
+//! between frames; ticket 05 turns them into **ordered taskgraph nodes**
+//! (`rebuild`: pool upload → BLAS build → TLAS build on residency
+//! transitions — no back-AS double buffer, no flip atomic), with per-node
+//! GPU timestamps feeding ticket 07's measurement. The worker keeps only
+//! the CPU-side drain/pack.
 
 pub mod input;
 pub mod pack;
+pub mod rebuild;
 pub mod render;
 pub mod residency;
 pub mod snapshot;

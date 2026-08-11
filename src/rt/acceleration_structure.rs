@@ -66,7 +66,7 @@ fn as_build_barriers(cbf: &mut vulkano_taskgraph::command_buffer::RecordingComma
 /// The flags for a fresh/in-place build of `ty` (TLAS builds keep
 /// ALLOW_UPDATE so an update-mode build remains possible; BLAS builds do
 /// not need it).
-fn build_flags(ty: AccelerationStructureType) -> BuildAccelerationStructureFlags {
+pub(crate) fn build_flags(ty: AccelerationStructureType) -> BuildAccelerationStructureFlags {
     match ty {
         AccelerationStructureType::TopLevel => {
             BuildAccelerationStructureFlags::PREFER_FAST_TRACE
@@ -80,12 +80,16 @@ fn build_flags(ty: AccelerationStructureType) -> BuildAccelerationStructureFlags
 }
 
 /// Builds `geometries` into the existing AS `dst` (mode Build) — an
-/// **in-place rebuild**: the AS object and its storage never move, so the
+/// **in-place build**: the AS object and its storage never move, so the
 /// device address (and any TLAS instance referencing it) stays valid. The
 /// storage was sized for `storage_capacity` at creation; the caller asserts
-/// the new build fits. Used by the residency manager (renderer-impl ticket
-/// 04) to rebuild region BLASes on content edits and the TLAS on residency
-/// transitions.
+/// the new build fits.
+///
+/// Used by the fresh-build path (`build_acceleration_structure_fresh`,
+/// which creates the storage sized exactly and builds into it — the dummy
+/// BLAS path) and by the retired ticket-04 synchronous rebuild helpers; the
+/// residency manager's ordered rebuild nodes (renderer-impl ticket 05)
+/// record the same in-place builds into ordered taskgraph nodes instead.
 #[allow(clippy::too_many_arguments)]
 pub fn build_acceleration_structure_in_place(
     geometries: BuildGeometries,
@@ -158,6 +162,87 @@ pub fn build_acceleration_structure_in_place(
     resources.flight(flight_id).wait_idle().unwrap();
 
     dst.clone()
+}
+
+/// Computes the build sizes (acceleration-structure storage + scratch) for
+/// `geometries` with `primitive_count` primitives of type `ty` — the
+/// CPU-side sizing the ordered rebuild nodes (renderer-impl ticket 05) use
+/// to create fresh storage and scratch buffers before recording.
+pub(crate) fn acceleration_structure_build_sizes(
+    device: &Arc<Device>,
+    geometries: &[AccelerationStructureGeometry<'static>],
+    ty: AccelerationStructureType,
+    primitive_count: u32,
+) -> vulkano::acceleration_structure::AccelerationStructureBuildSizesInfo {
+    let as_build_geometry_info = AccelerationStructureBuildGeometryInfo {
+        ty,
+        mode: BuildAccelerationStructureMode::Build,
+        flags: build_flags(ty),
+        geometries,
+        ..AccelerationStructureBuildGeometryInfo::new()
+    };
+
+    device.acceleration_structure_build_sizes(
+        AccelerationStructureBuildType::Device,
+        &as_build_geometry_info,
+        &[primitive_count],
+    )
+}
+
+/// Creates the AS storage for a procedural AABB BLAS over `aabb_buffer`,
+/// sized exactly for `primitive_count` AABBs — **without building**. The
+/// ordered rebuild nodes (renderer-impl ticket 05) create the storage in the
+/// plan phase (CPU) and record the build later, so a become-resident BLAS
+/// never moves after creation (the node builds into the pre-created storage
+/// in place). Returns the BLAS and its storage size (the residency manager's
+/// free-list reuse unit).
+pub(crate) fn create_blas_aabbs_storage(
+    aabb_buffer: &Subbuffer<[AabbPositions]>,
+    primitive_count: u32,
+    memory_allocator: Arc<dyn MemoryAllocator>,
+    device: Arc<Device>,
+) -> (Arc<AccelerationStructure>, u64) {
+    let aabb_data = AccelerationStructureGeometryAabbsData {
+        data: aabb_buffer.device_address().unwrap().get(),
+        stride: size_of::<AabbPositions>() as u32,
+        ..Default::default()
+    };
+
+    let geometries = vec![AccelerationStructureGeometry::new(
+        AccelerationStructureGeometryData::Aabbs(aabb_data),
+    )];
+
+    let as_build_sizes_info = acceleration_structure_build_sizes(
+        &device,
+        &geometries,
+        AccelerationStructureType::BottomLevel,
+        primitive_count,
+    );
+
+    let as_buffer = Buffer::new_slice::<u8>(
+        &memory_allocator,
+        &BufferCreateInfo {
+            usage: BufferUsage::ACCELERATION_STRUCTURE_STORAGE
+                | BufferUsage::SHADER_DEVICE_ADDRESS,
+            ..Default::default()
+        },
+        &AllocationCreateInfo::default(),
+        as_build_sizes_info.acceleration_structure_size,
+    )
+    .unwrap();
+
+    let as_create_info = AccelerationStructureCreateInfo {
+        size: as_build_sizes_info.acceleration_structure_size,
+        ty: AccelerationStructureType::BottomLevel,
+        ..AccelerationStructureCreateInfo::new(as_buffer.buffer())
+    };
+
+    let acceleration = unsafe { AccelerationStructure::new(&device, &as_create_info) }.unwrap();
+
+    (
+        acceleration,
+        as_build_sizes_info.acceleration_structure_size,
+    )
 }
 
 /// Creates a fresh AS (storage sized exactly for `primitive_count`) and
@@ -426,79 +511,6 @@ pub fn build_blas_aabbs_fresh(
         )],
         primitive_count,
         AccelerationStructureType::BottomLevel,
-        memory_allocator,
-        device,
-        queue,
-        resources,
-        flight_id,
-    )
-}
-
-/// Rebuilds an existing procedural AABB BLAS **in place** over the (rewritten)
-/// AABB buffer — the AS object and its storage never move, so the device
-/// address stays valid and the TLAS instance referencing it is untouched.
-#[allow(clippy::too_many_arguments)]
-pub fn build_blas_aabbs_in_place(
-    aabb_buffer: Subbuffer<[AabbPositions]>,
-    primitive_count: u32,
-    dst: &Arc<AccelerationStructure>,
-    storage_capacity: u64,
-    memory_allocator: Arc<dyn MemoryAllocator>,
-    device: Arc<Device>,
-    queue: Arc<Queue>,
-    resources: &Arc<Resources>,
-    flight_id: Id<Flight>,
-) -> Arc<AccelerationStructure> {
-    let aabb_data = AccelerationStructureGeometryAabbsData {
-        data: aabb_buffer.device_address().unwrap().get(),
-        stride: size_of::<AabbPositions>() as u32,
-        ..Default::default()
-    };
-
-    build_acceleration_structure_in_place(
-        vec![AccelerationStructureGeometry::new(
-            AccelerationStructureGeometryData::Aabbs(aabb_data),
-        )],
-        primitive_count,
-        AccelerationStructureType::BottomLevel,
-        dst,
-        storage_capacity,
-        memory_allocator,
-        device,
-        queue,
-        resources,
-        flight_id,
-    )
-}
-
-/// Rebuilds the TLAS in place over `instance_buffer[..primitive_count]` (the
-/// packed resident-prefix). The AS object and its storage never move, so the
-/// bindless acceleration-structure id stays valid across rebuilds.
-#[allow(clippy::too_many_arguments)]
-pub fn build_tlas_in_place(
-    instance_buffer: Subbuffer<[AccelerationStructureInstance]>,
-    primitive_count: u32,
-    dst: &Arc<AccelerationStructure>,
-    storage_capacity: u64,
-    memory_allocator: Arc<dyn MemoryAllocator>,
-    device: Arc<Device>,
-    queue: Arc<Queue>,
-    resources: &Arc<Resources>,
-    flight_id: Id<Flight>,
-) -> Arc<AccelerationStructure> {
-    let as_geometry_instances_data = AccelerationStructureGeometryInstancesData {
-        data: instance_buffer.device_address().unwrap().get(),
-        ..Default::default()
-    };
-
-    build_acceleration_structure_in_place(
-        vec![AccelerationStructureGeometry::new(
-            AccelerationStructureGeometryData::Instances(as_geometry_instances_data),
-        )],
-        primitive_count,
-        AccelerationStructureType::TopLevel,
-        dst,
-        storage_capacity,
         memory_allocator,
         device,
         queue,

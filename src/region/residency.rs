@@ -13,12 +13,16 @@
 //! rebuilt **in place** so the bindless acceleration-structure id never
 //! moves.
 //!
-//! The ticket-04 rebuilds run synchronously (execute + wait_idle) between
-//! frames; ticket 05 turns them into ordered taskgraph nodes. The free-list
-//! ordering invariant is structural here: memory freed by a residency-leave
-//! goes to [`PendingFrees`] and is only released to the reusable lists after
-//! the TLAS rebuild that dropped the referencing instance has executed — a
-//! later cycle's allocation can reuse it only from that point on.
+//! The ticket-04 rebuilds ran synchronously (execute + wait_idle per step)
+//! between frames; ticket 05 turns them into **ordered taskgraph nodes**
+//! (pool upload → BLAS build → TLAS build on residency transitions,
+//! [`RebuildGraph`](crate::region::rebuild::RebuildGraph)) with no back-AS
+//! double buffer and no flip atomic — the store owns exactly one stable TLAS
+//! (rebuilt in place), and the free-list ordering invariant is structural
+//! here: memory freed by a residency-leave goes to [`PendingFrees`] and is
+//! only released to the reusable lists after the ordered rebuild that
+//! dropped the referencing instance has executed — a later cycle's
+//! allocation can reuse it only from that point on.
 
 use std::sync::Arc;
 
@@ -41,6 +45,10 @@ use crate::{
     region::{
         input::RendererInput,
         pack::{REGION_COUNT, REGION_EDGE, RegionData, region_id},
+        rebuild::{
+            BlasBuild, NodeTimings, RebuildGraph, RebuildLogEntry, RebuildPlan, RegionUpload,
+            TlasBuild, allocate_scratch, blas_build_sizes, tlas_build_sizes,
+        },
         render::capture_raygen,
     },
     rt::acceleration_structure,
@@ -122,6 +130,19 @@ pub struct ApplyReport {
     /// The TLAS was rebuilt this cycle (iff any residency transition or BLAS
     /// replacement happened — instance data is static otherwise).
     pub tlas_rebuilt: bool,
+    /// The ordered rebuild log (ticket 05's counters): what the ordered
+    /// rebuild nodes did this cycle, in node order (upload → BLAS → TLAS).
+    /// A content edit logs an in-place [`RebuildLogEntry::BuildBlas`] and
+    /// **no** [`RebuildLogEntry::BuildTlas`]; a residency transition logs
+    /// [`RebuildLogEntry::RewriteInstances`] + [`RebuildLogEntry::BuildTlas`].
+    pub rebuild_log: Vec<RebuildLogEntry>,
+    /// Per-node GPU timings for this cycle (feeds ticket 07's measurement).
+    pub timings: NodeTimings,
+    /// The resident-instance count before this cycle (the TLAS instance set
+    /// size — the harness's ±1 transition probe).
+    pub instance_count_before: usize,
+    /// The resident-instance count after this cycle.
+    pub instance_count: usize,
 }
 
 /// Best-fit allocation: removes the smallest entry with capacity ≥ `needed`
@@ -354,7 +375,9 @@ impl RegionStore {
             alloc_stats: AllocStats::default(),
         };
 
-        // --- the initial residency (same rebuild path as change cycles) ---
+        // --- the initial residency (the one-shot pre-loop build, user
+        // story 25): every initial Region becomes resident through the same
+        // ordered rebuild path as change cycles.
         let packs: Vec<(IVec3, Option<RegionData>)> = initial
             .into_iter()
             .map(|region| (region.region_index, Some(region)))
@@ -366,11 +389,32 @@ impl RegionStore {
         );
 
         // The empty-world corner: no initial Regions means the rebuild above
-        // built no TLAS; still make one legal build (the dummy instance) so
-        // the first traced frame is well-defined.
+        // built no TLAS; still make one legal build (the never-hit dummy
+        // instance) so the first traced frame is well-defined.
         if !store.tlas_initialized {
-            store.rewrite_instances(gpu);
-            store.rebuild_tlas(gpu);
+            let instance_buffer = Subbuffer::new(
+                gpu.resources
+                    .buffer(store.instance_buffer_id)
+                    .buffer()
+                    .clone(),
+            )
+            .cast_aligned::<AccelerationStructureInstance>();
+            let sizes = tlas_build_sizes(gpu, &instance_buffer, 1);
+            debug_assert!(
+                store.tlas_storage_size >= sizes.acceleration_structure_size,
+                "the empty-world dummy TLAS build must fit the stable storage"
+            );
+            store.rebuild_with_plan(
+                gpu,
+                RebuildPlan {
+                    instances: Some(store.packed_instance_prefix()),
+                    tlas: Some(TlasBuild {
+                        instance_count: 1,
+                        scratch: allocate_scratch(gpu, sizes.build_scratch_size),
+                    }),
+                    ..Default::default()
+                },
+            );
         }
 
         store
@@ -412,11 +456,35 @@ impl RegionStore {
             .collect()
     }
 
-    /// Applies a change cycle to the lattice: residency transitions, in-place
-    /// BLAS rebuilds for content edits, and the TLAS rebuild on transitions —
-    /// then releases the frees whose dropping rebuild executed.
+    /// The region table buffer id (the rebuild graph's host-write access).
+    pub(crate) fn region_table_buffer_id(&self) -> Id<Buffer> {
+        self.region_table_buffer_id
+    }
+
+    /// The stable TLAS — rebuilt **in place** on residency transitions; the
+    /// bindless acceleration-structure id never moves. Exactly one (the new
+    /// path has no back-AS double buffer and no flip atomic — ticket 05's
+    /// invariant, enforced by this type: a double-buffered design would need
+    /// an array of ASes and an index, which the store does not have).
+    pub(crate) fn tlas(&self) -> Arc<AccelerationStructure> {
+        self.tlas.clone()
+    }
+
+    /// Applies a change cycle to the lattice: the **plan phase** makes every
+    /// CPU-side decision (residency transitions, in-place BLAS rebuilds for
+    /// content edits, the TLAS rebuild on transitions, allocations from the
+    /// free lists), then the **ordered rebuild nodes** ([`RebuildGraph`])
+    /// record and execute the GPU half — pool upload → BLAS build → TLAS
+    /// build — between the consuming trace and the next frame. The pending
+    /// frees whose dropping rebuild executed are released after the graph
+    /// completes.
     fn rebuild(&mut self, gpu: &GpuStack, packs: Vec<(IVec3, Option<RegionData>)>) -> ApplyReport {
-        let mut report = ApplyReport::default();
+        let mut report = ApplyReport {
+            instance_count_before: self.resident_ids.len(),
+            ..Default::default()
+        };
+
+        let mut plan = RebuildPlan::default();
         let mut tlas_dirty = false;
         let mut table_changed = false;
 
@@ -430,18 +498,48 @@ impl RegionStore {
             let was_resident = self.regions[id].is_some();
             match (was_resident, pack) {
                 // (false, None): a dirty region whose mirror emptied before
-                // this cycle — nothing to do.
+                // this cycle — nothing to do (an empty plan means no rebuild
+                // graph is compiled or submitted — the idle renderer costs
+                // zero, no pending rebuilds, no wakeups).
                 (false, None) => {}
 
                 // Become resident: allocate from the free lists, upload the
-                // pool + AABBs, build the BLAS, and add the instance.
+                // pool + AABBs, build the BLAS into its storage, and add the
+                // instance. The storage is created here (CPU) and the node
+                // builds into it in place — the AS object and its device
+                // address never move after creation.
                 (false, Some(pack)) => {
                     let pool = self.allocate_pool(gpu, pack.blocks.len() as u64);
                     let blas_alloc = self.allocate_blas(gpu, pack.aabbs.len() as u32);
 
-                    self.upload_region(gpu, pool.buffer_id, &pack, blas_alloc.aabb_buffer_id);
+                    let aabb_count = pack.aabbs.len() as u32;
+                    let aabb_buffer = Subbuffer::new(
+                        gpu.resources
+                            .buffer(blas_alloc.aabb_buffer_id)
+                            .buffer()
+                            .clone(),
+                    )
+                    .cast_aligned::<AabbPositions>();
                     let (blas, blas_storage_size) =
-                        self.build_region_blas(gpu, &blas_alloc, pack.aabbs.len() as u32);
+                        resolve_blas_storage(gpu, &aabb_buffer, aabb_count, &blas_alloc);
+
+                    plan.uploads.push(RegionUpload {
+                        region_index,
+                        pool_buffer_id: pool.buffer_id,
+                        pool_bytes: pack.blocks,
+                        aabb_buffer_id: blas_alloc.aabb_buffer_id,
+                        aabbs: pack.aabbs,
+                    });
+                    plan.blas_builds.push(plan_blas_build(
+                        gpu,
+                        region_index,
+                        blas_alloc.aabb_buffer_id,
+                        &aabb_buffer,
+                        aabb_count,
+                        blas.clone(),
+                        blas_storage_size,
+                        true,
+                    ));
 
                     let address = gpu
                         .resources
@@ -468,7 +566,8 @@ impl RegionStore {
 
                 // Leave residency: drop the instance, zero the table entry,
                 // and return the memory to the pending frees (reusable only
-                // after the dropping rebuild executes).
+                // after the dropping rebuild executes). No upload — the
+                // instance removal rides the instances rewrite + TLAS build.
                 (true, None) => {
                     let region = self.regions[id].take().unwrap();
                     self.remove_resident(id as u32);
@@ -539,19 +638,46 @@ impl RegionStore {
                         blas_replacement = Some(alloc);
                     }
 
-                    // Upload the new content, then rebuild the BLAS — the
-                    // build reads the AABB buffer, so it must follow the
+                    // The upload node copies the new content at record time;
+                    // the BLAS node rebuilds after it (the ordered edge) —
+                    // the build reads the AABB buffer, so it must follow the
                     // upload.
                     let (pool_id, aabb_id) = {
                         let region = self.regions[id].as_ref().unwrap();
                         (region.pool_buffer_id, region.aabb_buffer_id)
                     };
-                    self.upload_region(gpu, pool_id, &pack, aabb_id);
+                    let aabb_count = pack.aabbs.len() as u32;
+                    plan.uploads.push(RegionUpload {
+                        region_index,
+                        pool_buffer_id: pool_id,
+                        pool_bytes: pack.blocks,
+                        aabb_buffer_id: aabb_id,
+                        aabbs: pack.aabbs,
+                    });
 
                     match blas_replacement {
                         Some(alloc) => {
+                            // Fresh storage (CPU-side) + build in place in
+                            // the BLAS node; the instance address moves.
+                            let aabb_buffer = Subbuffer::new(
+                                gpu.resources
+                                    .buffer(alloc.aabb_buffer_id)
+                                    .buffer()
+                                    .clone(),
+                            )
+                            .cast_aligned::<AabbPositions>();
                             let (blas, blas_storage_size) =
-                                self.build_region_blas(gpu, &alloc, pack.aabbs.len() as u32);
+                                resolve_blas_storage(gpu, &aabb_buffer, aabb_count, &alloc);
+                            plan.blas_builds.push(plan_blas_build(
+                                gpu,
+                                region_index,
+                                alloc.aabb_buffer_id,
+                                &aabb_buffer,
+                                aabb_count,
+                                blas.clone(),
+                                blas_storage_size,
+                                true,
+                            ));
                             {
                                 let region = self.regions[id].as_mut().unwrap();
                                 region.blas = blas.clone();
@@ -563,24 +689,25 @@ impl RegionStore {
                             tlas_dirty = true;
                         }
                         None => {
-                            let (blas, storage_size) = {
+                            // In-place: the BLAS object and its device
+                            // address stay — the TLAS instance is untouched.
+                            let (blas, blas_storage_size) = {
                                 let region = self.regions[id].as_ref().unwrap();
                                 (region.blas.clone(), region.blas_storage_size)
                             };
-                            let subbuffer =
+                            let aabb_buffer =
                                 Subbuffer::new(gpu.resources.buffer(aabb_id).buffer().clone())
                                     .cast_aligned::<AabbPositions>();
-                            acceleration_structure::build_blas_aabbs_in_place(
-                                subbuffer,
-                                pack.aabbs.len() as u32,
-                                &blas,
-                                storage_size,
-                                gpu.memory_allocator.clone(),
-                                gpu.device.clone(),
-                                gpu.compute_queue.clone(),
-                                &gpu.resources,
-                                gpu.compute_flight_id,
-                            );
+                            plan.blas_builds.push(plan_blas_build(
+                                gpu,
+                                region_index,
+                                aabb_id,
+                                &aabb_buffer,
+                                aabb_count,
+                                blas,
+                                blas_storage_size,
+                                false,
+                            ));
                         }
                     }
                     report.dirty.push(region_index);
@@ -588,23 +715,73 @@ impl RegionStore {
             }
         }
 
-        // --- publish the cycle to the GPU buffers -------------------------
+        // --- the plan's GPU half -----------------------------------------
         if table_changed {
-            self.write_region_table(gpu);
+            plan.table = Some(
+                self.table_addresses
+                    .clone()
+                    .try_into()
+                    .expect("the region table has REGION_COUNT entries"),
+            );
         }
         if tlas_dirty {
-            self.rewrite_instances(gpu);
-            self.rebuild_tlas(gpu);
-            self.tlas_initialized = true;
+            let instance_buffer = Subbuffer::new(
+                gpu.resources
+                    .buffer(self.instance_buffer_id)
+                    .buffer()
+                    .clone(),
+            )
+            .cast_aligned::<AccelerationStructureInstance>();
+            let instance_count = self.resident_ids.len().max(1) as u32;
+            let sizes = tlas_build_sizes(gpu, &instance_buffer, instance_count);
+            debug_assert!(
+                self.tlas_storage_size >= sizes.acceleration_structure_size,
+                "in-place TLAS build for {instance_count} instances exceeds the stable storage"
+            );
+            plan.instances = Some(self.packed_instance_prefix());
+            plan.tlas = Some(TlasBuild {
+                instance_count,
+                scratch: allocate_scratch(gpu, sizes.build_scratch_size),
+            });
         }
 
-        // The rebuild sequence that dropped the referencing instances has
-        // executed (synchronous: every execute above waited idle) — the
-        // freed memory is now safe to reuse.
-        self.release_pending_frees();
-
+        report.rebuild_log = plan.log();
         report.tlas_rebuilt = tlas_dirty;
+
+        if plan.is_empty() {
+            // Nothing changed (every dirty region emptied before the cycle):
+            // no rebuild graph, no GPU work — the idle renderer costs zero
+            // (no pending rebuilds, no wakeups).
+            report.instance_count = self.resident_ids.len();
+            return report;
+        }
+
+        report.timings = self.rebuild_with_plan(gpu, plan);
+        report.instance_count = self.resident_ids.len();
         report
+    }
+
+    /// Executes one rebuild plan through the ordered nodes, then releases
+    /// the pending frees whose dropping rebuild executed (ticket 04's
+    /// ordering invariant — the graph above executed and waited idle, so
+    /// the freed memory is safe to reuse). Shared by change cycles and the
+    /// empty-world corner's forced dummy build.
+    fn rebuild_with_plan(&mut self, gpu: &GpuStack, plan: RebuildPlan) -> NodeTimings {
+        let tlas_rebuilds = plan.tlas.is_some();
+        let graph = RebuildGraph::new(gpu, self, plan);
+        let timings = graph.execute(gpu);
+        if tlas_rebuilds {
+            self.tlas_initialized = true;
+        }
+        self.release_pending_frees();
+        timings
+    }
+
+    /// The packed instance prefix the upload node rewrites: one instance per
+    /// resident Region (sorted by id), or the never-hit dummy instance when
+    /// nothing is resident (keeps the TLAS build legal).
+    fn packed_instance_prefix(&self) -> Vec<AccelerationStructureInstance> {
+        packed_prefix(&self.instances, &self.resident_ids, self.dummy_instance())
     }
 
     /// Allocates a pool buffer (best-fit from the free lists, else fresh).
@@ -676,176 +853,6 @@ impl RegionStore {
         }
     }
 
-    /// Uploads one Region's pool bytes and trimmed AABBs (synchronous).
-    fn upload_region(
-        &self,
-        gpu: &GpuStack,
-        pool_id: Id<Buffer>,
-        pack: &RegionData,
-        aabb_id: Id<Buffer>,
-    ) {
-        unsafe {
-            vulkano_taskgraph::execute(
-                &gpu.transfer_queue,
-                &gpu.resources,
-                gpu.graphics_flight_id,
-                |_cbf, tcx| {
-                    tcx.write_buffer::<[u8]>(pool_id, 0..pack.blocks.len() as DeviceSize)
-                        .copy_from_slice(&pack.blocks);
-                    let dst = tcx.write_buffer::<[AabbPositions]>(
-                        aabb_id,
-                        0..(pack.aabbs.len() as DeviceSize
-                            * size_of::<AabbPositions>() as DeviceSize),
-                    );
-                    for (slot, aabb) in dst.iter_mut().zip(pack.aabbs.iter().copied()) {
-                        *slot = aabb;
-                    }
-                    Ok(())
-                },
-                [
-                    (pool_id, HostAccessType::Write),
-                    (aabb_id, HostAccessType::Write),
-                ],
-                [],
-                [],
-            )
-            .unwrap();
-        }
-        gpu.resources
-            .flight(gpu.graphics_flight_id)
-            .wait_idle()
-            .unwrap();
-    }
-
-    /// Builds a Region's BLAS: into the reused storage, or a fresh one sized
-    /// for `aabb_count`. Returns the BLAS and its storage size.
-    fn build_region_blas(
-        &self,
-        gpu: &GpuStack,
-        alloc: &BlasAllocation,
-        aabb_count: u32,
-    ) -> (Arc<AccelerationStructure>, u64) {
-        let subbuffer = Subbuffer::new(gpu.resources.buffer(alloc.aabb_buffer_id).buffer().clone())
-            .cast_aligned::<AabbPositions>();
-        match &alloc.as_storage {
-            Some((blas, storage_size)) => (
-                acceleration_structure::build_blas_aabbs_in_place(
-                    subbuffer,
-                    aabb_count,
-                    blas,
-                    *storage_size,
-                    gpu.memory_allocator.clone(),
-                    gpu.device.clone(),
-                    gpu.compute_queue.clone(),
-                    &gpu.resources,
-                    gpu.compute_flight_id,
-                ),
-                *storage_size,
-            ),
-            None => acceleration_structure::build_blas_aabbs_fresh(
-                subbuffer,
-                aabb_count,
-                gpu.memory_allocator.clone(),
-                gpu.device.clone(),
-                gpu.compute_queue.clone(),
-                &gpu.resources,
-                gpu.compute_flight_id,
-            ),
-        }
-    }
-
-    /// Writes the region table (Region id → pool device address) wholesale.
-    fn write_region_table(&self, gpu: &GpuStack) {
-        let table = capture_raygen::RegionTable {
-            bdas: self
-                .table_addresses
-                .clone()
-                .try_into()
-                .expect("the region table has REGION_COUNT entries"),
-        };
-        unsafe {
-            vulkano_taskgraph::execute(
-                &gpu.transfer_queue,
-                &gpu.resources,
-                gpu.graphics_flight_id,
-                |_cbf, tcx| {
-                    *tcx.write_buffer::<capture_raygen::RegionTable>(
-                        self.region_table_buffer_id,
-                        ..,
-                    ) = table;
-                    Ok(())
-                },
-                [(self.region_table_buffer_id, HostAccessType::Write)],
-                [],
-                [],
-            )
-            .unwrap();
-        }
-        gpu.resources
-            .flight(gpu.graphics_flight_id)
-            .wait_idle()
-            .unwrap();
-    }
-
-    /// Rewrites the instance buffer's packed resident prefix (the TLAS build
-    /// input). With an empty resident set, writes the never-hit dummy
-    /// instance so the TLAS build stays legal.
-    fn rewrite_instances(&self, gpu: &GpuStack) {
-        let count = self.resident_ids.len().max(1);
-        unsafe {
-            vulkano_taskgraph::execute(
-                &gpu.transfer_queue,
-                &gpu.resources,
-                gpu.graphics_flight_id,
-                |_cbf, tcx| {
-                    let dst = tcx.write_buffer::<[AccelerationStructureInstance]>(
-                        self.instance_buffer_id,
-                        0..(count as DeviceSize
-                            * size_of::<AccelerationStructureInstance>() as DeviceSize),
-                    );
-                    if self.resident_ids.is_empty() {
-                        dst[0] = self.dummy_instance();
-                    } else {
-                        for (slot, id) in dst.iter_mut().zip(self.resident_ids.iter().copied()) {
-                            *slot = self.instances[id as usize];
-                        }
-                    }
-                    Ok(())
-                },
-                [(self.instance_buffer_id, HostAccessType::Write)],
-                [],
-                [],
-            )
-            .unwrap();
-        }
-        gpu.resources
-            .flight(gpu.graphics_flight_id)
-            .wait_idle()
-            .unwrap();
-    }
-
-    /// Rebuilds the stable TLAS in place over the packed resident prefix.
-    fn rebuild_tlas(&self, gpu: &GpuStack) {
-        let instance_subbuffer = Subbuffer::new(
-            gpu.resources
-                .buffer(self.instance_buffer_id)
-                .buffer()
-                .clone(),
-        )
-        .cast_aligned::<AccelerationStructureInstance>();
-        acceleration_structure::build_tlas_in_place(
-            instance_subbuffer,
-            self.resident_ids.len().max(1) as u32,
-            &self.tlas,
-            self.tlas_storage_size,
-            gpu.memory_allocator.clone(),
-            gpu.device.clone(),
-            gpu.compute_queue.clone(),
-            &gpu.resources,
-            gpu.compute_flight_id,
-        );
-    }
-
     /// The never-hit dummy instance (mask 0 → culled by the hardware).
     fn dummy_instance(&self) -> AccelerationStructureInstance {
         AccelerationStructureInstance {
@@ -873,10 +880,81 @@ impl RegionStore {
     /// Releases the pending frees into the reusable lists. Call only after
     /// the rebuild sequence that dropped the referencing instances executed
     /// (ticket 04's ordering invariant; ticket 05 keeps the same structure
-    /// with ordered taskgraph nodes).
+    /// with ordered taskgraph nodes — [`rebuild_with_plan`] releases after
+    /// the graph executed and waited).
     fn release_pending_frees(&mut self) {
         self.free.pools.append(&mut self.pending_free.pools);
         self.free.blas.append(&mut self.pending_free.blas);
+    }
+}
+
+/// Resolves the storage a BLAS build records into: the free-list-reused AS,
+/// or a fresh storage sized exactly for `aabb_count` (created here, built
+/// into **in place** by the BLAS node — the AS object and its device address
+/// never move after creation).
+fn resolve_blas_storage(
+    gpu: &GpuStack,
+    aabb_buffer: &Subbuffer<[AabbPositions]>,
+    aabb_count: u32,
+    alloc: &BlasAllocation,
+) -> (Arc<AccelerationStructure>, u64) {
+    match &alloc.as_storage {
+        Some((blas, storage_size)) => (blas.clone(), *storage_size),
+        None => acceleration_structure::create_blas_aabbs_storage(
+            aabb_buffer,
+            aabb_count,
+            gpu.memory_allocator.clone(),
+            gpu.device.clone(),
+        ),
+    }
+}
+
+/// Builds the plan's BLAS-build entry for one Region: sizes the scratch,
+/// asserts the build fits the (resolved) storage, and packs the entry the
+/// BLAS node records. `fresh` marks become-resident/replacement builds
+/// (new storage) vs in-place content-edit rebuilds.
+#[allow(clippy::too_many_arguments)]
+fn plan_blas_build(
+    gpu: &GpuStack,
+    region_index: IVec3,
+    aabb_buffer_id: Id<Buffer>,
+    aabb_buffer: &Subbuffer<[AabbPositions]>,
+    aabb_count: u32,
+    blas: Arc<AccelerationStructure>,
+    blas_storage_size: u64,
+    fresh: bool,
+) -> BlasBuild {
+    let sizes = blas_build_sizes(gpu, aabb_buffer, aabb_count);
+    debug_assert!(
+        blas_storage_size >= sizes.acceleration_structure_size,
+        "BLAS build for {aabb_count} AABBs exceeds its {blas_storage_size}-byte storage"
+    );
+    BlasBuild {
+        region_index,
+        aabb_buffer_id,
+        aabb_count,
+        blas,
+        scratch: allocate_scratch(gpu, sizes.build_scratch_size),
+        fresh,
+    }
+}
+
+/// Packs the resident ids' instance slots into the TLAS build-input prefix
+/// (sorted by id — the order [`RegionStore::resident_ids`] keeps); the
+/// never-hit dummy instance when nothing is resident, so the TLAS build
+/// stays legal (pure — unit-tested).
+fn packed_prefix(
+    instances: &[AccelerationStructureInstance],
+    resident_ids: &[u32],
+    empty_dummy: AccelerationStructureInstance,
+) -> Vec<AccelerationStructureInstance> {
+    if resident_ids.is_empty() {
+        vec![empty_dummy]
+    } else {
+        resident_ids
+            .iter()
+            .map(|&id| instances[id as usize])
+            .collect()
     }
 }
 
@@ -1041,5 +1119,28 @@ mod tests {
             assert_eq!(instance.instance_custom_index_and_mask.high_8(), 0xFF);
             assert_eq!(instance.acceleration_structure_reference, 0);
         }
+    }
+
+    /// The packed instance prefix is the resident ids' instance slots in
+    /// sorted order — exactly the TLAS build input — and the never-hit dummy
+    /// when nothing is resident (the empty-world corner stays legal).
+    #[test]
+    fn packed_prefix_rewrites_resident_instances() {
+        let instances = static_instances();
+        let dummy = AccelerationStructureInstance {
+            instance_custom_index_and_mask: Packed24_8::new(0, 0x00),
+            ..Default::default()
+        };
+
+        // Sorted resident ids → their lattice-static slots in order.
+        let prefix = packed_prefix(&instances, &[2, 5, 9], dummy);
+        assert_eq!(prefix.len(), 3);
+        assert_eq!(prefix[0].instance_custom_index_and_mask.low_24(), 2);
+        assert_eq!(prefix[1].instance_custom_index_and_mask.low_24(), 5);
+        assert_eq!(prefix[2].instance_custom_index_and_mask.low_24(), 9);
+
+        // Empty resident set → exactly one dummy instance (legal TLAS build).
+        let prefix = packed_prefix(&instances, &[], dummy);
+        assert_eq!(prefix, vec![dummy]);
     }
 }

@@ -47,6 +47,7 @@ use crate::{
     region::{
         input::RendererInput,
         pack::pack_regions,
+        rebuild::RebuildLogEntry,
         render::{RegionRenderContext, RegionRenderTask},
         residency::RegionStore,
         snapshot::{MICRO_CHUNK_EDGE, MicroChunkSnapshot, emit_snapshots},
@@ -621,6 +622,86 @@ impl ValidateApp {
                     input.region_count(),
                     "the store's resident count must match the input contract's mirrors"
                 );
+
+                // --- ticket 05: the ordered rebuild nodes -----------------
+                // The rebuild logs/counters: a content edit rebuilds the
+                // Region's BLAS **in place** (device address stable → TLAS
+                // untouched — no `BuildTlas` entry); a residency transition
+                // rebuilds the TLAS, adding/removing exactly one instance
+                // (the scripts transition one Region per step).
+                let log = &report.rebuild_log;
+                assert_eq!(
+                    log.iter()
+                        .any(|e| matches!(e, RebuildLogEntry::BuildTlas { .. })),
+                    report.tlas_rebuilt,
+                    "the rebuild log must record a TLAS build iff the TLAS rebuilt"
+                );
+                if report.tlas_rebuilt {
+                    let net =
+                        report.became_resident.len() as isize - report.left_resident.len() as isize;
+                    assert_eq!(
+                        report.instance_count as isize,
+                        report.instance_count_before as isize + net,
+                        "the TLAS instance set changes only by the residency transitions ({} became, {} left)",
+                        report.became_resident.len(),
+                        report.left_resident.len(),
+                    );
+                    assert!(
+                        log.iter()
+                            .any(|e| matches!(e, RebuildLogEntry::RewriteInstances { .. })),
+                        "a TLAS rebuild must be preceded by an instance rewrite"
+                    );
+                }
+                if !transitioned && report.blas_replaced.is_empty() {
+                    // A pure content edit: every dirty Region's BLAS rebuilt
+                    // in place, TLAS untouched.
+                    for region in &report.dirty {
+                        assert!(
+                            log.iter().any(|e| matches!(
+                                e,
+                                RebuildLogEntry::BuildBlas {
+                                    region_index: r,
+                                    fresh: false,
+                                    ..
+                                } if r == region
+                            )),
+                            "content edit of region {region:?} must rebuild its BLAS in place (TLAS untouched)"
+                        );
+                    }
+                }
+                // Per-node GPU attribution (feeds ticket 07's measurement):
+                // real builds report nonzero times when timestamps exist.
+                if report.timings.supported {
+                    if report.tlas_rebuilt {
+                        assert!(
+                            report.timings.tlas_ns > 0,
+                            "the TLAS rebuild's GPU time must be attributable (tlas_ns > 0)"
+                        );
+                    }
+                    if log
+                        .iter()
+                        .any(|e| matches!(e, RebuildLogEntry::BuildBlas { .. }))
+                    {
+                        assert!(
+                            report.timings.blas_ns > 0,
+                            "the BLAS rebuilds' GPU time must be attributable (blas_ns > 0)"
+                        );
+                    }
+                }
+                if !report.rebuild_log.is_empty() {
+                    println!(
+                        "              rebuild {}: upload {:>6} ns, blas {:>6} ns, tlas {:>6} ns{}",
+                        step.label,
+                        report.timings.upload_ns,
+                        report.timings.blas_ns,
+                        report.timings.tlas_ns,
+                        if report.timings.supported {
+                            ""
+                        } else {
+                            " (timestamps unsupported)"
+                        }
+                    );
+                }
 
                 let summary = self.run_frame(
                     &world_data,
