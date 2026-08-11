@@ -36,10 +36,10 @@ use vulkano::{
     DeviceSize,
     acceleration_structure::{
         AabbPositions, AccelerationStructure, AccelerationStructureBuildGeometryInfo,
-        AccelerationStructureBuildRangeInfo, AccelerationStructureGeometry, AccelerationStructureGeometryAabbsData,
-        AccelerationStructureGeometryData, AccelerationStructureGeometryInstancesData,
-        AccelerationStructureInstance, AccelerationStructureType,
-        BuildAccelerationStructureMode,
+        AccelerationStructureBuildRangeInfo, AccelerationStructureGeometry,
+        AccelerationStructureGeometryAabbsData, AccelerationStructureGeometryData,
+        AccelerationStructureGeometryInstancesData, AccelerationStructureInstance,
+        AccelerationStructureType, BuildAccelerationStructureMode,
     },
     buffer::{Buffer, BufferCreateInfo, BufferUsage, Subbuffer},
     memory::allocator::AllocationCreateInfo,
@@ -56,11 +56,7 @@ use vulkano_taskgraph::{
 
 use crate::{
     app::GpuStack,
-    region::{
-        pack::REGION_COUNT,
-        render::capture_raygen,
-        residency::RegionStore,
-    },
+    region::{pack::REGION_COUNT, render::capture_raygen, residency::RegionStore},
     rt::acceleration_structure,
 };
 
@@ -320,9 +316,8 @@ impl Task for BuildBlasTask {
         }
 
         for build in &self.builds {
-            let aabb_buffer =
-                Subbuffer::new(tcx.buffer(build.aabb_buffer_id).buffer().clone())
-                    .cast_aligned::<AabbPositions>();
+            let aabb_buffer = Subbuffer::new(tcx.buffer(build.aabb_buffer_id).buffer().clone())
+                .cast_aligned::<AabbPositions>();
             let aabb_data = AccelerationStructureGeometryAabbsData {
                 data: aabb_buffer.device_address().unwrap().get(),
                 stride: size_of::<AabbPositions>() as u32,
@@ -346,10 +341,12 @@ impl Task for BuildBlasTask {
             // dependency) and any prior build's writes are visible to this
             // build; the post-barrier makes the built BLAS visible to later
             // rebuilds and traces.
-            unsafe { cbf.pipeline_barrier(&DependencyInfo {
-                memory_barriers: &[build_pre_barrier()],
-                ..Default::default()
-            }) };
+            unsafe {
+                cbf.pipeline_barrier(&DependencyInfo {
+                    memory_barriers: &[build_pre_barrier()],
+                    ..Default::default()
+                })
+            };
 
             unsafe {
                 cbf.as_raw().build_acceleration_structure(
@@ -361,10 +358,12 @@ impl Task for BuildBlasTask {
                 )
             };
 
-            unsafe { cbf.pipeline_barrier(&DependencyInfo {
-                memory_barriers: &[build_post_barrier()],
-                ..Default::default()
-            }) };
+            unsafe {
+                cbf.pipeline_barrier(&DependencyInfo {
+                    memory_barriers: &[build_post_barrier()],
+                    ..Default::default()
+                })
+            };
         }
 
         if let Some(range) = &self.timestamps {
@@ -434,10 +433,12 @@ impl Task for BuildTlasTask {
         build_geometry_info.dst_acceleration_structure = Some(&self.tlas);
         build_geometry_info.scratch_data = self.scratch.device_address().get();
 
-        unsafe { cbf.pipeline_barrier(&DependencyInfo {
-            memory_barriers: &[build_pre_barrier()],
-            ..Default::default()
-        }) };
+        unsafe {
+            cbf.pipeline_barrier(&DependencyInfo {
+                memory_barriers: &[build_pre_barrier()],
+                ..Default::default()
+            })
+        };
 
         unsafe {
             cbf.as_raw().build_acceleration_structure(
@@ -449,10 +450,12 @@ impl Task for BuildTlasTask {
             )
         };
 
-        unsafe { cbf.pipeline_barrier(&DependencyInfo {
-            memory_barriers: &[build_post_barrier()],
-            ..Default::default()
-        }) };
+        unsafe {
+            cbf.pipeline_barrier(&DependencyInfo {
+                memory_barriers: &[build_post_barrier()],
+                ..Default::default()
+            })
+        };
 
         if let Some(range) = &self.timestamps {
             unsafe {
@@ -548,8 +551,7 @@ impl RebuildGraph {
                 .add_host_buffer_access(store.region_table_buffer_id(), HostAccessType::Write);
         }
         if plan.instances.is_some() {
-            task_graph
-                .add_host_buffer_access(store.instance_buffer_id, HostAccessType::Write);
+            task_graph.add_host_buffer_access(store.instance_buffer_id, HostAccessType::Write);
         }
 
         let timestamps_supported = timestamp_supported(gpu);
@@ -581,8 +583,11 @@ impl RebuildGraph {
             .unwrap()
         });
         let query_range = |pool: &Option<Arc<QueryPool>>, slot: (u32, u32)| {
-            pool.as_ref()
-                .map(|pool| QueryRange { pool: pool.clone(), begin: slot.0, end: slot.1 })
+            pool.as_ref().map(|pool| QueryRange {
+                pool: pool.clone(),
+                begin: slot.0,
+                end: slot.1,
+            })
         };
 
         let upload_node = task_graph
@@ -728,15 +733,16 @@ impl RebuildGraph {
 /// The AABB buffer ids the BLAS node builds from (its declared device
 /// accesses).
 fn blas_buffer_ids(plan: &RebuildPlan) -> Vec<Id<Buffer>> {
-    plan.blas_builds.iter().map(|build| build.aabb_buffer_id).collect()
+    plan.blas_builds
+        .iter()
+        .map(|build| build.aabb_buffer_id)
+        .collect()
 }
 
 /// Whether the compute queue family supports timestamp queries.
 fn timestamp_supported(gpu: &GpuStack) -> bool {
     let index = gpu.compute_queue.queue_family_index() as usize;
-    gpu.device
-        .physical_device()
-        .queue_family_properties()[index]
+    gpu.device.physical_device().queue_family_properties()[index]
         .timestamp_valid_bits
         .is_some()
 }
@@ -863,11 +869,13 @@ mod tests {
         plan.instances = Some(vec![AccelerationStructureInstance::default()]);
         plan.tlas = None;
         let log = plan.log();
-        assert!(log
-            .iter()
-            .any(|e| matches!(e, RebuildLogEntry::RewriteInstances { instance_count: 1 })));
-        assert!(!log
-            .iter()
-            .any(|e| matches!(e, RebuildLogEntry::BuildTlas { .. })));
+        assert!(
+            log.iter()
+                .any(|e| matches!(e, RebuildLogEntry::RewriteInstances { instance_count: 1 }))
+        );
+        assert!(
+            !log.iter()
+                .any(|e| matches!(e, RebuildLogEntry::BuildTlas { .. }))
+        );
     }
 }

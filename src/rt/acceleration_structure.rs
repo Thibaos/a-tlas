@@ -220,8 +220,7 @@ pub(crate) fn create_blas_aabbs_storage(
     let as_buffer = Buffer::new_slice::<u8>(
         &memory_allocator,
         &BufferCreateInfo {
-            usage: BufferUsage::ACCELERATION_STRUCTURE_STORAGE
-                | BufferUsage::SHADER_DEVICE_ADDRESS,
+            usage: BufferUsage::ACCELERATION_STRUCTURE_STORAGE | BufferUsage::SHADER_DEVICE_ADDRESS,
             ..Default::default()
         },
         &AllocationCreateInfo::default(),

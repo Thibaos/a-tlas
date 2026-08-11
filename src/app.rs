@@ -1,10 +1,6 @@
 #[cfg(debug_assertions)]
 use glam::Mat4;
-use std::{
-    f32::consts::PI,
-    sync::Arc,
-    time::Duration,
-};
+use std::{f32::consts::PI, sync::Arc, time::Duration};
 use vulkano::{
     VulkanError, VulkanLibrary,
     device::{
@@ -45,6 +41,8 @@ use winit::{
     window::{Window, WindowAttributes},
 };
 
+#[cfg(debug_assertions)]
+use crate::world::Vertex3DColor;
 use crate::{
     physics::PhysicsController,
     player::PlayerController,
@@ -57,8 +55,6 @@ use crate::{
     schedule::ScheduleController,
     world::{chunk::Chunks, voxel::open_file},
 };
-#[cfg(debug_assertions)]
-use crate::world::Vertex3DColor;
 
 #[cfg(debug_assertions)]
 use crate::tasks::debug::{self, DrawDebugTask, create_debug_pipeline};
@@ -727,8 +723,9 @@ impl ApplicationHandler for App {
                         .unwrap();
 
                 let execute_result = unsafe {
-                    rcx.task_graph
-                        .execute(resource_map, &rcx.region, || rcx.window.pre_present_notify())
+                    rcx.task_graph.execute(resource_map, &rcx.region, || {
+                        rcx.window.pre_present_notify()
+                    })
                 };
 
                 match execute_result {

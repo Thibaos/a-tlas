@@ -19,11 +19,7 @@ use vulkano_taskgraph::{
     Id, Task, TaskContext, TaskResult, command_buffer::RecordingCommandBuffer, graph::TaskNode,
 };
 
-use crate::{
-    app::App,
-    region::render::RegionRenderContext,
-    world::Vertex3DColor,
-};
+use crate::{app::App, region::render::RegionRenderContext, world::Vertex3DColor};
 
 pub mod shader {
     pub(crate) mod vert {

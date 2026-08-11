@@ -660,10 +660,7 @@ impl RegionStore {
                             // Fresh storage (CPU-side) + build in place in
                             // the BLAS node; the instance address moves.
                             let aabb_buffer = Subbuffer::new(
-                                gpu.resources
-                                    .buffer(alloc.aabb_buffer_id)
-                                    .buffer()
-                                    .clone(),
+                                gpu.resources.buffer(alloc.aabb_buffer_id).buffer().clone(),
                             )
                             .cast_aligned::<AabbPositions>();
                             let (blas, blas_storage_size) =

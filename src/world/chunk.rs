@@ -494,12 +494,7 @@ mod test {
         for x in 0..CHUNK_WIDTH {
             for y in 0..CHUNK_WIDTH {
                 for z in 0..CHUNK_WIDTH {
-                    chunk.insert(
-                        UVec3::new(x, y, z),
-                        HostVoxel {
-                            material_index: 0,
-                        },
-                    );
+                    chunk.insert(UVec3::new(x, y, z), HostVoxel { material_index: 0 });
                 }
             }
         }
@@ -516,13 +511,7 @@ mod test {
         for x in 0..WORLD_WIDTH * size {
             let position = IVec3::new(x, 0, 0);
 
-            let res = Chunks::insert_voxel(
-                &mut chunks,
-                position,
-                HostVoxel {
-                    material_index: 0,
-                },
-            );
+            let res = Chunks::insert_voxel(&mut chunks, position, HostVoxel { material_index: 0 });
 
             assert!(res.is_some());
 
@@ -569,5 +558,3 @@ mod test {
         assert!(chunks.contains(&pos2));
     }
 }
-
-

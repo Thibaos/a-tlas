@@ -38,9 +38,9 @@ use vulkano_taskgraph::{
 
 #[cfg(debug_assertions)]
 use crate::tasks::debug;
-use crate::{app::GpuStack, region::residency::RegionStore};
 #[cfg(debug_assertions)]
 use crate::world::Vertex3DColor;
+use crate::{app::GpuStack, region::residency::RegionStore};
 #[cfg(debug_assertions)]
 use vulkano::pipeline::graphics::viewport::Viewport;
 
