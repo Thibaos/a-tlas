@@ -44,7 +44,12 @@ use winit::{
 
 use crate::{
     app::{GpuStack, MIN_SWAPCHAIN_IMAGES},
-    region::render::{RegionRenderContext, RegionRenderTask},
+    region::{
+        input::RendererInput,
+        pack::{RegionData, pack_regions},
+        render::{RegionRenderContext, RegionRenderTask},
+        snapshot::{MICRO_CHUNK_EDGE, MicroChunkSnapshot, emit_snapshots},
+    },
     validate::{
         capture::CaptureTask,
         compare::{CompareConfig, CompareReport, compare},
@@ -90,7 +95,17 @@ impl Default for ValidateOptions {
     }
 }
 
-/// Result of one world's run.
+/// One compared frame's outcome. The edit-at-the-seam world (ticket 03)
+/// runs two frames (label "" then "-after-edit"); every other world runs
+/// one.
+pub struct FrameSummary {
+    pub label: String,
+    pub pass: bool,
+    pub mismatches: usize,
+    pub hard_mismatches: usize,
+}
+
+/// Result of one world's run (aggregated over its frames).
 pub struct PassSummary {
     pub name: String,
     pub path: String,
@@ -98,6 +113,8 @@ pub struct PassSummary {
     pub mismatches: usize,
     pub hard_mismatches: usize,
     pub out_dir: PathBuf,
+    /// Per-frame outcomes (see [`FrameSummary`]).
+    pub frames: Vec<FrameSummary>,
 }
 
 pub fn print_help() {
@@ -223,6 +240,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
             path: path.to_str().unwrap_or_default().to_string(),
             description: String::new(),
             camera: None,
+            edit: None,
         }],
         None => suite,
     };
@@ -255,6 +273,18 @@ pub fn run(args: &[String]) -> Result<(), String> {
                     summary.mismatches,
                     summary.hard_mismatches,
                 );
+                for frame in &summary.frames {
+                    if frame.label.is_empty() {
+                        continue;
+                    }
+                    println!(
+                        "              {}: {} (mismatches: {}, hard: {})",
+                        frame.label,
+                        if frame.pass { "PASS" } else { "FAIL" },
+                        frame.mismatches,
+                        frame.hard_mismatches,
+                    );
+                }
                 println!(
                     "              report: {}",
                     summary.out_dir.join("report.txt").display()
@@ -284,9 +314,26 @@ struct PassSpec {
     camera: Option<CameraSpec>,
 }
 
-struct ValidateFrame {
+/// Everything shared between a world's frames: the hidden window, the
+/// swapchain with its bindless storage images, the t-image and the readback
+/// buffers. Built once per world; each frame gets its own task graph over
+/// the same resources (the edit-at-the-seam world runs two frames).
+struct FrameSetup {
     #[allow(dead_code)]
     window: Arc<Window>,
+    swapchain_id: Id<Swapchain>,
+    swapchain_format: Format,
+    swapchain_storage_image_ids: Vec<StorageImageId>,
+    t_image_id: Id<Image>,
+    t_image_storage_id: StorageImageId,
+    t_format: Format,
+    color_readback_buffer_id: Id<Buffer>,
+    t_readback_buffer_id: Id<Buffer>,
+    camera: crate::region::render::capture_raygen::Camera,
+    camera_inputs: CameraInputs,
+}
+
+struct ValidateFrame {
     virtual_swapchain_id: Id<Swapchain>,
     swapchain_id: Id<Swapchain>,
     swapchain_format: Format,
@@ -349,7 +396,7 @@ impl ValidateApp {
         let height = self.opts.height;
 
         let voxel_data = open_file(&world.path);
-        let world_data = Arc::new(Chunks::new(&voxel_data));
+        let mut world_data = Arc::new(Chunks::new(&voxel_data));
         let voxel_count = world_data.voxel_count();
         // The destination path's in-shader DDA resolves grid cells
         // (renderer-impl ticket 02), so the reference traces the same shape:
@@ -386,12 +433,6 @@ impl ValidateApp {
         )
         .map_err(|e| format!("t image: {e}"))?;
 
-        let mut task_graph = TaskGraph::new(&self.gpu.resources);
-        let virtual_swapchain_id = task_graph.add_swapchain(&SwapchainCreateInfo::default());
-
-        let rt_task = RegionRenderTask::new(&self.gpu, &world_data, &voxel_data, virtual_swapchain_id);
-        let instance_buffer_id = rt_task.instance_buffer_id();
-
         let color_readback_buffer_id = self
             .gpu
             .resources
@@ -424,6 +465,131 @@ impl ValidateApp {
             )
             .unwrap();
 
+        let (camera, camera_inputs) = build_camera(&world_data, width, height, world.camera);
+
+        let setup = FrameSetup {
+            window,
+            swapchain_id,
+            swapchain_format,
+            swapchain_storage_image_ids,
+            t_image_id,
+            t_image_storage_id,
+            t_format,
+            color_readback_buffer_id,
+            t_readback_buffer_id,
+            camera,
+            camera_inputs,
+        };
+
+        // --- the input contract (renderer-impl ticket 03) ----------------
+        // Startup: the world voices its initial state as one submit_batch;
+        // the worker drains it into per-Region mirrors; the Region pipeline
+        // consumes the packed mirrors (never the world directly).
+        let input = RendererInput::new();
+        input.submit_batch(emit_snapshots(&world_data));
+        input.wait_until_idle();
+
+        // Frame 1: startup via submit_batch.
+        let regions = input.packed_regions();
+        let frame = self.build_validate_frame(&setup, &voxel_data, &regions)?;
+        let first = self.run_frame(&world_data, &voxel_data, shape, world, frame, "")?;
+
+        let mut frames = vec![first];
+
+        // Frame 2 (edit-at-the-seam, ticket 03): empty one Micro-chunk
+        // through the contract — the world removes its cells, then voices a
+        // zero-mask snapshot — and the next frame must match the reference
+        // over the edited world (that voxel gone, colors exact).
+        if let Some(edit) = world.edit {
+            let mc = edit.remove_microchunk;
+            let cells: Vec<IVec3> = {
+                let world = Arc::get_mut(&mut world_data).expect("the validator owns the world");
+                world
+                    .iter_voxels()
+                    .filter(|(p, _)| {
+                        p.cmpge(mc).all() && p.cmplt(mc + IVec3::splat(MICRO_CHUNK_EDGE)).all()
+                    })
+                    .map(|(p, _)| p)
+                    .collect()
+            };
+            assert!(
+                !cells.is_empty(),
+                "edit-seam: no voxels inside Micro-chunk {mc:?}"
+            );
+            {
+                let world = Arc::get_mut(&mut world_data).expect("the validator owns the world");
+                for position in cells {
+                    assert!(
+                        world.remove_voxel_at(position),
+                        "edit-seam: voxel {position:?} already absent"
+                    );
+                }
+            }
+            assert!(
+                world_data.voxel_count() > 0,
+                "edit-seam: the world must survive the removal"
+            );
+
+            input.submit_microchunk(MicroChunkSnapshot {
+                global_coords: mc,
+                mask: [0u8; 64],
+                materials: Vec::new(),
+            });
+            input.wait_until_idle();
+
+            // The seam: the change-path pack equals the direct pack of the
+            // edited world — the exact bytes the pipeline consumes.
+            let expected = pack_regions(&emit_snapshots(&world_data));
+            let actual = input.packed_regions();
+            assert_eq!(actual.len(), expected.len());
+            for (a, b) in actual.iter().zip(&expected) {
+                assert_eq!(a.region_index, b.region_index);
+                assert_eq!(a.blocks, b.blocks);
+                assert_eq!(a.aabbs, b.aabbs);
+            }
+
+            let regions = input.packed_regions();
+            let frame = self.build_validate_frame(&setup, &voxel_data, &regions)?;
+            let second = self.run_frame(
+                &world_data,
+                &voxel_data,
+                shape,
+                world,
+                frame,
+                "-after-edit",
+            )?;
+            frames.push(second);
+        }
+
+        Ok(PassSummary {
+            name: world.name.clone(),
+            path: world.path.clone(),
+            pass: frames.iter().all(|frame| frame.pass),
+            mismatches: frames.iter().map(|frame| frame.mismatches).sum(),
+            hard_mismatches: frames.iter().map(|frame| frame.hard_mismatches).sum(),
+            out_dir: self.opts.out_dir.join(&world.name),
+            frames,
+        })
+    }
+
+    /// Builds the compiled task graph for one frame over the given packed
+    /// Regions (the input contract's current mirror state). The setup's
+    /// swapchain/images/buffers are shared; each frame gets its own graph
+    /// and RT task. Ticket 03's harness exercises the seam as a fresh build
+    /// from the mirrors; tickets 04/05 replace this with ordered in-place
+    /// rebuilds.
+    fn build_validate_frame(
+        &self,
+        setup: &FrameSetup,
+        voxel_data: &dot_vox::DotVoxData,
+        regions: &[RegionData],
+    ) -> Result<ValidateFrame, String> {
+        let mut task_graph = TaskGraph::new(&self.gpu.resources);
+        let virtual_swapchain_id = task_graph.add_swapchain(&SwapchainCreateInfo::default());
+
+        let rt_task = RegionRenderTask::new(&self.gpu, voxel_data, regions, virtual_swapchain_id);
+        let instance_buffer_id = rt_task.instance_buffer_id();
+
         let rt_node_id = task_graph
             .create_task_node("ValidateRender", QueueFamilyType::Graphics, rt_task)
             .image_access(
@@ -432,7 +598,7 @@ impl ValidateApp {
                 ImageLayoutType::General,
             )
             .image_access(
-                t_image_id,
+                setup.t_image_id,
                 AccessTypes::RAY_TRACING_SHADER_STORAGE_WRITE,
                 ImageLayoutType::General,
             )
@@ -453,10 +619,10 @@ impl ValidateApp {
         // accepts a General-layout source, so nothing is lost.
         let capture_task = CaptureTask::new(
             virtual_swapchain_id,
-            t_image_id,
-            t_format,
-            color_readback_buffer_id,
-            t_readback_buffer_id,
+            setup.t_image_id,
+            setup.t_format,
+            setup.color_readback_buffer_id,
+            setup.t_readback_buffer_id,
         );
 
         let capture_node_id = task_graph
@@ -467,7 +633,7 @@ impl ValidateApp {
                 ImageLayoutType::General,
             )
             .image_access(
-                t_image_id,
+                setup.t_image_id,
                 AccessTypes::COPY_TRANSFER_READ,
                 ImageLayoutType::General,
             )
@@ -478,8 +644,8 @@ impl ValidateApp {
         // output — "capture before the debug overlay draws".
         task_graph.add_edge(rt_node_id, capture_node_id).unwrap();
 
-        task_graph.add_host_buffer_access(color_readback_buffer_id, HostAccessType::Read);
-        task_graph.add_host_buffer_access(t_readback_buffer_id, HostAccessType::Read);
+        task_graph.add_host_buffer_access(setup.color_readback_buffer_id, HostAccessType::Read);
+        task_graph.add_host_buffer_access(setup.t_readback_buffer_id, HostAccessType::Read);
 
         let task_graph = unsafe {
             task_graph.compile(&CompileInfo {
@@ -491,31 +657,28 @@ impl ValidateApp {
         }
         .map_err(|e| format!("compile: {e}"))?;
 
-        let (camera, camera_inputs) = build_camera(&world_data, width, height, world.camera);
-
         let rcx = RegionRenderContext {
-            camera,
-            swapchain_storage_image_ids,
-            t_image_storage_id,
+            camera: setup.camera,
+            swapchain_storage_image_ids: setup.swapchain_storage_image_ids.clone(),
+            t_image_storage_id: setup.t_image_storage_id,
         };
 
-        let frame = ValidateFrame {
-            window,
+        Ok(ValidateFrame {
             virtual_swapchain_id,
-            swapchain_id,
-            swapchain_format,
-            color_readback_buffer_id,
-            t_readback_buffer_id,
+            swapchain_id: setup.swapchain_id,
+            swapchain_format: setup.swapchain_format,
+            color_readback_buffer_id: setup.color_readback_buffer_id,
+            t_readback_buffer_id: setup.t_readback_buffer_id,
             task_graph,
             rcx,
-            camera_inputs,
-        };
-
-        self.run_frame(&world_data, &voxel_data, shape, world, frame)
+            camera_inputs: setup.camera_inputs,
+        })
     }
 
     /// Executes one frame, captures color + t, traces the reference,
-    /// compares, and writes the report artifacts.
+    /// compares, and writes the report artifacts (suffixed by `label`: ""
+    /// for the first/only frame, "-after-edit" for the edit-at-the-seam
+    /// second frame).
     fn run_frame(
         &mut self,
         world_data: &Arc<Chunks>,
@@ -523,7 +686,8 @@ impl ValidateApp {
         shape: VoxelShape,
         world: &WorldSpec,
         mut frame: ValidateFrame,
-    ) -> Result<PassSummary, String> {
+        label: &str,
+    ) -> Result<FrameSummary, String> {
         let width = self.opts.width;
         let height = self.opts.height;
         let out_dir = self.opts.out_dir.join(&world.name);
@@ -602,22 +766,24 @@ impl ValidateApp {
             &gpu_rgba,
             &reference_rgba,
             &report,
+            label,
         ) {
             return Err(format!("failed to write report: {error}"));
         }
 
-        Ok(PassSummary {
-            name: world.name.clone(),
-            path: world.path.clone(),
+        Ok(FrameSummary {
+            label: label.to_string(),
             pass: report.passes(),
             mismatches: report.mismatch_count(),
             hard_mismatches: report.hard_mismatch_count(),
-            out_dir,
         })
     }
 }
 
-/// Writes the report artifacts (PNGs + text) for one world.
+/// Writes the report artifacts (PNGs + text) for one frame. `label` suffixes
+/// the artifact names ("" for the first/only frame, "-after-edit" for the
+/// edit-at-the-seam second frame).
+#[allow(clippy::too_many_arguments)]
 fn write_report(
     out_dir: &Path,
     pass: &PassSpec,
@@ -627,14 +793,20 @@ fn write_report(
     gpu_rgba: &[u8],
     reference_rgba: &[u8],
     report: &CompareReport,
+    label: &str,
 ) -> std::io::Result<()> {
     fs::create_dir_all(out_dir)?;
 
-    write_png(&out_dir.join("gpu.png"), gpu_rgba, width, height)?;
-    write_png(&out_dir.join("reference.png"), reference_rgba, width, height)?;
+    write_png(&out_dir.join(format!("gpu{label}.png")), gpu_rgba, width, height)?;
+    write_png(
+        &out_dir.join(format!("reference{label}.png")),
+        reference_rgba,
+        width,
+        height,
+    )?;
 
     let diff = build_diff_image(reference_rgba, report);
-    write_png(&out_dir.join("diff.png"), &diff, width, height)?;
+    write_png(&out_dir.join(format!("diff{label}.png")), &diff, width, height)?;
 
     let camera_description = pass
         .camera
@@ -642,7 +814,7 @@ fn write_report(
         .unwrap_or_else(|| "framed world bounding box".to_string());
 
     write_text_report(
-        &out_dir.join("report.txt"),
+        &out_dir.join(format!("report{label}.txt")),
         &pass.name,
         &pass.path,
         &camera_description,

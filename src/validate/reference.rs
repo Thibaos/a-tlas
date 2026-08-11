@@ -48,6 +48,7 @@ pub enum VoxelShape {
 /// Camera inputs shared between the GPU ray pass and the reference: the same
 /// inverse matrices the raygen unprojects with, the launch size, and the ray
 /// t-range.
+#[derive(Clone, Copy)]
 pub struct CameraInputs {
     view_inverse: Mat4,
     proj_inverse: Mat4,

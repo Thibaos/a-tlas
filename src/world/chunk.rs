@@ -639,6 +639,18 @@ impl Chunks {
             .insert(local_position, HostVoxel::new(material_index));
     }
 
+    /// Removes the voxel at `position` (world-side edit helper used by the
+    /// validator's edit-at-the-seam flow). Returns whether a voxel was
+    /// present. Empty chunks stay allocated (the lattice is pre-allocated);
+    /// `iter_voxels` skips them.
+    pub(crate) fn remove_voxel_at(&mut self, position: IVec3) -> bool {
+        let (grid_position, local_position) = Chunks::translation_to_position(&position);
+        let Some(chunk) = self.inner.get_mut(&grid_position) else {
+            return false;
+        };
+        chunk.voxels.remove(&local_position).is_some()
+    }
+
     /// Iterates every occupied voxel in the world as (global position, voxel).
     ///
     /// The validator's reference tracer reads the world side of the

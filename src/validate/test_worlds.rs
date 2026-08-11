@@ -48,9 +48,22 @@ pub struct WorldSpec {
     pub path: String,
     pub description: String,
     pub camera: WorldCamera,
+    /// Optional edit-at-the-seam script (renderer-impl ticket 03): after the
+    /// first frame passes, the validator removes the given Micro-chunk
+    /// through the input contract (a zero-mask snapshot) and renders a
+    /// second frame compared against the edited world.
+    pub edit: Option<EditSeam>,
 }
 
-/// The six edge-case worlds + palette-zero + solid-cube + the smoke world.
+/// The edit-at-the-seam script: which Micro-chunk the harness empties
+/// between frames (global coords, a multiple of 8).
+#[derive(Clone, Copy, Debug)]
+pub struct EditSeam {
+    pub remove_microchunk: IVec3,
+}
+
+/// The edge-case worlds + palette-zero + solid-cube + edit-seam + the smoke
+/// world.
 pub fn all_worlds() -> Vec<WorldSpec> {
     let mut worlds = test_suite();
     worlds.push(smoke_world());
@@ -68,6 +81,7 @@ pub fn test_suite() -> Vec<WorldSpec> {
                 target: [0.0, 0.0, 0.0],
                 up: [0.0, 1.0, 0.0],
             }),
+            edit: None,
         },
         WorldSpec {
             name: "palette-zero".to_string(),
@@ -78,6 +92,7 @@ pub fn test_suite() -> Vec<WorldSpec> {
                 target: [0.0, 0.0, 0.0],
                 up: [0.0, 1.0, 0.0],
             }),
+            edit: None,
         },
         WorldSpec {
             name: "hollow-box".to_string(),
@@ -88,6 +103,7 @@ pub fn test_suite() -> Vec<WorldSpec> {
                 target: [5.5, 5.5, 5.5],
                 up: [0.0, 1.0, 0.0],
             }),
+            edit: None,
         },
         WorldSpec {
             name: "solid-cube".to_string(),
@@ -98,6 +114,7 @@ pub fn test_suite() -> Vec<WorldSpec> {
                 target: [7.0, 6.5, 6.5],
                 up: [0.0, 1.0, 0.0],
             }),
+            edit: None,
         },
         WorldSpec {
             name: "hull-empty".to_string(),
@@ -108,6 +125,7 @@ pub fn test_suite() -> Vec<WorldSpec> {
                 target: [20.0, 0.0, 0.0],
                 up: [0.0, 1.0, 0.0],
             }),
+            edit: None,
         },
         WorldSpec {
             name: "boundaries".to_string(),
@@ -118,6 +136,7 @@ pub fn test_suite() -> Vec<WorldSpec> {
                 target: [150.0, 0.0, 0.0],
                 up: [0.0, 1.0, 0.0],
             }),
+            edit: None,
         },
         WorldSpec {
             name: "camera-in-voxel".to_string(),
@@ -128,6 +147,7 @@ pub fn test_suite() -> Vec<WorldSpec> {
                 target: [1.0, 0.2, 0.2],
                 up: [0.0, 1.0, 0.0],
             }),
+            edit: None,
         },
         WorldSpec {
             name: "far-miss".to_string(),
@@ -137,6 +157,20 @@ pub fn test_suite() -> Vec<WorldSpec> {
                 eye: [0.0, 0.0, 12.0],
                 target: [0.0, 0.0, 30.0],
                 up: [0.0, 1.0, 0.0],
+            }),
+            edit: None,
+        },
+        WorldSpec {
+            name: "edit-seam".to_string(),
+            path: "assets/test/edit-seam.vox".to_string(),
+            description: "three voxels in a line; after the first frame the middle Micro-chunk (8,0,0) is removed through the input contract (zero-mask snapshot) and the second frame must match the edited world".to_string(),
+            camera: Some(CameraSpec {
+                eye: [-14.0, 1.0, 6.0],
+                target: [10.0, 0.0, 0.0],
+                up: [0.0, 1.0, 0.0],
+            }),
+            edit: Some(EditSeam {
+                remove_microchunk: IVec3::new(8, 0, 0),
             }),
         },
     ]
@@ -148,6 +182,7 @@ pub fn smoke_world() -> WorldSpec {
         path: "assets/custom.vox".to_string(),
         description: "custom.vox — the smoke world (camera frames the world's bounding box)".to_string(),
         camera: None,
+        edit: None,
     }
 }
 
@@ -178,6 +213,7 @@ pub fn generate_all(out_dir: &Path) -> io::Result<Vec<PathBuf>> {
         ("boundaries", boundaries_world()),
         ("camera-in-voxel", camera_in_voxel_world()),
         ("far-miss", far_miss_world()),
+        ("edit-seam", edit_seam_world()),
     ];
 
     let mut written = Vec::new();
@@ -362,6 +398,21 @@ fn far_miss_world() -> DotVoxData {
     scene_less_world(&[(IVec3::new(0, 0, 0), 1)])
 }
 
+/// Three voxels in a line along +x, one per Micro-chunk (origin =
+/// floor(voxel/8)*8): (0,0,0) in mc (0,0,0), (12,0,0) in mc (8,0,0),
+/// (24,0,0) in mc (24,0,0). The validator empties the middle Micro-chunk
+/// (8,0,0) after the first frame (ticket 03's edit-at-the-seam: a zero-mask
+/// snapshot through the input contract) — the world survives (two voxels
+/// left) and the removal is dead ahead of the camera, so the second frame
+/// visibly differs.
+fn edit_seam_world() -> DotVoxData {
+    scene_less_world(&[
+        (IVec3::new(0, 0, 0), 1),
+        (IVec3::new(12, 0, 0), 2),
+        (IVec3::new(24, 0, 0), 3),
+    ])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -422,7 +473,7 @@ mod tests {
     fn every_test_world_writes_and_loads() {
         let dir = std::env::temp_dir().join("atlas-rt-test-worlds");
         let paths = generate_all(&dir).unwrap();
-        assert_eq!(paths.len(), 8);
+        assert_eq!(paths.len(), 9);
 
         for path in &paths {
             let data = open_file(path.to_str().unwrap());

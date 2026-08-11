@@ -1,13 +1,15 @@
-//! Micro-chunk snapshots and the minimal emitter (renderer-impl ticket 02).
+//! Micro-chunk snapshots and the minimal emitter (renderer-impl tickets
+//! 02/03).
 //!
 //! The input contract (ADR 0004): the world hands the renderer Micro-chunk
 //! snapshots — {global coords, 64-byte Occupancy mask, u8 material indices} —
 //! one message for create, update, and removal (an emptied Micro-chunk
-//! re-snapshots with a zero mask). Ticket 02 builds the minimal emitter: a
-//! one-shot walk over the loaded world's voxels producing the initial
-//! snapshot batch. The world side's streaming/editing implementation
-//! (ticket 03, submit_microchunk / submit_batch) supersedes this; the
-//! snapshot shape stays the contract.
+//! re-snapshots with a zero mask). Ticket 03's `crate::region::input`
+//! implements the contract (enqueue-only `submit_microchunk` / `submit_batch`,
+//! worker drain into per-Region mirrors); this module keeps the snapshot
+//! shape (the contract) and the minimal emitter, which the world side uses
+//! to voice its initial state as one `submit_batch` (the harness and tests
+//! do exactly that).
 
 use std::collections::HashMap;
 

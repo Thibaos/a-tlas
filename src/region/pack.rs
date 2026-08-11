@@ -1,6 +1,9 @@
 //! CPU-side packing: Micro-chunk snapshots → per-Region voxel pools
 //! (offset table + compact blocks) and trimmed AABB hulls (renderer-impl
-//! ticket 02 / ADR 0001).
+//! tickets 02/03 / ADR 0001). Ticket 02 builds the static lattice over the
+//! world's initial snapshot batch; ticket 03's input contract packs through
+//! the same shape ([`RegionMirror::pack`](crate::region::input::RegionMirror))
+//! on every change cycle.
 //!
 //! A Region is the renderer's grouping of Micro-chunks that share one
 //! acceleration-structure build: 32^3 Micro-chunks (256^3 voxels, 4x4x4
@@ -72,8 +75,9 @@ pub struct RegionData {
     ///
     /// The typed mirror of the table serialized at the start of [`blocks`]
     /// (the pool layout). Production reads `blocks`; tests assert on the
-    /// typed table and ticket 03's change path packs through it.
-    #[allow(dead_code)]
+    /// typed table, and the input contract's change path (ticket 03) packs
+    /// through it via [`RegionMirror::pack`](crate::region::input::RegionMirror).
+    #[cfg_attr(not(test), allow(dead_code))]
     pub offset_table: Vec<u32>,
     /// The pool bytes: the offset table followed by 8-aligned compact blocks
     /// (64-byte mask + popcount-compacted u8 materials, padded to 8 bytes).
@@ -116,8 +120,9 @@ pub fn pack_regions(snapshots: &[MicroChunkSnapshot]) -> Vec<RegionData> {
 
 /// Packs one Region's snapshots into a pool + trimmed hulls. A snapshot's
 /// global coords must fall inside this Region (its micro-chunk origin is
-/// within the Region's extent).
-fn pack_region(region_index: IVec3, snapshots: &[&MicroChunkSnapshot]) -> RegionData {
+/// within the Region's extent). Exposed for the input contract's
+/// [`RegionMirror::pack`](crate::region::input::RegionMirror) (ticket 03).
+pub(crate) fn pack_region(region_index: IVec3, snapshots: &[&MicroChunkSnapshot]) -> RegionData {
     let region_origin = region_index * REGION_EDGE;
 
     let mut offset_table = vec![OFFSET_SENTINEL; MICRO_CHUNKS_PER_REGION];

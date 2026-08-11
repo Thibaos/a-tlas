@@ -31,10 +31,10 @@ use vulkano_taskgraph::{
 
 use crate::{
     app::GpuStack,
-    region::{REGION_COUNT, pack::pack_regions, snapshot::emit_snapshots},
+    region::{REGION_COUNT, pack::RegionData},
     rt::acceleration_structure,
     tasks::render::build_ray_tracing_pipeline,
-    world::{chunk::Chunks, voxel::get_palette},
+    world::voxel::get_palette,
 };
 
 pub(crate) mod capture_raygen {
@@ -73,9 +73,14 @@ pub(crate) mod closest_hit {
     }
 }
 
-/// The static Region path, built once per world from the snapshot batch:
-/// snapshots → per-Region pools → procedural AABB BLASes → TLAS (ADR
-/// 0001/0004), plus the camera, palette and Region-table buffers.
+/// The static Region path, built once from the packed mirrors: `RegionData`
+/// (pool blocks + trimmed hull AABBs, see `crate::region::pack`) → per-Region
+/// pool buffers → procedural AABB BLASes → TLAS (ADR 0001/0004), plus the
+/// camera, palette and Region-table buffers.
+///
+/// The caller hands over the packed mirrors produced by the input contract
+/// (ticket 03): `RendererInput::packed_regions()`. The world never reaches
+/// the pipeline directly.
 pub struct RegionPipeline {
     pub camera_buffer_id: Id<Buffer>,
     /// The TLAS instance buffer (one instance per Region).
@@ -90,15 +95,12 @@ pub struct RegionPipeline {
 }
 
 impl RegionPipeline {
-    pub fn new(gpu: &GpuStack, world: &Arc<Chunks>, voxel_data: &DotVoxData) -> Self {
-        let snapshots = emit_snapshots(world);
-        let regions = pack_regions(&snapshots);
-
+    pub fn new(gpu: &GpuStack, voxel_data: &DotVoxData, regions: &[RegionData]) -> Self {
         // --- per-Region pool buffers + AABB buffers ---------------------
         let mut pool_buffer_ids = Vec::with_capacity(regions.len());
         let mut aabb_buffers = Vec::with_capacity(regions.len());
 
-        for region in &regions {
+        for region in regions {
             let pool_id = gpu
                 .resources
                 .create_buffer(
@@ -419,11 +421,11 @@ pub struct RegionRenderTask {
 impl RegionRenderTask {
     pub fn new(
         gpu: &GpuStack,
-        world: &Arc<Chunks>,
         voxel_data: &DotVoxData,
+        regions: &[RegionData],
         virtual_swapchain_id: Id<Swapchain>,
     ) -> Self {
-        let pipeline_resources = RegionPipeline::new(gpu, world, voxel_data);
+        let pipeline_resources = RegionPipeline::new(gpu, voxel_data, regions);
 
         let pipeline = {
             let raygen = unsafe {
