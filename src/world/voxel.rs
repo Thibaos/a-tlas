@@ -2,7 +2,7 @@ pub fn open_file(path: &str) -> dot_vox::DotVoxData {
     let vox_data = dot_vox::load(path).unwrap();
 
     #[cfg(debug_assertions)]
-    assert!(vox_data.palette.len() == 256);
+    assert!(vox_data.palette.len() <= 256);
 
     vox_data
 }

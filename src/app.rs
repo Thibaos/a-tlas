@@ -285,7 +285,7 @@ impl App {
     pub fn new(event_loop: &EventLoop<()>, measure: bool) -> Self {
         let gpu = GpuStack::new(event_loop);
 
-        let voxel_data = open_file("assets/nuke.vox");
+        let voxel_data = open_file("assets/bistro.vox");
         let world = Arc::new(Chunks::new(&voxel_data));
 
         // The input contract (ticket 03): the world voices its initial

@@ -41,17 +41,36 @@ pub const OFFSET_SENTINEL: u32 = u32::MAX;
 /// 12-bit region-id budget.
 pub const REGION_COUNT: usize = 4096;
 
+/// Whether a Region index lies inside the v1 lattice (region indices in
+/// [-8, 8) → voxel ±2048/axis, the 12-bit region-id budget). The single
+/// source of truth for the extent: both [`region_id`] (the 4-bit/axis
+/// encoding aliases beyond it) and the world→renderer boundary check share
+/// this, so the bounds cannot drift.
+pub fn region_index_in_lattice(region_index: IVec3) -> bool {
+    region_index.cmpge(IVec3::splat(-8)).all() && region_index.cmplt(IVec3::splat(8)).all()
+}
+
+/// Panics iff `region_index` is outside the v1 lattice. This is an
+/// **unconditional** check, not a `debug_assert`: in release the 4-bit
+/// encoding in [`region_id`] would silently alias out-of-lattice indicGes and
+/// then index past the fixed `REGION_COUNT` instance/region tables, corrupting
+/// (not erroring). An over-lattice model must fail loudly here, at the
+/// world→renderer boundary, never silently.
+pub fn assert_region_index_in_lattice(region_index: IVec3) {
+    if !region_index_in_lattice(region_index) {
+        panic!(
+            "micro-chunk/region index {region_index} exceeds the renderer lattice \
+             (±2048/axis, region indices in [-8, 8), the 12-bit region-id budget); \
+             the model is too big to fit the v1 acceleration-structure lattice"
+        );
+    }
+}
+
 /// The 12-bit Region id (rides the TLAS instance custom index and indexes
 /// the Region table): 4 bits per axis over the signed Region lattice index,
 /// biased by +8 so all-16 values per axis fit the 4 bits.
 pub fn region_id(region_index: IVec3) -> u32 {
-    // The v1 lattice extent is ±2048/axis → region indices in [-8, 8) — 4
-    // bits per axis. Beyond that the 4-bit encoding aliases, so the assert
-    // matches the extent.
-    debug_assert!(
-        region_index.cmpge(IVec3::splat(-8)).all() && region_index.cmplt(IVec3::splat(8)).all(),
-        "region index {region_index} exceeds the v1 ±2048/axis 12-bit budget"
-    );
+    assert_region_index_in_lattice(region_index);
     (((region_index.x + 8) as u32 & 0xF) << 8)
         | (((region_index.y + 8) as u32 & 0xF) << 4)
         | ((region_index.z + 8) as u32 & 0xF)

@@ -30,7 +30,9 @@ use std::{
 use glam::IVec3;
 
 use super::{
-    pack::{RegionData, pack_region, region_index_of},
+    pack::{
+        RegionData, assert_region_index_in_lattice, pack_region, region_index_of,
+    },
     snapshot::MicroChunkSnapshot,
 };
 
@@ -152,6 +154,17 @@ impl ChangeQueue {
     /// message; removal = zero-mask re-snapshot). Last-wins per Micro-chunk;
     /// safe from any thread; never blocks on GPU.
     pub fn submit_microchunk(&self, snapshot: MicroChunkSnapshot) {
+        // The world→renderer boundary: a Micro-chunk whose Region index falls
+        // outside the v1 lattice (±2048/axis) cannot be represented (the
+        // 12-bit region-id budget). Reject it loudly and unconditionally —
+        // release mode must not silently alias and index past the fixed tables.
+        //
+        // The check runs *before* the `pending` lock is taken: a rejection
+        // panics here on the caller thread holding no lock, so the queue's
+        // Mutex is never poisoned and the worker thread (whose
+        // `wake_worker.wait(..).unwrap()` would panic on a poisoned lock, then
+        // trip `RendererInput::drop`'s `join().expect`) is never affected.
+        assert_region_index_in_lattice(region_index_of(snapshot.global_coords));
         self.inner
             .pending
             .lock()
@@ -166,9 +179,19 @@ impl ChangeQueue {
     where
         I: IntoIterator<Item = MicroChunkSnapshot>,
     {
+        // See [`ChangeQueue::submit_microchunk`]: the lattice boundary check
+        // runs *before* taking the `pending` lock, so a rejection cannot
+        // poison the queue's Mutex and kill the worker thread. The whole batch
+        // is validated up front — either every snapshot is in-lattice (then
+        // all are inserted under one lock hold) or the batch is rejected
+        // atomically, before any state changes.
+        let validated: Vec<MicroChunkSnapshot> = snapshots.into_iter().map(|snapshot| {
+            assert_region_index_in_lattice(region_index_of(snapshot.global_coords));
+            snapshot
+        }).collect();
         {
             let mut pending = self.inner.pending.lock().unwrap();
-            for snapshot in snapshots {
+            for snapshot in validated {
                 pending.insert(snapshot.global_coords, snapshot);
             }
         }
@@ -506,6 +529,56 @@ mod tests {
         let mut keys: Vec<_> = mirrors.keys().copied().collect();
         keys.sort_unstable_by_key(|key| key.to_array());
         assert_eq!(keys, vec![IVec3::new(-1, -1, -1), IVec3::ZERO]);
+    }
+
+    /// The world→renderer boundary rejects a snapshot whose Region index falls
+    /// outside the v1 lattice (the 12-bit region-id budget, ±2048/axis). An
+    /// over-lattice model must fail loudly here — release mode never aliases.
+    #[test]
+    #[should_panic(expected = "exceeds the renderer lattice")]
+    fn submit_rejects_out_of_lattice_snapshot() {
+        let input = RendererInput::new();
+        // Voxel 2048 → Region index 8, just past the [-8, 8) budget.
+        input.submit_microchunk(snapshot(IVec3::new(2048, 0, 0), &[(0, 1)]));
+    }
+
+    /// The lattice boundary is inclusive at the high edge: voxel 2047 (Region
+    /// index 7) is valid, voxel 2048 (Region index 8) is not.
+    #[test]
+    fn lattice_boundary_is_exclusive_high() {
+        let input = RendererInput::new();
+        input.submit_microchunk(snapshot(IVec3::new(2047, 2047, 2047), &[(0, 1)]));
+        input.wait_until_idle();
+        // Region index 7 fits; the batch below would panic at 2048 — asserted
+        // by the should_panic test, not duplicated here.
+        assert_eq!(region_index_of(IVec3::new(2047, 0, 0)), IVec3::new(7, 0, 0));
+        assert_eq!(region_index_of(IVec3::new(2048, 0, 0)), IVec3::new(8, 0, 0));
+    }
+
+    /// A rejected (out-of-lattice) submit must not poison the queue: the
+    /// boundary check runs before the `pending` lock is taken, so a panic on
+    /// the caller thread leaves the Mutex healthy and the worker able to drain
+    /// later valid submits. (Without that ordering, the poisoned lock would
+    /// kill the worker on its next `wait(..).unwrap()` and trip
+    /// `RendererInput::drop`'s `join().expect`.)
+    #[test]
+    fn rejected_submit_does_not_poison_queue() {
+        let input = RendererInput::new();
+
+        // The out-of-lattice submit panics on a separate thread (caught here),
+        // exactly as a caller thread would experience it.
+        let queue = input.change_queue();
+        let rejected = std::thread::spawn(move || {
+            queue.submit_batch([snapshot(IVec3::new(2048, 0, 0), &[(0, 1)])]);
+        });
+        assert!(rejected.join().is_err(), "out-of-lattice batch must panic");
+
+        // The queue is still healthy: a valid submit drains and becomes a
+        // mirror — the worker did not die on a poisoned lock.
+        input.submit_microchunk(snapshot(IVec3::new(0, 0, 0), &[(0, 1)]));
+        input.wait_until_idle();
+        assert_eq!(input.region_count(), 1);
+        assert_eq!(input.take_dirty_regions(), vec![IVec3::ZERO]);
     }
 
     /// Out-of-order, repeated snapshots across multiple drain cycles converge
