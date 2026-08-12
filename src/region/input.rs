@@ -30,9 +30,7 @@ use std::{
 use glam::IVec3;
 
 use super::{
-    pack::{
-        RegionData, assert_region_index_in_lattice, pack_region, region_index_of,
-    },
+    pack::{RegionData, assert_region_index_in_lattice, pack_region, region_index_of},
     snapshot::MicroChunkSnapshot,
 };
 
@@ -185,10 +183,13 @@ impl ChangeQueue {
         // is validated up front — either every snapshot is in-lattice (then
         // all are inserted under one lock hold) or the batch is rejected
         // atomically, before any state changes.
-        let validated: Vec<MicroChunkSnapshot> = snapshots.into_iter().map(|snapshot| {
-            assert_region_index_in_lattice(region_index_of(snapshot.global_coords));
-            snapshot
-        }).collect();
+        let validated: Vec<MicroChunkSnapshot> = snapshots
+            .into_iter()
+            .map(|snapshot| {
+                assert_region_index_in_lattice(region_index_of(snapshot.global_coords));
+                snapshot
+            })
+            .collect();
         {
             let mut pending = self.inner.pending.lock().unwrap();
             for snapshot in validated {
@@ -328,10 +329,6 @@ impl Drop for RendererInput {
     }
 }
 
-/// The worker's cycle: sleep on the condvar while nothing is pending, drain
-/// **everything** pending, apply it into the per-Region mirrors, publish the
-/// dirty-Region set, and go back to sleep. No polling, no GPU work — the GPU
-/// half is tickets 04/05.
 fn worker_loop(inner: &Arc<ChangeQueueInner>) {
     loop {
         let taken = {
@@ -368,8 +365,6 @@ fn worker_loop(inner: &Arc<ChangeQueueInner>) {
         }
 
         {
-            // Clear `busy` under the pending lock so `wait_until_idle`'s
-            // check-then-wait under the same lock cannot miss it.
             let _pending = inner.pending.lock().unwrap();
             inner.busy.store(false, Ordering::SeqCst);
         }

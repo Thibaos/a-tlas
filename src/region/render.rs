@@ -39,7 +39,7 @@ use vulkano_taskgraph::{
 };
 
 #[cfg(debug_assertions)]
-use crate::tasks::debug;
+use crate::debug;
 #[cfg(debug_assertions)]
 use crate::world::Vertex3DColor;
 use crate::{

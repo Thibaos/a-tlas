@@ -870,7 +870,7 @@ impl ValidateApp {
             #[cfg(debug_assertions)]
             debug_lines: Vec::new(),
             #[cfg(debug_assertions)]
-            debug_constant_data: crate::tasks::debug::shader::vert::PushConstants {
+            debug_constant_data: crate::debug::shader::vert::PushConstants {
                 world: glam::Mat4::default().to_cols_array_2d(),
                 view: glam::Mat4::default().to_cols_array_2d(),
                 proj: glam::Mat4::default().to_cols_array_2d(),

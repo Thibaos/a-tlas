@@ -12,7 +12,7 @@ use vulkano::{
     memory::allocator::{MemoryAllocator, StandardMemoryAllocator},
     swapchain::{PresentMode, Surface, Swapchain, SwapchainCreateInfo},
 };
-// The debug overlay's imports (app-only, cfg'd out in release).
+
 #[cfg(debug_assertions)]
 use vulkano::buffer::{BufferCreateInfo, BufferUsage};
 #[cfg(debug_assertions)]
@@ -58,7 +58,7 @@ use crate::{
 };
 
 #[cfg(debug_assertions)]
-use crate::tasks::debug::{self, DrawDebugTask, create_debug_pipeline};
+use crate::debug::{self, DrawDebugTask, create_debug_pipeline};
 
 pub const MAX_FRAMES_IN_FLIGHT: u32 = 2;
 pub const MIN_SWAPCHAIN_IMAGES: u32 = MAX_FRAMES_IN_FLIGHT + 1;
