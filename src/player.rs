@@ -34,8 +34,7 @@ pub struct PlayerController {
 
 impl Default for PlayerController {
     fn default() -> Self {
-        // Spawn above the world's top (nuke.vox reaches world-y ~542).
-        let translation = Vec3::new(-16.0, 620.0, -16.0);
+        let translation = Vec3::new(124.0, 110.0, 320.0);
 
         Self {
             speed: 64.0,

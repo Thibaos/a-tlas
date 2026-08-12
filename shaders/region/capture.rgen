@@ -14,18 +14,23 @@ layout(location = 0) rayPayloadEXT MainPassPayload payload;
 
 // Validation raygen for the Region path (renderer-impl ticket 02). The ray
 // is built by the shared raygen_common.glsl (byte-identical to the
-// production raygen), traverses world-space f32 with
-// Opaque | TerminateOnFirstHit over the camera near/far range (ADR 0002),
-// and writes the primary-visibility result directly to the swapchain storage
-// image plus the committed hit distance to `t_image_id` as rgba32f, so the
-// validator can compare per-pixel {color, t} against the CPU reference
-// tracer.
+// production raygen), traverses world-space f32 with Opaque over the camera
+// near/far range (ADR 0002), and writes the primary-visibility result
+// directly to the swapchain storage image plus the committed hit distance
+// to `t_image_id` as rgba32f, so the validator can compare per-pixel
+// {color, t} against the CPU reference tracer.
+//
+// Deliberately NOT TerminateOnFirstHit (see production.rgen): the flag
+// terminates at the first hit found in traversal order, which is not the
+// closest in general — the DDA commits the nearest occupied cell within one
+// Region, but the hardware never compares across Regions before
+// terminating. The reference tracer is closest-hit; the flags must match.
 void main() {
     vec3 origin;
     vec3 direction;
     build_primary_ray(origin, direction);
 
-    const uint ray_flags = gl_RayFlagsOpaqueEXT | gl_RayFlagsTerminateOnFirstHitEXT;
+    const uint ray_flags = gl_RayFlagsOpaqueEXT;
 
     payload.color = vec4(0.0);
     payload.t = -1.0;

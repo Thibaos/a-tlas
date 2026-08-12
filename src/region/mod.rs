@@ -15,8 +15,10 @@
 //! Each Region is one procedural AABB BLAS with a trimmed AABB per non-empty
 //! Micro-chunk, traversed by the lattice DDA in the intersection shader
 //! (materials via 8-bit hitKind), and ray-passed by a per-pixel raygen with
-//! world-space f32 rays, traceRay Opaque | TerminateOnFirstHit, to the
-//! swapchain storage images (ADR 0001/0002/0004).
+//! world-space f32 rays, traceRay Opaque (deliberately NOT
+//! TerminateOnFirstHit — the first found hit is not the closest; see
+//! shaders/region/production.rgen), to the swapchain storage images (ADR
+//! 0001/0002/0004).
 //!
 //! The ticket-04 rebuilds ran synchronously (execute + wait_idle per step)
 //! between frames; ticket 05 turns them into **ordered taskgraph nodes**

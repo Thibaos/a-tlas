@@ -84,8 +84,32 @@ pub fn all_worlds() -> Vec<WorldSpec> {
     worlds
 }
 
+/// The edge-case worlds + palette-zero + solid-cube + edit-seam + the smoke
+/// world. One data entry per world (the body is declarative specs, not
+/// logic, so the line budget is allowed).
+#[allow(clippy::too_many_lines)]
 pub fn test_suite() -> Vec<WorldSpec> {
     vec![
+        // The depth-sorting regression (validation gap): nuke.vox from the
+        // app's default camera pitched to the clamp (-π/2 + 0.01 = looking
+        // straight down) — a large dense multi-Region world viewed along a
+        // near-vertical axis. The former `TerminateOnFirstHit` traversal
+        // committed the first hit found in BVH order, which is not the
+        // closest: stacked Regions along the ray let a farther surface win
+        // stably (~2400 hard mismatches before the fix — see
+        // shaders/region/production.rgen). The reference tracer is
+        // closest-hit, so this world guards the ray flags.
+        WorldSpec {
+            name: "nuke-down".to_string(),
+            path: "assets/nuke.vox".to_string(),
+            description: "nuke.vox, the app's default camera looking straight down (pitch clamped at -pi/2 + 0.01) — dense multi-Region depth-sorting regression".to_string(),
+            camera: Some(CameraSpec {
+                eye: [-16.0, 620.0, -16.0],
+                target: [-16.0, 619.0, -16.01],
+                up: [0.0, 0.01, -1.0],
+            }),
+            edit: None,
+        },
         WorldSpec {
             name: "single".to_string(),
             path: "assets/test/single.vox".to_string(),

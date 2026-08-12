@@ -77,7 +77,7 @@ pub fn write_text_report(
     out.push_str("\n");
 
     out.push_str(&format!(
-        "mismatches: {} total, {} excused (edge silhouette), {} hard\n",
+        "mismatches: {} total, {} excused (silhouette/corner-touch), {} hard\n",
         report.mismatch_count(),
         report.mismatch_count() - report.hard_mismatch_count(),
         report.hard_mismatch_count()
@@ -125,7 +125,9 @@ pub fn write_text_report(
         out.push_str(
             "See gpu.png (captured frame), reference.png, and diff.png.\n\
              diff.png is the reference frame with mismatch pixels overlaid: red = hard\n\
-             mismatch (real divergence), yellow = excused edge-silhouette mismatch.\n\
+             mismatch (real divergence), yellow = excused silhouette/corner-touch mismatch\n\
+             (sub-voxel boundary effects: a 1-pixel-dilated color silhouette, or both sides\n\
+             committing the same color within a voxel-ish t distance).\n\
              When there are no mismatches it is identical to reference.png.\n",
         );
     }

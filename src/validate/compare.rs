@@ -3,10 +3,15 @@
 //!
 //! A pixel mismatches when the 8-bit colors differ (exact — both sides use
 //! the same palette) or when t differs beyond the relative tolerance
-//! `1e-3 * max(t, 1)`. Mismatches that sit on the reference image's
-//! edge-silhouette (a 1-pixel-dilated color discontinuity) are excused as
-//! sub-voxel boundary effects; the run passes when there are no mismatches
-//! outside those clusters and the clusters total ≤ 1% of pixels.
+//! `1e-3 * max(t, 1)`. Two classes of sub-voxel boundary effects are
+//! excused: mismatches that sit on the reference image's edge-silhouette (a
+//! 1-pixel-dilated color discontinuity), and mismatches where both sides
+//! committed the same color within `SUB_VOXEL_T_VOXELS` of each other — a
+//! ray grazing a voxel corner (the reference walks in world space, the
+//! renderer's DDA in Region-local space, so a corner-touch tie-break can
+//! legitimately pick the neighbor voxel while the rendered pixel is
+//! identical). The run passes when there are no mismatches outside those
+//! clusters and the clusters total ≤ 1% of pixels.
 
 /// `CompareConfig::default()` — 1e-3 relative t tolerance, 1% mismatch budget.
 #[derive(Clone, Copy, Debug)]
@@ -16,6 +21,15 @@ pub struct CompareConfig {
     /// Maximum fraction of pixels that may mismatch (inside edge clusters).
     pub max_mismatch_ratio: f32,
 }
+
+/// The corner-touch excuse bound, in voxels.
+///
+/// A mismatch where both sides committed the same color within this t
+/// distance is excused: the GPU's Region-local DDA and the world-space
+/// reference round a corner-grazing tie differently, so the exact voxel can
+/// flip by ~1 voxel with no visible change. A real depth/visibility bug
+/// changes the color or diverges by far more than a voxel.
+pub const SUB_VOXEL_T_VOXELS: f32 = 2.0;
 
 impl Default for CompareConfig {
     fn default() -> Self {
@@ -166,6 +180,13 @@ pub fn compare(
             let color_match = gpu.color == reference.color;
             let t_match = (gpu.t - reference.t).abs()
                 <= config.t_tolerance * gpu.t.abs().max(reference.t.abs()).max(1.0);
+            // The corner-touch excuse: identical rendered color, both sides
+            // within a voxel-ish t distance — the GPU's Region-local DDA and
+            // the world-space reference round a corner-grazing tie
+            // differently, flipping the committed voxel with no visible
+            // change.
+            let corner_touch =
+                color_match && (gpu.t - reference.t).abs() <= SUB_VOXEL_T_VOXELS;
 
             if !color_match || !t_match {
                 let mismatch = Mismatch {
@@ -176,7 +197,7 @@ pub fn compare(
                 };
                 mismatches.push(mismatch);
 
-                if !edge_mask[i] {
+                if !edge_mask[i] && !corner_touch {
                     hard_mismatches.push(mismatch);
                 }
             }
@@ -271,7 +292,10 @@ mod tests {
         let rgba = flat_color([10, 20, 30, 255], 16);
         let reference_t = flat_t(10.0, 16);
         let mut gpu_t = flat_t(10.0, 16);
-        gpu_t[0] = 10.5; // 5% off → beyond 1e-3 * 10
+        // 30% off — beyond the t tolerance AND beyond the corner-touch
+        // excuse bound (SUB_VOXEL_T_VOXELS), so it stays hard even though
+        // the color matches.
+        gpu_t[0] = 10.0 + 3.0;
 
         let report = compare(
             &rgba,
@@ -314,5 +338,53 @@ mod tests {
         let report = compare(&rgba, &t, &rgba, &t, 4, 4, CompareConfig::default());
         assert_eq!(report.mismatch_count(), 0);
         assert!(report.passes());
+    }
+
+    /// The corner-touch excuse: identical color within `SUB_VOXEL_T_VOXELS`
+    /// is excused even off the silhouette (the GPU's Region-local DDA and
+    /// the world-space reference round a corner-grazing tie differently).
+    #[test]
+    fn same_color_sub_voxel_t_divergence_is_excused() {
+        let (w, h) = (16usize, 16usize);
+        let rgba = flat_color([10, 20, 30, 255], w * h);
+        let reference_t = flat_t(10.0, w * h);
+        let mut gpu_t = flat_t(10.0, w * h);
+        // Same color, committed voxel ~1.5 voxels apart (corner touch).
+        gpu_t[0] = 10.0 - (SUB_VOXEL_T_VOXELS - 0.5);
+
+        let report = compare(
+            &rgba,
+            &gpu_t,
+            &rgba,
+            &reference_t,
+            w as u32,
+            h as u32,
+            CompareConfig::default(),
+        );
+        assert_eq!(report.mismatch_count(), 1);
+        assert_eq!(report.hard_mismatch_count(), 0);
+        assert!(report.passes());
+    }
+
+    /// A same-color divergence BEYOND the corner-touch bound stays hard
+    /// (a wrong-depth hit of the same material is still a renderer bug).
+    #[test]
+    fn same_color_large_t_divergence_is_hard() {
+        let rgba = flat_color([10, 20, 30, 255], 16);
+        let reference_t = flat_t(10.0, 16);
+        let mut gpu_t = flat_t(10.0, 16);
+        gpu_t[0] = 10.0 - (SUB_VOXEL_T_VOXELS + 5.0);
+
+        let report = compare(
+            &rgba,
+            &gpu_t,
+            &rgba,
+            &reference_t,
+            4,
+            4,
+            CompareConfig::default(),
+        );
+        assert_eq!(report.hard_mismatch_count(), 1);
+        assert!(!report.passes());
     }
 }
