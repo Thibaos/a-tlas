@@ -1,27 +1,15 @@
 use core::f32;
 use std::{
-    collections::HashSet,
     f32::consts::{FRAC_PI_2, TAU},
     time::Duration,
 };
 
 use glam::{Mat4, Quat, Vec3, vec3};
-use winit::{
-    event::{ElementState, KeyEvent},
-    keyboard::{Key, NamedKey, SmolStr},
-};
 
-const FORWARD: Key = Key::Character(SmolStr::new_static("z"));
-const LEFT: Key = Key::Character(SmolStr::new_static("q"));
-const BACKWARD: Key = Key::Character(SmolStr::new_static("s"));
-const RIGHT: Key = Key::Character(SmolStr::new_static("d"));
-
-const UP: Key = Key::Named(NamedKey::Space);
-const CONTROL: Key = Key::Named(NamedKey::Control);
+use crate::input::{Input, InputKey};
 
 pub struct PlayerController {
     pub speed: f32,
-    pub pressed_keys: HashSet<Key>,
     pub sensitivity: f64,
     pub translation: Vec3,
 
@@ -38,7 +26,6 @@ impl Default for PlayerController {
 
         Self {
             speed: 64.0,
-            pressed_keys: HashSet::new(),
             sensitivity: 0.001,
             translation,
             yaw: 0.0,
@@ -53,10 +40,6 @@ impl PlayerController {
     const MAX_PITCH: f32 = FRAC_PI_2 - 0.01;
     const MIN_PITCH: f32 = -Self::MAX_PITCH;
 
-    fn is_pressed(&self, key: Key) -> bool {
-        self.pressed_keys.contains(&key)
-    }
-
     pub fn view(&mut self) -> Mat4 {
         if self.needs_view_update {
             self.compute_view();
@@ -65,7 +48,17 @@ impl PlayerController {
         self.view
     }
 
-    pub fn fly_movement(&mut self, delta_time: Duration) {
+    /// Applies one frame of fly movement: polls the held keys in
+    /// [`Input::down`] for the velocity direction and reads
+    /// [`Input::scroll_delta`] for the speed change (a wheel up scroll speeds
+    /// up, down slows down).
+    pub fn fly_movement(&mut self, delta_time: Duration, input: &Input) {
+        if input.scroll_delta > 0.0 {
+            self.speed *= 1.5;
+        } else if input.scroll_delta < 0.0 {
+            self.speed /= 1.5;
+        }
+
         let view_inverse = self.view().inverse();
         let absolute_forward = view_inverse.transform_vector3(Vec3::Z);
         let forward = vec3(absolute_forward.x, 0.0, absolute_forward.z).normalize();
@@ -73,19 +66,19 @@ impl PlayerController {
 
         let mut velocity = glam::Vec3::ZERO;
 
-        if self.is_pressed(FORWARD) {
+        if input.down.contains(&InputKey::Forward) {
             velocity += forward;
-        } else if self.is_pressed(BACKWARD) {
+        } else if input.down.contains(&InputKey::Backward) {
             velocity -= forward;
         }
-        if self.is_pressed(LEFT) {
+        if input.down.contains(&InputKey::Left) {
             velocity += right;
-        } else if self.is_pressed(RIGHT) {
+        } else if input.down.contains(&InputKey::Right) {
             velocity -= right;
         }
-        if self.is_pressed(UP) {
+        if input.down.contains(&InputKey::Up) {
             velocity += glam::Vec3::Y;
-        } else if self.is_pressed(CONTROL) {
+        } else if input.down.contains(&InputKey::Down) {
             velocity -= glam::Vec3::Y;
         }
 
@@ -122,23 +115,93 @@ impl PlayerController {
         self.view =
             glam::camera::lh::view::look_at_mat4(self.translation, self.translation + forward, up);
     }
+}
 
-    pub fn handle_speed_change(&mut self, y_delta: f32) {
-        if y_delta.is_sign_positive() {
-            self.speed *= 1.5;
-        } else {
-            self.speed /= 1.5;
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn input_with(down: &[InputKey]) -> Input {
+        let mut input = Input::default();
+        for &key in down {
+            input.down.insert(key);
+        }
+        input
+    }
+
+    /// The default orientation (yaw = pitch = 0) looks down -Z, so holding
+    /// Forward for one second at the default speed moves the translation 64
+    /// units toward -Z and leaves x/y untouched.
+    #[test]
+    fn forward_moves_along_look_axis() {
+        let mut player = PlayerController::default();
+        let input = input_with(&[InputKey::Forward]);
+
+        player.fly_movement(Duration::from_secs(1), &input);
+
+        assert_eq!(player.translation, Vec3::new(124.0, 110.0, 256.0));
+    }
+
+    /// Each held key moves the translation the full speed for the frame along
+    /// its axis (velocity is normalized to unit length), in the expected
+    /// direction for the default orientation.
+    #[test]
+    fn held_keys_drive_velocity() {
+        let cases: &[(InputKey, Vec3)] = &[
+            (InputKey::Forward, Vec3::new(0.0, 0.0, -1.0)),
+            (InputKey::Backward, Vec3::new(0.0, 0.0, 1.0)),
+            (InputKey::Left, Vec3::new(1.0, 0.0, 0.0)),
+            (InputKey::Right, Vec3::new(-1.0, 0.0, 0.0)),
+            (InputKey::Up, Vec3::new(0.0, 1.0, 0.0)),
+            (InputKey::Down, Vec3::new(0.0, -1.0, 0.0)),
+        ];
+
+        for &(key, direction) in cases {
+            let mut player = PlayerController::default();
+            let start = player.translation;
+            let input = input_with(&[key]);
+
+            player.fly_movement(Duration::from_secs(1), &input);
+
+            assert_eq!(
+                player.translation - start,
+                direction * player.speed,
+                "holding {key:?} should move {direction:?} * speed"
+            );
         }
     }
 
-    pub fn handle_keyboard_event(&mut self, key_event: KeyEvent) {
-        match key_event.state {
-            ElementState::Pressed => {
-                self.pressed_keys.insert(key_event.logical_key.clone());
-            }
-            ElementState::Released => {
-                self.pressed_keys.remove(&key_event.logical_key);
-            }
-        };
+    /// With no held keys the translation does not move (velocity is zero).
+    #[test]
+    fn no_held_keys_do_not_move() {
+        let mut player = PlayerController::default();
+        let start = player.translation;
+
+        player.fly_movement(Duration::from_secs(1), &Input::default());
+
+        assert_eq!(player.translation, start);
+    }
+
+    /// A positive scroll delta speeds the player up before the translation is
+    /// applied; a negative one slows it down.
+    #[test]
+    fn scroll_delta_changes_speed() {
+        let mut player = PlayerController::default();
+
+        let mut up = Input::default();
+        up.down.insert(InputKey::Forward);
+        up.scroll_delta = 1.0;
+        let start = player.translation;
+        player.fly_movement(Duration::from_secs(1), &up);
+        assert_eq!(player.speed, 64.0 * 1.5);
+        assert_eq!(player.translation - start, Vec3::new(0.0, 0.0, -96.0));
+
+        let mut down = Input::default();
+        down.down.insert(InputKey::Forward);
+        down.scroll_delta = -1.0;
+        let start = player.translation;
+        player.fly_movement(Duration::from_secs(1), &down);
+        assert_eq!(player.speed, 64.0);
+        assert_eq!(player.translation - start, Vec3::new(0.0, 0.0, -64.0));
     }
 }

@@ -35,9 +35,8 @@ use vulkano::pipeline::graphics::viewport::Viewport;
 use winit::{
     application::ApplicationHandler,
     dpi::PhysicalSize,
-    event::{DeviceEvent, ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent},
+    event::{DeviceEvent, ElementState, MouseScrollDelta, WindowEvent},
     event_loop::{ActiveEventLoop, EventLoop},
-    keyboard::{Key, NamedKey},
     window::{Window, WindowAttributes},
 };
 
@@ -45,6 +44,7 @@ use winit::{
 use crate::world::Vertex3DColor;
 use crate::{
     grid::LATTICE_HALF_EXTENT,
+    input::{self, Input, InputButton, InputKey},
     measure::Measurement,
     physics::PhysicsController,
     player::PlayerController,
@@ -245,6 +245,7 @@ pub struct App {
     pub world: Arc<World>,
 
     player_controller: PlayerController,
+    player_input: Input,
     physics_controller: PhysicsController,
     schedule_controller: ScheduleController,
 
@@ -283,7 +284,12 @@ pub struct RenderContext {
 }
 
 impl App {
-    pub fn new(event_loop: &EventLoop<()>, measure: bool, world_path: &str, clip_oob: bool) -> Self {
+    pub fn new(
+        event_loop: &EventLoop<()>,
+        measure: bool,
+        world_path: &str,
+        clip_oob: bool,
+    ) -> Self {
         let gpu = GpuStack::new(event_loop);
 
         let voxel_data = open_file(world_path);
@@ -334,6 +340,7 @@ impl App {
             focused: false,
 
             player_controller: PlayerController::default(),
+            player_input: Input::default(),
             physics_controller: PhysicsController::new(),
             schedule_controller,
 
@@ -389,7 +396,13 @@ impl App {
     fn update_camera(&mut self) {
         let rcx = self.rcx.as_mut().unwrap();
 
-        self.player_controller.fly_movement(self.delta_time);
+        // Look: this frame's mouse-motion delta (only while cursor-captured).
+        if self.focused {
+            self.player_controller
+                .rotate(self.player_input.mouse_motion);
+        }
+        self.player_controller
+            .fly_movement(self.delta_time, &self.player_input);
         let view = self.player_controller.view();
 
         let size = rcx.window.inner_size();
@@ -415,13 +428,6 @@ impl App {
             };
         }
     }
-
-    pub fn update_look_position(&mut self, delta: (f64, f64)) {
-        if self.focused {
-            self.player_controller.rotate(delta);
-        }
-    }
-
 }
 
 impl ApplicationHandler for App {
@@ -671,16 +677,7 @@ impl ApplicationHandler for App {
         event: WindowEvent,
     ) {
         match event {
-            WindowEvent::CloseRequested
-            | WindowEvent::KeyboardInput {
-                event:
-                    KeyEvent {
-                        state: ElementState::Pressed,
-                        logical_key: Key::Named(NamedKey::Escape),
-                        ..
-                    },
-                ..
-            } => {
+            WindowEvent::CloseRequested => {
                 self.close_requested = true;
             }
             WindowEvent::Resized(_) => {
@@ -793,23 +790,54 @@ impl ApplicationHandler for App {
                     }
                 }
             }
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button: MouseButton::Right,
-                ..
-            } => self.toggle_capture_mouse(),
+            WindowEvent::MouseInput { state, button, .. } => {
+                if let Some(mapped) = input::map_button(button) {
+                    match state {
+                        ElementState::Pressed => {
+                            // Cursor capture toggles on the right-button
+                            // press edge; the held button is recorded too.
+                            if mapped == InputButton::Right {
+                                self.toggle_capture_mouse();
+                            }
+                            self.player_input.buttons_down.insert(mapped);
+                        }
+                        ElementState::Released => {
+                            self.player_input.buttons_down.remove(&mapped);
+                        }
+                    }
+                }
+            }
             WindowEvent::MouseWheel {
                 delta: MouseScrollDelta::LineDelta(_, y),
                 ..
-            } => self.player_controller.handle_speed_change(y),
+            } => {
+                self.player_input.scroll_delta += y;
+            }
             WindowEvent::KeyboardInput { event, .. } => {
-                self.player_controller.handle_keyboard_event(event)
+                if let Some(key) = input::map_key(&event.logical_key) {
+                    match event.state {
+                        ElementState::Pressed => {
+                            self.player_input.down.insert(key);
+                            self.player_input.just_pressed.insert(key);
+                        }
+                        ElementState::Released => {
+                            self.player_input.down.remove(&key);
+                        }
+                    }
+                }
             }
             _ => {}
         }
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        // Close (Escape) is an edge read from the input layer; the
+        // render-mode toggle (ticket 02) reads the same set here.
+        if self.player_input.just_pressed.contains(&InputKey::Close) {
+            self.close_requested = true;
+        }
+        self.player_input.end_frame();
+
         if self.close_requested {
             event_loop.exit();
         } else {
@@ -824,7 +852,8 @@ impl ApplicationHandler for App {
         event: winit::event::DeviceEvent,
     ) {
         if let DeviceEvent::MouseMotion { delta } = event {
-            self.update_look_position(delta)
+            self.player_input.mouse_motion.0 += delta.0;
+            self.player_input.mouse_motion.1 += delta.1;
         };
     }
 }
