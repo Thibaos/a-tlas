@@ -23,10 +23,17 @@ fn main() -> Result<(), impl Error> {
     // validator never measures (the harness's captured frames are
     // unaffected).
     let measure = args.iter().any(|arg| arg == "--measure");
+    let clip_oob = args.iter().any(|arg| arg == "--clip-oob");
+    let world_path = args
+        .iter()
+        .position(|arg| arg == "--world")
+        .and_then(|i| args.get(i + 1))
+        .map(String::as_str)
+        .unwrap_or("assets/bistro.vox");
 
     let event_loop = EventLoop::new().unwrap();
 
-    let mut app = App::new(&event_loop, measure);
+    let mut app = App::new(&event_loop, measure, world_path, clip_oob);
 
     event_loop.run_app(&mut app)
 }

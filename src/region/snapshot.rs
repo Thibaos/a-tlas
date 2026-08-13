@@ -15,10 +15,8 @@ use std::collections::HashMap;
 
 use glam::IVec3;
 
-use crate::world::chunk::Chunks;
-
-/// The render unit's edge length in voxels (8^3 = 512 voxels).
-pub const MICRO_CHUNK_EDGE: i32 = 8;
+use crate::grid::{MICRO_CHUNK_EDGE, grid_origin};
+use crate::world::world::World;
 
 /// One Micro-chunk's occupancy: global coords (origin, a multiple of 8), the
 /// 512-bit Occupancy mask, and the u8 material indices of the occupied
@@ -57,12 +55,12 @@ impl MicroChunkSnapshot {
 /// This is the minimal emitter: deterministic (snapshots sorted by global
 /// coords), covering every occupied voxel — interior included, since the
 /// Occupancy mask (not surface-ness) defines existence.
-pub fn emit_snapshots(world: &Chunks) -> Vec<MicroChunkSnapshot> {
+pub fn emit_snapshots(world: &World) -> Vec<MicroChunkSnapshot> {
     // Voxel → (micro-chunk origin, (bit index, material)).
     let mut per_microchunk: HashMap<IVec3, Vec<(u32, u8)>> = HashMap::new();
 
     for (global, voxel) in world.iter_voxels() {
-        let origin = global.div_euclid(IVec3::splat(MICRO_CHUNK_EDGE)) * MICRO_CHUNK_EDGE;
+        let origin = grid_origin(global, MICRO_CHUNK_EDGE);
         let local = global - origin;
         debug_assert!(local.cmpge(IVec3::ZERO).all());
         debug_assert!(local.cmplt(IVec3::splat(MICRO_CHUNK_EDGE)).all());
@@ -106,7 +104,7 @@ pub fn emit_snapshots(world: &Chunks) -> Vec<MicroChunkSnapshot> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::world::chunk::Chunks;
+    use crate::world::world::World;
 
     /// Bit idx = x + 8*y + 64*z must round-trip through the mask bytes.
     #[test]
@@ -128,7 +126,7 @@ mod tests {
     /// voxel exactly once (interior voxels included).
     #[test]
     fn emitter_covers_all_voxels() {
-        let mut world = Chunks::default();
+        let mut world = World::default();
         // Voxels straddling a Micro-chunk boundary, one interior to a solid
         // block (no exposed face).
         for x in 0..10 {
@@ -156,7 +154,7 @@ mod tests {
     /// DDA rely on the rank = popcount below the bit).
     #[test]
     fn materials_in_bit_order() {
-        let mut world = Chunks::default();
+        let mut world = World::default();
         world.insert_voxel_at(IVec3::new(0, 0, 0), 1); // idx 0
         world.insert_voxel_at(IVec3::new(7, 0, 0), 2); // idx 7
         world.insert_voxel_at(IVec3::new(0, 1, 0), 3); // idx 8

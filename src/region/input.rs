@@ -30,9 +30,11 @@ use std::{
 use glam::IVec3;
 
 use super::{
-    pack::{RegionData, assert_region_index_in_lattice, pack_region, region_index_of},
+    pack::{RegionData, pack_region},
     snapshot::MicroChunkSnapshot,
 };
+
+use crate::grid::{assert_region_index_in_lattice, region_index_of};
 
 /// One Region's CPU-side mirror (ADR 0004): the authoritative per-Micro-chunk
 /// snapshot state, the source for wholesale pool re-packing. Empty
@@ -400,9 +402,10 @@ pub fn apply_snapshots(
 mod tests {
     use super::*;
     use crate::{
+        grid::{MICRO_CHUNK_EDGE, region_index_of},
         region::pack::pack_regions,
-        region::snapshot::{MICRO_CHUNK_EDGE, emit_snapshots},
-        world::chunk::Chunks,
+        region::snapshot::emit_snapshots,
+        world::world::World,
     };
 
     /// Builds a snapshot for one Micro-chunk from (bit index, material) cells.
@@ -608,7 +611,7 @@ mod tests {
     /// path exactly, across Regions (the pack the pipeline consumes).
     #[test]
     fn startup_batch_matches_direct_pack() {
-        let mut world = Chunks::default();
+        let mut world = World::default();
         world.insert_voxel_at(IVec3::new(7, 0, 0), 1);
         world.insert_voxel_at(IVec3::new(255, 0, 0), 2);
         world.insert_voxel_at(IVec3::new(256, 0, 0), 3);

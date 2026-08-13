@@ -1,9 +1,9 @@
 #[cfg(debug_assertions)]
 use vulkano::{buffer::BufferContents, pipeline::graphics::vertex_input::Vertex};
 
-pub mod chunk;
 pub mod loader;
 pub mod voxel;
+pub mod world;
 
 // The debug overlay's vertex type (app-only, cfg'd out in release).
 #[cfg(debug_assertions)]

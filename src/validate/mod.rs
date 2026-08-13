@@ -44,13 +44,14 @@ use winit::{
 
 use crate::{
     app::{GpuStack, MIN_SWAPCHAIN_IMAGES},
+    grid::{MICRO_CHUNK_EDGE, grid_origin},
     region::{
         input::RendererInput,
         pack::pack_regions,
         rebuild::RebuildLogEntry,
         render::{RegionRenderContext, RegionRenderTask},
         residency::RegionStore,
-        snapshot::{MICRO_CHUNK_EDGE, MicroChunkSnapshot, emit_snapshots},
+        snapshot::{MicroChunkSnapshot, emit_snapshots},
     },
     validate::{
         capture::CaptureTask,
@@ -60,8 +61,8 @@ use crate::{
         test_worlds::{CameraSpec, WorldSpec, all_worlds, generate_all},
     },
     world::{
-        chunk::Chunks,
         voxel::{get_palette, open_file},
+        world::World,
     },
 };
 
@@ -401,7 +402,7 @@ impl ValidateApp {
         let height = self.opts.height;
 
         let voxel_data = open_file(&world.path);
-        let mut world_data = Arc::new(Chunks::new(&voxel_data));
+        let mut world_data = Arc::new(World::new(&voxel_data));
         let voxel_count = world_data.voxel_count();
         // The destination path's in-shader DDA resolves grid cells
         // (renderer-impl ticket 02), so the reference traces the same shape:
@@ -564,9 +565,7 @@ impl ValidateApp {
                     let affected: std::collections::HashSet<IVec3> = step
                         .add_voxels
                         .iter()
-                        .map(|(p, _)| {
-                            p.div_euclid(IVec3::splat(MICRO_CHUNK_EDGE)) * MICRO_CHUNK_EDGE
-                        })
+                        .map(|(p, _)| grid_origin(*p, MICRO_CHUNK_EDGE))
                         .collect();
                     let voiced: Vec<_> = emit_snapshots(&world_data)
                         .into_iter()
@@ -901,7 +900,7 @@ impl ValidateApp {
     /// for the first/only frame, the step label for edit-at-the-seam frames).
     fn run_frame(
         &mut self,
-        world_data: &Arc<Chunks>,
+        world_data: &Arc<World>,
         voxel_data: &dot_vox::DotVoxData,
         shape: VoxelShape,
         world: &WorldSpec,
@@ -1201,7 +1200,7 @@ fn decode_rgba(format: Format, bytes: &[u8]) -> Vec<u8> {
 
 /// Builds the view/proj matrices and the shared camera inputs for the world.
 fn build_camera(
-    world: &Chunks,
+    world: &World,
     width: u32,
     height: u32,
     camera: Option<CameraSpec>,
@@ -1234,7 +1233,7 @@ fn build_camera(
 }
 
 /// Places a camera that frames the world's occupied bounding box.
-fn frame_world_camera(world: &Chunks) -> (Vec3, Vec3, Vec3) {
+fn frame_world_camera(world: &World) -> (Vec3, Vec3, Vec3) {
     let (min, max) = world.voxel_bounds().unwrap_or((IVec3::ZERO, IVec3::ZERO));
     let center = (min.as_vec3() + max.as_vec3()) * 0.5;
     let extent = (max - min).max_element().max(1) as f32;

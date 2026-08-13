@@ -3,26 +3,36 @@ use glam::{IVec3, Mat4, UVec3, Vec3A, Vec3Swizzles};
 
 use crate::world::HostVoxel;
 
-use super::chunk::{Chunks, ChunksInner};
+use super::world::{BoundsPolicy, World};
 
 pub struct SceneGraphTraverser<'a> {
-    pub chunks: &'a mut ChunksInner,
+    pub world: &'a mut World,
+    pub policy: BoundsPolicy,
     pub scene: &'a DotVoxData,
     pub models: Vec<(IVec3, Rotation, UVec3, Vec<Voxel>)>,
 }
 
 impl SceneGraphTraverser<'_> {
-    pub fn traverse(&mut self) {
+    /// Walks the scene graph. Scene-less .vox files have their flat model
+    /// voxels inserted directly (returning the number clipped); otherwise the
+    /// transformed models are collected into `models` for the caller to
+    /// insert. Returns the number of voxels clipped by the direct path.
+    pub fn traverse(&mut self) -> usize {
         if self.scene.scenes.is_empty() {
+            let mut clipped = 0usize;
             for voxel in self.scene.models.iter().flat_map(|model| &model.voxels) {
-                Chunks::insert_voxel(
-                    self.chunks,
+                if self.world.insert(
                     IVec3::new(voxel.x as i32, voxel.z as i32, voxel.y as i32),
                     HostVoxel::new(voxel.i as u32),
-                );
+                    self.policy,
+                ) {
+                    clipped += 1;
+                }
             }
+            clipped
         } else {
             self.traverse_recursive(0, IVec3::ZERO, Rotation::IDENTITY);
+            0
         }
     }
 

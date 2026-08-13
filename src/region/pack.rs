@@ -6,10 +6,9 @@
 //! on every change cycle.
 //!
 //! A Region is the renderer's grouping of Micro-chunks that share one
-//! acceleration-structure build: 32^3 Micro-chunks (256^3 voxels, 4x4x4
-//! Chunks), origin-aligned over the world lattice. This module derives the
-//! Region id from global coords (the renderer owns the lattice — the world
-//! never computes ids) and packs each Region's GPU pool CPU-side: a u32
+//! acceleration-structure build: 32^3 Micro-chunks (256^3 voxels),
+//! origin-aligned over the grid (the renderer owns the grid — the world never
+//! computes ids). This module packs each Region's GPU pool CPU-side: a u32
 //! offset table (32768 slots, sentinel for empty Micro-chunks) followed by
 //! compact blocks (64-byte Occupancy mask + popcount-compacted u8 materials,
 //! 8-aligned). It also derives the trimmed hull AABBs in absolute
@@ -22,10 +21,8 @@ use std::collections::HashMap;
 use glam::IVec3;
 use vulkano::acceleration_structure::AabbPositions;
 
-use super::snapshot::{MICRO_CHUNK_EDGE, MicroChunkSnapshot};
-
-/// The Region's edge length in voxels (256^3 voxels per Region).
-pub const REGION_EDGE: i32 = 256;
+use super::snapshot::MicroChunkSnapshot;
+use crate::grid::{MICRO_CHUNK_EDGE, REGION_EDGE, region_id, region_index_of};
 
 /// The number of Micro-chunks per Region: 32^3 = 32768.
 pub const MICRO_CHUNKS_PER_REGION: usize = 32 * 32 * 32;
@@ -40,47 +37,6 @@ pub const OFFSET_SENTINEL: u32 = u32::MAX;
 /// The number of Regions in the v1 lattice: ±2048/axis → 16^3 = 4096, the
 /// 12-bit region-id budget.
 pub const REGION_COUNT: usize = 4096;
-
-/// Whether a Region index lies inside the v1 lattice (region indices in
-/// [-8, 8) → voxel ±2048/axis, the 12-bit region-id budget). The single
-/// source of truth for the extent: both [`region_id`] (the 4-bit/axis
-/// encoding aliases beyond it) and the world→renderer boundary check share
-/// this, so the bounds cannot drift.
-pub fn region_index_in_lattice(region_index: IVec3) -> bool {
-    region_index.cmpge(IVec3::splat(-8)).all() && region_index.cmplt(IVec3::splat(8)).all()
-}
-
-/// Panics iff `region_index` is outside the v1 lattice. This is an
-/// **unconditional** check, not a `debug_assert`: in release the 4-bit
-/// encoding in [`region_id`] would silently alias out-of-lattice indicGes and
-/// then index past the fixed `REGION_COUNT` instance/region tables, corrupting
-/// (not erroring). An over-lattice model must fail loudly here, at the
-/// world→renderer boundary, never silently.
-pub fn assert_region_index_in_lattice(region_index: IVec3) {
-    if !region_index_in_lattice(region_index) {
-        panic!(
-            "micro-chunk/region index {region_index} exceeds the renderer lattice \
-             (±2048/axis, region indices in [-8, 8), the 12-bit region-id budget); \
-             the model is too big to fit the v1 acceleration-structure lattice"
-        );
-    }
-}
-
-/// The 12-bit Region id (rides the TLAS instance custom index and indexes
-/// the Region table): 4 bits per axis over the signed Region lattice index,
-/// biased by +8 so all-16 values per axis fit the 4 bits.
-pub fn region_id(region_index: IVec3) -> u32 {
-    assert_region_index_in_lattice(region_index);
-    (((region_index.x + 8) as u32 & 0xF) << 8)
-        | (((region_index.y + 8) as u32 & 0xF) << 4)
-        | ((region_index.z + 8) as u32 & 0xF)
-}
-
-/// The Region lattice index of a Micro-chunk origin (floor division, so
-/// negative global coords land in the correct origin-aligned Region).
-pub fn region_index_of(global_coords: IVec3) -> IVec3 {
-    global_coords.div_euclid(IVec3::splat(REGION_EDGE))
-}
 
 /// The CPU-side mirror of one Region: the packed pool (offset table +
 /// blocks) and the trimmed hull AABBs, everything in Region-local
@@ -228,15 +184,16 @@ fn occupied_cell_bounds(mask: &[u8; 64]) -> (IVec3, IVec3) {
 mod tests {
     use super::*;
     use crate::{
-        region::snapshot::{MICRO_CHUNK_EDGE, emit_snapshots},
-        world::chunk::Chunks,
+        grid::{MICRO_CHUNK_EDGE, region_index_of},
+        region::snapshot::emit_snapshots,
+        world::world::World,
     };
 
     /// A world with voxels in two Regions (x = 255 in Region 0, x = 256 in
     /// Region 1) packs into two Regions with correct ids and lattice math.
     #[test]
     fn packs_across_region_boundary() {
-        let mut world = Chunks::default();
+        let mut world = World::default();
         world.insert_voxel_at(IVec3::new(255, 0, 0), 1);
         world.insert_voxel_at(IVec3::new(256, 0, 0), 2);
 
@@ -279,7 +236,7 @@ mod tests {
     /// block round-trip to the snapshot.
     #[test]
     fn pack_layout_invariants() {
-        let mut world = Chunks::default();
+        let mut world = World::default();
         // Two voxels in the same Micro-chunk at opposite corners (empty
         // cells between them) plus a third in a different Micro-chunk.
         world.insert_voxel_at(IVec3::new(0, 0, 0), 1);

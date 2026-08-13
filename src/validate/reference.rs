@@ -22,7 +22,7 @@
 
 use glam::{IVec3, Mat4, Vec2, Vec3, Vec4};
 
-use crate::world::chunk::Chunks;
+use crate::world::world::World;
 
 /// Ray t-range: matches the region ray pass (shaders/region/common.glsl
 /// RAY_T_MIN / RAY_T_MAX). ADR 0002 fixed the range to the camera's
@@ -101,7 +101,7 @@ pub struct TraceResult {
 }
 
 pub struct ReferenceTracer<'a> {
-    world: &'a Chunks,
+    world: &'a World,
     palette: [Vec4; 256],
     shape: VoxelShape,
     /// Inclusive bounds of the occupied voxel set; `None` for an empty world.
@@ -114,7 +114,7 @@ impl<'a> ReferenceTracer<'a> {
     /// current renderer's palette-buffer construction
     /// (`get_palette(...).map(|c| [c.x, c.y, c.z, 1.0])`); when the renderer
     /// starts honoring palette alpha, drop this line.
-    pub fn new(world: &'a Chunks, mut palette: [Vec4; 256], shape: VoxelShape) -> Self {
+    pub fn new(world: &'a World, mut palette: [Vec4; 256], shape: VoxelShape) -> Self {
         for color in &mut palette {
             color.w = 1.0;
         }
@@ -376,13 +376,13 @@ mod tests {
     use glam::{Mat4, Vec3};
 
     use super::*;
-    use crate::world::chunk::Chunks;
+    use crate::world::world::World;
 
     /// A minimal world: a single voxel at (0, 0, 0) with material 1.
-    fn single_voxel_world() -> Chunks {
-        let mut chunks = Chunks::default();
-        chunks.insert_voxel_at(IVec3::ZERO, 1);
-        chunks
+    fn single_voxel_world() -> World {
+        let mut world = World::default();
+        world.insert_voxel_at(IVec3::ZERO, 1);
+        world
     }
 
     fn palette() -> [Vec4; 256] {
@@ -473,7 +473,7 @@ mod tests {
     /// Empty world: every ray misses.
     #[test]
     fn empty_world_is_all_background() {
-        let world = Chunks::default();
+        let world = World::default();
         let tracer = ReferenceTracer::new(&world, palette(), VoxelShape::CenteredUnitCube);
         let camera = identity_camera();
 

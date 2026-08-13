@@ -6,8 +6,9 @@ vulkano). Renders sparse voxel worlds loaded from .vox files.
 ## Language
 
 **World**:
-The scene loaded from a .vox file: a sparse set of occupied voxels (per-chunk
-HashMaps) plus a 256-color palette. Worlds are loaded once at startup today.
+The scene loaded from a .vox file: a sparse set of occupied voxels (a flat
+map keyed by global coordinates) plus a 256-color palette. Worlds are loaded
+once at startup today.
 _Avoid_: Scene, level, map
 
 **Voxel Scale**:
@@ -21,21 +22,15 @@ A 256-entry RGBA8 color table from the .vox file mapping material indices to
 surface colors. GPU-side: a bindless vec4[256] storage buffer.
 _Avoid_: Color table, LUT
 
-**Chunk**:
-The world's 64^3-voxel storage unit (current code). Pre-allocated 64x64x64
-grid, sparse per-chunk voxel maps.
-_Avoid_: Micro-chunk (below)
-
 **Micro-chunk**:
 The renderer's 8x8x8 render/acceleration-structure unit, tightly wrapped to
 occupied voxels (owner requirement; named by rendering-core ticket 03). One
-AABB per non-empty micro-chunk; 512 micro-chunks fill one Chunk. atlas-rt's
-"Chunk" and "Micro-chunk" are different units (storage vs render).
-_Avoid_: Chunk, cell
+AABB per non-empty micro-chunk.
+_Avoid_: cell
 
 **Region**:
 The renderer's grouping of Micro-chunks that share one acceleration-structure
-build: 32^3 micro-chunks (256^3 voxels, 4x4x4 Chunks). The TLAS holds one
+build: 32^3 micro-chunks (256^3 voxels). The TLAS holds one
 instance per region; a region's structure exists only while it holds >=1
 non-empty Micro-chunk.
 _Avoid_: Super-chunk, block
@@ -113,7 +108,7 @@ not a place)
 
 **Reference tracer**:
 The independent CPU renderer that validates the GPU path: a naive per-voxel
-ray tracer over the world's source of truth (chunk HashMaps + palette), sharing
+ray tracer over the world's source of truth (the flat voxel map + palette), sharing
 only camera inputs and the palette with the GPU. Deliberately not a mirror of
 the renderer's DDA/AABB/pool representation, so a divergence points at the
 renderer rather than at shared algorithm assumptions (rendering-core ticket

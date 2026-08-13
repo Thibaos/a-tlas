@@ -42,9 +42,10 @@ use vulkano_taskgraph::{
 
 use crate::{
     app::GpuStack,
+    grid::{REGION_EDGE, region_id},
     region::{
         input::RendererInput,
-        pack::{REGION_COUNT, REGION_EDGE, RegionData, region_id},
+        pack::{REGION_COUNT, RegionData},
         rebuild::{
             BlasBuild, NodeTimings, RebuildGraph, RebuildLogEntry, RebuildPlan, RegionUpload,
             TlasBuild, allocate_scratch, blas_build_sizes, tlas_build_sizes,

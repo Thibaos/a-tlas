@@ -3,12 +3,12 @@
 //! The validator renders each world through the real renderer and compares the
 //! captured frame against the CPU reference tracer. The worlds are chosen to
 //! exercise the renderer input contract's edge cases (rendering-core ticket 06
-//! / ADR 0003): hull-empty space, Micro-chunk/Chunk/Region boundaries,
+//! / ADR 0003): hull-empty space, Micro-chunk/Region boundaries,
 //! camera-in-voxel, far-plane miss, material index 0 (a real color via the
 //! 8-bit hitKind), and a solid volume with an interior camera (DDA interior
 //! voxels, not hollow shells). Each world is authored as a
 //! deterministic .vox file written to assets/test/ on demand, so the validator
-//! also exercises the real world loader (open_file + Chunks::new).
+//! also exercises the real world loader (open_file + World::new).
 //!
 //! Authoring convention (verified by the unit tests below): a scene-less .vox
 //! model voxel (x, y, z) lands at world (x, z, y) — the loader's direct
@@ -168,7 +168,7 @@ pub fn test_suite() -> Vec<WorldSpec> {
         WorldSpec {
             name: "boundaries".to_string(),
             path: "assets/test/boundaries.vox".to_string(),
-            description: "voxels at Micro-chunk (8), Chunk (64) and Region (256) boundaries".to_string(),
+            description: "voxels at Micro-chunk (8) and Region (256) boundaries".to_string(),
             camera: Some(CameraSpec {
                 eye: [-40.0, 1.0, 10.0],
                 target: [150.0, 0.0, 0.0],
@@ -455,7 +455,7 @@ fn hull_empty_world() -> DotVoxData {
 
 fn boundaries_world() -> DotVoxData {
     // Voxels straddling the renderer's lattice boundaries (all at y = z = 0):
-    // Micro-chunk boundary 7/8, Chunk boundary 63/64, Region boundary 255/256.
+    // Micro-chunk boundary 7/8, Region boundary 255/256.
     // x = 256 exceeds the .vox u8 coordinate range, so the whole world goes
     // through scene-graph transforms.
     transformed_world(&[
@@ -530,11 +530,11 @@ fn residency_world() -> DotVoxData {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::world::{chunk::Chunks, voxel::open_file};
+    use crate::world::{voxel::open_file, world::World};
 
     /// Writes a world to a unique temp file (tests run in parallel), loads it
     /// through the real loader, and returns the world.
-    fn load(world: DotVoxData) -> Chunks {
+    fn load(world: DotVoxData) -> World {
         use std::sync::atomic::{AtomicU32, Ordering};
 
         static COUNTER: AtomicU32 = AtomicU32::new(0);
@@ -550,7 +550,7 @@ mod tests {
         world.write_vox(&mut file).unwrap();
         let data = open_file(path.to_str().unwrap());
         assert_eq!(data.palette.len(), 256);
-        Chunks::new(&data)
+        World::new(&data)
     }
 
     #[test]
@@ -592,13 +592,36 @@ mod tests {
         for path in &paths {
             let data = open_file(path.to_str().unwrap());
             assert_eq!(data.palette.len(), 256, "palette must be 256 entries");
-            let world = Chunks::new(&data);
+            let world = World::new(&data);
             assert!(
                 world.voxel_count() > 0,
                 "{} loaded as empty",
                 path.display()
             );
         }
+    }
+
+    /// An out-of-lattice voxel (beyond ±2048) panics at load — the world
+    /// boundary, not the renderer seam.
+    #[test]
+    #[should_panic(expected = "outside the ±2048 lattice")]
+    fn load_panics_on_out_of_lattice_voxel() {
+        let data = transformed_world(&[(IVec3::new(3000, 0, 0), 2)]);
+        let _ = World::new(&data);
+    }
+
+    /// The clip constructor drops out-of-lattice voxels whole, keeping the
+    /// in-lattice subset.
+    #[test]
+    fn clipped_load_drops_out_of_lattice_voxels() {
+        let data = transformed_world(&[
+            (IVec3::new(0, 0, 0), 1),
+            (IVec3::new(3000, 0, 0), 2),
+        ]);
+        let (world, clipped) = World::new_clipped(&data);
+        assert_eq!(clipped, 1);
+        assert_eq!(world.voxel_count(), 1);
+        assert!(world.contains(&IVec3::new(0, 0, 0)));
     }
 
     #[test]

@@ -44,6 +44,7 @@ use winit::{
 #[cfg(debug_assertions)]
 use crate::world::Vertex3DColor;
 use crate::{
+    grid::LATTICE_HALF_EXTENT,
     measure::Measurement,
     physics::PhysicsController,
     player::PlayerController,
@@ -54,7 +55,7 @@ use crate::{
         snapshot::emit_snapshots,
     },
     schedule::ScheduleController,
-    world::{chunk::Chunks, voxel::open_file},
+    world::{voxel::open_file, world::World},
 };
 
 #[cfg(debug_assertions)]
@@ -241,7 +242,7 @@ pub struct App {
     focused: bool,
 
     pub voxel_data: dot_vox::DotVoxData,
-    pub world: Arc<Chunks>,
+    pub world: Arc<World>,
 
     player_controller: PlayerController,
     physics_controller: PhysicsController,
@@ -282,11 +283,22 @@ pub struct RenderContext {
 }
 
 impl App {
-    pub fn new(event_loop: &EventLoop<()>, measure: bool) -> Self {
+    pub fn new(event_loop: &EventLoop<()>, measure: bool, world_path: &str, clip_oob: bool) -> Self {
         let gpu = GpuStack::new(event_loop);
 
-        let voxel_data = open_file("assets/bistro.vox");
-        let world = Arc::new(Chunks::new(&voxel_data));
+        let voxel_data = open_file(world_path);
+        let (world, clipped) = if clip_oob {
+            World::new_clipped(&voxel_data)
+        } else {
+            (World::new(&voxel_data), 0)
+        };
+        if clipped > 0 {
+            println!(
+                "clipped {clipped} voxels outside the ±{} lattice",
+                LATTICE_HALF_EXTENT
+            );
+        }
+        let world = Arc::new(world);
 
         // The input contract (ticket 03): the world voices its initial
         // state as one `submit_batch`; the worker drains it into per-Region
@@ -410,10 +422,6 @@ impl App {
         }
     }
 
-    #[cfg(debug_assertions)]
-    pub fn update_debug_lines(&mut self) {
-        self.rcx.as_mut().unwrap().region.debug_lines = self.world.debug_lines();
-    }
 }
 
 impl ApplicationHandler for App {
@@ -679,7 +687,6 @@ impl ApplicationHandler for App {
                 self.rcx.as_mut().unwrap().recreate_swapchain = true;
             }
             WindowEvent::RedrawRequested => {
-                // self.update_debug_lines();
                 self.update_delta_time();
                 self.update_camera();
                 self.physics_controller.request_update();
