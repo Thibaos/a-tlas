@@ -249,19 +249,19 @@ pub struct App {
     physics_controller: PhysicsController,
     schedule_controller: ScheduleController,
 
-    /// The renderer input contract (ticket 03): the world voices its
+    /// The renderer input contract: the world voices its
     /// initial state as one `submit_batch`; the worker drains it into
     /// per-Region mirrors. Kept so future world edits flow through the
     /// same contract (the minimal snapshot emitter stays as the world
-    /// side's seed — ticket 06).
+    /// side's seed).
     input: RendererInput,
-    /// The full static lattice's GPU half (tickets 04/05): residency,
+    /// The full static lattice's GPU half: residency,
     /// free lists, the stable TLAS. Built once from the initial batch (the
     /// one-shot pre-loop build) and rebuilt through the ordered rebuild
     /// nodes on change cycles.
     store: RegionStore,
 
-    /// GPU measurement (renderer-impl ticket 07): per-stage timestamps
+    /// GPU measurement: per-stage timestamps
     /// (trace_rays / AS rebuild / flight), min/avg/p95 in the FPS log, the
     /// 16 ms gate as the GPU timestamp sum with wall-clock beside it. Only
     /// created with `atlas-rt --measure` (on demand); the validator never
@@ -306,15 +306,15 @@ impl App {
         }
         let world = Arc::new(world);
 
-        // The input contract (ticket 03): the world voices its initial
+        // The input contract: the world voices its initial
         // state as one `submit_batch`; the worker drains it into per-Region
         // mirrors. The minimal snapshot emitter stays as the world side's
-        // seed for feeding the renderer (ticket 06).
+        // seed for feeding the renderer.
         let input = RendererInput::new();
         input.submit_batch(emit_snapshots(&world));
         input.wait_until_idle();
 
-        // The one-shot pre-loop build (ticket 05): every initial Region
+        // The one-shot pre-loop build: every initial Region
         // becomes resident through the ordered rebuild graph (pool upload →
         // BLAS build → TLAS build). The startup batch's published dirty set
         // is consumed here — the frame loop applies only post-startup
@@ -322,7 +322,7 @@ impl App {
         let store = RegionStore::new(&gpu, &voxel_data, input.packed_regions());
         input.take_dirty_regions();
 
-        // Measurement (ticket 07): on demand only — the pool is attached
+        // Measurement: on demand only — the pool is attached
         // to the render task in `resumed`, and the frame loop feeds it the
         // rebuild timings and per-frame readbacks.
         let measurement = measure.then(|| Measurement::new(&gpu));
@@ -384,7 +384,7 @@ impl App {
     fn request_log(&mut self) {
         if self.schedule_controller.check("log").is_some() {
             println!("{:.2} fps", 1.0 / self.delta_time.as_secs_f32());
-            // Ticket 07's measurement surface: min/avg/p95 per stage over
+            // Measurement surface: min/avg/p95 per stage over
             // the ~60-frame window, the 16 ms gate as the GPU timestamp
             // sum (trace + as rebuild) and the wall-clock beside it.
             if let Some(measurement) = &self.measurement {
@@ -510,7 +510,7 @@ impl ApplicationHandler for App {
 
         let virtual_swapchain_id = task_graph.add_swapchain(&SwapchainCreateInfo::default());
 
-        // The Region render task (the one renderer — ticket 06): ray-passes
+        // The Region render task: ray-passes
         // the store's stable TLAS with the production raygen (color only;
         // `t_image_id` stays INVALID and is never dereferenced).
         let raygen = unsafe {
@@ -525,7 +525,7 @@ impl ApplicationHandler for App {
             &self.store,
             virtual_swapchain_id,
             &raygen,
-            // The measurement pool (ticket 07): attached only with
+            // The measurement pool: attached only with
             // `--measure`; `None` records no timestamps.
             self.measurement.as_ref().and_then(Measurement::pool),
         );
@@ -692,13 +692,13 @@ impl ApplicationHandler for App {
                 // The change cycle: anything the world voiced since the last
                 // frame is applied through the ordered rebuild nodes (pool
                 // upload → BLAS build → TLAS build on residency transitions)
-                // before the consuming trace (renderer-impl ticket 05).
+                // before the consuming trace.
                 let report = if !self.input.take_dirty_regions().is_empty() {
                     Some(self.store.apply(&self.gpu, &self.input))
                 } else {
                     None
                 };
-                // Ticket 07: the cycle's per-node rebuild time is attributed
+                // The cycle's per-node rebuild time is attributed
                 // to the frame being assembled (a rebuild spike shows up in
                 // the AS-rebuild line, not in trace_rays).
                 if let (Some(measurement), Some(report)) = (&mut self.measurement, &report) {
@@ -757,7 +757,7 @@ impl ApplicationHandler for App {
                     .wait_idle()
                     .unwrap();
 
-                // Ticket 07: complete the previous frame's sample — the
+                // complete the previous frame's sample — the
                 // flight idle above makes its timestamps available; the wall
                 // interval is this frame's `delta_time` (the previous
                 // frame's interval, aligned with the readback).
@@ -832,7 +832,7 @@ impl ApplicationHandler for App {
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         // Close (Escape) is an edge read from the input layer; the
-        // render-mode toggle (ticket 02) reads the same set here.
+        // render-mode toggle reads the same set here.
         if self.player_input.just_pressed.contains(&InputKey::Close) {
             self.close_requested = true;
         }

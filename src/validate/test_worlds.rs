@@ -2,8 +2,8 @@
 //!
 //! The validator renders each world through the real renderer and compares the
 //! captured frame against the CPU reference tracer. The worlds are chosen to
-//! exercise the renderer input contract's edge cases (rendering-core ticket 06
-//! / ADR 0003): hull-empty space, Micro-chunk/Region boundaries,
+//! exercise the renderer input contract's edge case:
+//! hull-empty space, Micro-chunk/Region boundaries,
 //! camera-in-voxel, far-plane miss, material index 0 (a real color via the
 //! 8-bit hitKind), and a solid volume with an interior camera (DDA interior
 //! voxels, not hollow shells). Each world is authored as a
@@ -47,12 +47,12 @@ pub struct WorldSpec {
     pub path: String,
     pub description: String,
     pub camera: WorldCamera,
-    /// Optional edit-at-the-seam script (renderer-impl tickets 03/04): after
+    /// Optional edit-at-the-seam script: after
     /// the first frame passes, each step mutates the world (voxel
     /// removals/additions), voices the change through the input contract,
     /// and renders another frame compared against the edited world. The
-    /// edit-seam world empties one Micro-chunk (ticket 03); the residency
-    /// world empties a whole Region and re-populates it (ticket 04).
+    /// edit-seam world empties one Micro-chunk; the residency
+    /// world empties a whole Region and re-populates it.
     pub edit: Option<EditScript>,
 }
 
@@ -479,8 +479,7 @@ fn far_miss_world() -> DotVoxData {
 /// Three voxels in a line along +x, one per Micro-chunk (origin =
 /// floor(voxel/8)*8): (0,0,0) in mc (0,0,0), (12,0,0) in mc (8,0,0),
 /// (24,0,0) in mc (24,0,0). The validator empties the middle Micro-chunk
-/// (8,0,0) after the first frame (ticket 03's edit-at-the-seam: a zero-mask
-/// snapshot through the input contract) — the world survives (two voxels
+/// (8,0,0) after the first frame, the world survives (two voxels
 /// left) and the removal is dead ahead of the camera, so the second frame
 /// visibly differs.
 fn edit_seam_world() -> DotVoxData {
@@ -614,10 +613,7 @@ mod tests {
     /// in-lattice subset.
     #[test]
     fn clipped_load_drops_out_of_lattice_voxels() {
-        let data = transformed_world(&[
-            (IVec3::new(0, 0, 0), 1),
-            (IVec3::new(3000, 0, 0), 2),
-        ]);
+        let data = transformed_world(&[(IVec3::new(0, 0, 0), 1), (IVec3::new(3000, 0, 0), 2)]);
         let (world, clipped) = World::new_clipped(&data);
         assert_eq!(clipped, 1);
         assert_eq!(world.voxel_count(), 1);

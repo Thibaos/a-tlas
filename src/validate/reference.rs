@@ -1,4 +1,4 @@
-//! The independent CPU reference tracer (ADR 0003).
+//! The independent CPU reference tracer.
 //!
 //! A naive per-voxel ray tracer over the world's source of truth — the chunk
 //! HashMaps plus the palette — sharing only camera inputs and the palette with
@@ -9,7 +9,7 @@
 //!
 //! Rays are reconstructed exactly like `shaders/rt/raygen_common.glsl`, and
 //! each voxel is tested as the same shape the renderer uses ([`VoxelShape`]).
-//! The validator now runs the destination path (renderer-impl ticket 02),
+//! The validator now runs the destination path,
 //! whose in-shader DDA resolves grid cells — so the validator uses
 //! [`VoxelShape::GridCell`]; [`VoxelShape::CenteredUnitCube`] remains only
 //! for the unit tests and the retired triangle-per-voxel path.
@@ -25,9 +25,7 @@ use glam::{IVec3, Mat4, Vec2, Vec3, Vec4};
 use crate::world::world::World;
 
 /// Ray t-range: matches the region ray pass (shaders/region/common.glsl
-/// RAY_T_MIN / RAY_T_MAX). ADR 0002 fixed the range to the camera's
-/// near/far (0.01 / 10000) so the ray pass clips exactly like the camera;
-/// these constants move with the shader and the validator keeps passing.
+/// RAY_T_MIN / RAY_T_MAX).
 pub const T_MIN: f32 = 0.01;
 pub const T_MAX: f32 = 10000.0;
 
@@ -38,7 +36,7 @@ pub const BACKGROUND_COLOR: [u8; 4] = [0, 0, 0, 255];
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum VoxelShape {
     /// Unit cube centered on the voxel position: [p - 0.5, p + 0.5].
-    /// Retired with the triangle-per-voxel path (renderer-impl ticket 06);
+    /// Retired with the triangle-per-voxel path;
     /// kept so the reference can still trace it for comparison.
     CenteredUnitCube,
     /// The lattice cell [p, p + 1). The destination's in-shader DDA resolves
@@ -319,8 +317,8 @@ fn quantize_rgba(color: Vec4) -> [u8; 4] {
 }
 
 /// Renders the full reference image (color + t) in parallel over pixel rows.
-/// The reference tracer is not budget-accounted against the 16 ms frame gate
-/// (ADR 0003); this just keeps an on-demand run tolerable on dense worlds.
+/// The reference tracer is not budget-accounted against the 16 ms frame gate;
+/// this just keeps an on-demand run tolerable on dense worlds.
 pub fn render_reference(
     tracer: &ReferenceTracer,
     camera: &CameraInputs,

@@ -1,5 +1,5 @@
 //! Per-pixel comparison of the captured GPU frame against the reference
-//! tracer (rendering-core ticket 06 / ADR 0003).
+//! tracer.
 //!
 //! A pixel mismatches when the 8-bit colors differ (exact — both sides use
 //! the same palette) or when t differs beyond the relative tolerance
@@ -185,8 +185,7 @@ pub fn compare(
             // the world-space reference round a corner-grazing tie
             // differently, flipping the committed voxel with no visible
             // change.
-            let corner_touch =
-                color_match && (gpu.t - reference.t).abs() <= SUB_VOXEL_T_VOXELS;
+            let corner_touch = color_match && (gpu.t - reference.t).abs() <= SUB_VOXEL_T_VOXELS;
 
             if !color_match || !t_match {
                 let mismatch = Mismatch {

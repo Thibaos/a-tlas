@@ -12,20 +12,17 @@
 
 layout(location = 0) rayPayloadEXT MainPassPayload payload;
 
-// Production raygen for the Region path (renderer-impl ticket 06). The ray
+// Production raygen for the Region path. The ray
 // is built by the shared raygen_common.glsl (byte-identical to the capture
 // raygen), traverses world-space f32 with Opaque over the camera near/far
-// range (ADR 0002), and writes the primary-visibility result to the
+// range, and writes the primary-visibility result to the
 // swapchain storage image. Unlike the validation raygen it never
 // dereferences `t_image_id` (the app pushes INVALID), so the frame is one
 // imageStore per pixel.
 //
 // Deliberately NOT TerminateOnFirstHit: that flag terminates the trace at
 // the first hit found in BVH traversal order, which is not guaranteed to be
-// the closest (ticket 05's "hulls visited in t order" assumption was wrong
-// — the DDA commits the nearest occupied cell within one Region, but the
-// hardware never compares it against another Region's hit before
-// terminating). With stacked Regions along a ray the first found hit wins
+// the closest. With stacked Regions along a ray the first found hit wins
 // and a farther surface shows through a nearer one (the nuke-down
 // validation world caught exactly that). Opaque alone keeps the
 // any-hit-free fast path while preserving closest-hit semantics.

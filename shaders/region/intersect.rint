@@ -10,7 +10,7 @@
 #include "header.glsl"
 #include "common.glsl"
 
-// The lattice DDA (renderer-impl ticket 02 / ADR 0001): resolve the voxel
+// The lattice DDA: resolve the voxel
 // from a procedural-AABB hit entirely here, with zero per-AABB metadata.
 //
 // Hulls are trimmed to their occupied bounds and authored in absolute
@@ -30,7 +30,7 @@
 // is a known constant: the DDA slab-tests it to find where the ray enters
 // the lattice and steps from there. A camera inside the Region starts at its
 // own cell (t clamped to t_min), so an in-voxel camera commits the enclosing
-// voxel at t_min (ADR 0002).
+// voxel at t_min.
 
 const ivec3 REGION_EDGE = ivec3(256);
 const uint MC_STRIDE_Y = 32u;
@@ -104,7 +104,7 @@ void main() {
         return;
     }
 
-    // The instance custom index is the 12-bit Region id (ADR 0004); the
+    // The instance custom index is the 12-bit Region id; the
     // Region table maps it to the pool's device address.
     uint region_id = gl_InstanceCustomIndexEXT & 0xFFFu;
     uint64_t pool_bda = region_table.bdas[region_id];

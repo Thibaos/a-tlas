@@ -1,4 +1,4 @@
-//! Ordered rebuild nodes (renderer-impl ticket 05).
+//! Ordered rebuild nodes.
 //!
 //! Rebuilds execute as **ordered taskgraph nodes** between the consuming
 //! trace and the next frame: pool upload → BLAS build → TLAS build (on
@@ -26,8 +26,7 @@
 //! only record ordered commands, and the plan is plain data. Startup is a
 //! one-shot pre-loop build from the initial batch through the same graph.
 //! Each node records begin/end GPU timestamps (when the device supports
-//! them), so rebuild time is attributable per node — feeding ticket 07's
-//! measurement.
+//! them), so rebuild time is attributable per node.
 
 use std::sync::Arc;
 
@@ -126,7 +125,7 @@ impl RebuildPlan {
             && self.tlas.is_none()
     }
 
-    /// The ordered rebuild log for the harness invariants (ticket 05): what
+    /// The ordered rebuild log for the harness invariants: what
     /// the nodes will do, in node order (upload → BLAS → TLAS). The
     /// counters the acceptance criteria check: a content edit logs an
     /// in-place `BuildBlas` and **no** `BuildTlas`; a residency transition
@@ -190,8 +189,7 @@ pub enum RebuildLogEntry {
     BuildTlas { instance_count: u32 },
 }
 
-/// Per-node GPU timings for one rebuild cycle (feeds ticket 07's
-/// measurement): each node records begin/end timestamps around its work.
+/// Per-node GPU timings for one rebuild cycle: each node records begin/end timestamps around its work.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct NodeTimings {
     /// The upload node's GPU time (host writes — expected ~0).
@@ -684,7 +682,7 @@ impl RebuildGraph {
 
         // The rebuild sequence must complete before the caller reads the
         // timestamps or releases the pending frees (the dropping rebuild
-        // executed — ticket 04's ordering invariant, kept here).
+        // executed).
         gpu.resources
             .flight(gpu.compute_flight_id)
             .wait_idle()

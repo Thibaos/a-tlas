@@ -1,4 +1,4 @@
-// The Region path's own header (renderer-impl ticket 02). Deliberately NOT
+// The Region path's own header. Deliberately NOT
 // shaders/rt/deps.glsl: that file also declares the retired path's nameless
 // push-constant block, whose members leak into the global scope and collide
 // with the Region push constants. The Camera and Palette buffer declarations

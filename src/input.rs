@@ -1,4 +1,4 @@
-//! Player input layer (hull-render-mode ticket 01).
+//! Player input layer.
 //!
 //! One winit-free input structure owned by the app and passed by reference:
 //! held keys, just-pressed keys (an edge drained every frame), a this-frame
@@ -39,7 +39,7 @@ pub enum InputKey {
     Up,
     /// Move down (Control).
     Down,
-    /// Toggle the Render mode (Tab) — ticket 02 wires the behavior.
+    /// Toggle the Render mode (Tab)
     ToggleRenderMode,
     /// Request the app to close (Escape).
     Close,

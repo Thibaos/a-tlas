@@ -1,6 +1,6 @@
-//! GPU measurement (renderer-impl ticket 07).
+//! GPU measurement.
 //!
-//! The measurement closes the effort: correctness (tickets 01-06) is proven
+//! The measurement closes the effort: correctness is proven
 //! at the frame seam, and performance is measured against the 16 ms gate.
 //! Per-stage GPU timestamps ([`QueryType::Timestamp`]) attribute the frame's
 //! GPU time:
@@ -20,7 +20,7 @@
 //! stage. The **16 ms gate** is the GPU timestamp sum (`trace + rebuild`);
 //! the wall-clock frame interval is reported beside it — a wall-clock above
 //! 16 ms with a small GPU sum points at CPU/present-bound, a different fix
-//! than traversal (rendering-core ticket 06, Q5).
+//! than traversal.
 //!
 //! The measurement runs **on demand**: only the app attaches a timestamp
 //! pool (`atlas-rt --measure`); the validator never constructs a
@@ -70,7 +70,7 @@ impl FrameSample {
     /// The 16 ms gate: the GPU timestamp sum (`trace_rays` + AS rebuilds).
     /// The write-out is inside `trace_ns` (the ray pass writes the
     /// swapchain storage image itself), so the sum is the renderer's whole
-    /// per-frame GPU budget (rendering-core ticket 06, Q5).
+    /// per-frame GPU budget.
     pub fn gate_ns(&self) -> u64 {
         self.trace_ns.saturating_add(self.rebuild_ns)
     }
@@ -114,7 +114,7 @@ impl StageStats {
     }
 }
 
-/// The app-side measurement accumulator (ticket 07). Owns the timestamp
+/// The app-side measurement accumulator. Owns the timestamp
 /// query pool (shared with the render task) and the rolling frame window;
 /// prints the per-stage min/avg/p95 into the FPS log.
 #[derive(Default)]
@@ -164,7 +164,7 @@ impl Measurement {
         self.pool.is_some()
     }
 
-    /// The change cycle's rebuild time (ticket 05's per-node timings),
+    /// The change cycle's rebuild time,
     /// attributed to the frame being assembled. A rebuild spike lands in
     /// the AS-rebuild line, not in trace_rays.
     pub fn record_rebuild(&mut self, timings: &NodeTimings) {
@@ -206,8 +206,8 @@ impl Measurement {
         }
     }
 
-    /// Prints the per-stage min/avg/p95 over the window into the FPS log
-    /// (ticket 07's log surface — no separate HUD), with the 16 ms gate as
+    /// Prints the per-stage min/avg/p95 over the window into the FPS log,
+    /// with the 16 ms gate as
     /// the GPU timestamp sum and the wall-clock beside it.
     pub fn print_log(&self) {
         let n = self.window.len();

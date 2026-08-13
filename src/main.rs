@@ -16,7 +16,7 @@ fn main() -> Result<(), impl Error> {
         };
     }
 
-    // `atlas-rt --measure` (renderer-impl ticket 07): attach the GPU
+    // `atlas-rt --measure`: attach the GPU
     // measurement — per-stage timestamps (trace_rays / AS rebuild / flight),
     // min/avg/p95 in the FPS log, the 16 ms gate as the GPU timestamp sum
     // with wall-clock beside it. On demand: off by default, and the

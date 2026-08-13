@@ -1,10 +1,9 @@
-//! Micro-chunk snapshots and the minimal emitter (renderer-impl tickets
-//! 02/03).
+//! Micro-chunk snapshots and the minimal emitter.
 //!
-//! The input contract (ADR 0004): the world hands the renderer Micro-chunk
+//! The input contract: the world hands the renderer Micro-chunk
 //! snapshots — {global coords, 64-byte Occupancy mask, u8 material indices} —
 //! one message for create, update, and removal (an emptied Micro-chunk
-//! re-snapshots with a zero mask). Ticket 03's `crate::region::input`
+//! re-snapshots with a zero mask). `crate::region::input`
 //! implements the contract (enqueue-only `submit_microchunk` / `submit_batch`,
 //! worker drain into per-Region mirrors); this module keeps the snapshot
 //! shape (the contract) and the minimal emitter, which the world side uses

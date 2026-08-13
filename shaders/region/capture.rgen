@@ -12,10 +12,10 @@
 
 layout(location = 0) rayPayloadEXT MainPassPayload payload;
 
-// Validation raygen for the Region path (renderer-impl ticket 02). The ray
+// Validation raygen for the Region path. The ray
 // is built by the shared raygen_common.glsl (byte-identical to the
 // production raygen), traverses world-space f32 with Opaque over the camera
-// near/far range (ADR 0002), and writes the primary-visibility result
+// near/far range, and writes the primary-visibility result
 // directly to the swapchain storage image plus the committed hit distance
 // to `t_image_id` as rgba32f, so the validator can compare per-pixel
 // {color, t} against the CPU reference tracer.

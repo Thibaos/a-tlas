@@ -1,6 +1,6 @@
-//! Multi-region residency (renderer-impl ticket 04): the full static lattice.
+//! Multi-region residency: the full static lattice.
 //!
-//! The renderer owns the lattice (ADR 0004): Region = 256^3 voxels,
+//! The renderer owns the lattice: Region = 256^3 voxels,
 //! origin-aligned, v1 extent ±2048/axis → 16^3 = 4096 Regions — exactly the
 //! 12-bit region-id budget. [`RegionStore`] is the GPU half of that lattice:
 //! per-Region voxel pools and trimmed-AABB BLASes exist across the lattice;
@@ -12,17 +12,6 @@
 //! region id, mask 0xFF — added on residency, removed on region-empty, and
 //! rebuilt **in place** so the bindless acceleration-structure id never
 //! moves.
-//!
-//! The ticket-04 rebuilds ran synchronously (execute + wait_idle per step)
-//! between frames; ticket 05 turns them into **ordered taskgraph nodes**
-//! (pool upload → BLAS build → TLAS build on residency transitions,
-//! [`RebuildGraph`](crate::region::rebuild::RebuildGraph)) with no back-AS
-//! double buffer and no flip atomic — the store owns exactly one stable TLAS
-//! (rebuilt in place), and the free-list ordering invariant is structural
-//! here: memory freed by a residency-leave goes to [`PendingFrees`] and is
-//! only released to the reusable lists after the ordered rebuild that
-//! dropped the referencing instance has executed — a later cycle's
-//! allocation can reuse it only from that point on.
 
 use std::sync::Arc;
 
@@ -98,8 +87,7 @@ struct FreeLists {
 }
 
 /// Memory freed by the current change cycle, not yet reusable: the rebuild
-/// that dropped the referencing instance must execute first (ticket 04's
-/// ordering invariant — see [`RegionStore::rebuild`]).
+/// that dropped the referencing instance must execute.
 #[derive(Default)]
 struct PendingFrees {
     pools: Vec<FreedPool>,
@@ -131,13 +119,13 @@ pub struct ApplyReport {
     /// The TLAS was rebuilt this cycle (iff any residency transition or BLAS
     /// replacement happened — instance data is static otherwise).
     pub tlas_rebuilt: bool,
-    /// The ordered rebuild log (ticket 05's counters): what the ordered
+    /// The ordered rebuild log: what the ordered
     /// rebuild nodes did this cycle, in node order (upload → BLAS → TLAS).
     /// A content edit logs an in-place [`RebuildLogEntry::BuildBlas`] and
     /// **no** [`RebuildLogEntry::BuildTlas`]; a residency transition logs
     /// [`RebuildLogEntry::RewriteInstances`] + [`RebuildLogEntry::BuildTlas`].
     pub rebuild_log: Vec<RebuildLogEntry>,
-    /// Per-node GPU timings for this cycle (feeds ticket 07's measurement).
+    /// Per-node GPU timings for this cycle.
     pub timings: NodeTimings,
     /// The resident-instance count before this cycle (the TLAS instance set
     /// size — the harness's ±1 transition probe).
@@ -464,9 +452,9 @@ impl RegionStore {
 
     /// The stable TLAS — rebuilt **in place** on residency transitions; the
     /// bindless acceleration-structure id never moves. Exactly one (the new
-    /// path has no back-AS double buffer and no flip atomic — ticket 05's
-    /// invariant, enforced by this type: a double-buffered design would need
-    /// an array of ASes and an index, which the store does not have).
+    /// path has no back-AS double buffer and no flip atomic, so a
+    /// double-buffered design would need an array of ASes and an index, which
+    /// the store does not have).
     pub(crate) fn tlas(&self) -> Arc<AccelerationStructure> {
         self.tlas.clone()
     }
@@ -760,8 +748,7 @@ impl RegionStore {
     }
 
     /// Executes one rebuild plan through the ordered nodes, then releases
-    /// the pending frees whose dropping rebuild executed (ticket 04's
-    /// ordering invariant — the graph above executed and waited idle, so
+    /// the pending frees whose dropping rebuild executed (the graph above executed and waited idle, so
     /// the freed memory is safe to reuse). Shared by change cycles and the
     /// empty-world corner's forced dummy build.
     fn rebuild_with_plan(&mut self, gpu: &GpuStack, plan: RebuildPlan) -> NodeTimings {
@@ -876,10 +863,7 @@ impl RegionStore {
     }
 
     /// Releases the pending frees into the reusable lists. Call only after
-    /// the rebuild sequence that dropped the referencing instances executed
-    /// (ticket 04's ordering invariant; ticket 05 keeps the same structure
-    /// with ordered taskgraph nodes — [`rebuild_with_plan`] releases after
-    /// the graph executed and waited).
+    /// the rebuild sequence that dropped the referencing instances executed.
     fn release_pending_frees(&mut self) {
         self.free.pools.append(&mut self.pending_free.pools);
         self.free.blas.append(&mut self.pending_free.blas);

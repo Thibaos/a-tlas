@@ -1,5 +1,5 @@
-//! The renderer input contract (renderer-impl ticket 03): the world-facing
-//! enqueue-only API (ADR 0004) plus the CPU-side change machinery.
+//! The renderer input contract: the world-facing
+//! enqueue-only API plus the CPU-side change machinery.
 //!
 //! The world hands the renderer **Micro-chunk snapshots** — {global coords,
 //! 64-byte Occupancy mask, u8 material indices} — and create, update, and
@@ -12,7 +12,7 @@
 //! coords, never from the world — and publishes the dirty-Region set
 //! ([`RendererInput::take_dirty_regions`]). The renderer repacks mirrors
 //! through [`RegionData`] (see `crate::region::pack`) and feeds the Region
-//! pipeline; tickets 04/05 own the GPU half (residency, ordered rebuilds).
+//! pipeline.
 //!
 //! Idle cost: with nothing pending, the worker blocks on the condvar — no
 //! polling, zero cost. Startup is one `submit_batch` (the world's initial
@@ -36,7 +36,7 @@ use super::{
 
 use crate::grid::{assert_region_index_in_lattice, region_index_of};
 
-/// One Region's CPU-side mirror (ADR 0004): the authoritative per-Micro-chunk
+/// One Region's CPU-side mirror: the authoritative per-Micro-chunk
 /// snapshot state, the source for wholesale pool re-packing. Empty
 /// Micro-chunks are never stored — a zero-mask snapshot removes the
 /// Micro-chunk from the mirror, and an emptied mirror is dropped by
@@ -378,7 +378,7 @@ fn worker_loop(inner: &Arc<ChangeQueueInner>) {
 /// derived from each snapshot's global coords — the renderer owns the
 /// lattice; the world never computes or passes Region ids. Returns the dirty
 /// Region indices (deduped, sorted); Regions whose mirrors empty out are
-/// dropped (their residency transitions are tickets 04/05).
+/// dropped.
 pub fn apply_snapshots(
     mirrors: &mut HashMap<IVec3, RegionMirror>,
     snapshots: Vec<MicroChunkSnapshot>,
@@ -759,8 +759,6 @@ mod tests {
         assert!(input.take_dirty_regions().is_empty());
     }
 
-    /// Removing every Micro-chunk of a Region drops its mirror (the CPU half
-    /// of the residency transition; tickets 04/05 own the GPU half).
     #[test]
     fn emptying_a_region_drops_its_mirror() {
         let input = RendererInput::new();

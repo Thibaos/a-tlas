@@ -1,15 +1,15 @@
-// Shared declarations for the Region render path (renderer-impl ticket 02).
+// Shared declarations for the Region render path.
 //
-// Voxel pools (ADR 0001): each Region owns one GPU buffer that starts with a
+// Voxel pools: each Region owns one GPU buffer that starts with a
 // u32 offset table (32768 Micro-chunk slots, sentinel 0xFFFFFFFF for empty)
 // followed by compact blocks, one per non-empty Micro-chunk: a 64-byte
 // Occupancy mask (512 bits, bit idx = x + 8*y + 64*z, little-endian) then the
 // popcount-compacted u8 material indices in increasing bit order, padded to
 // 8-byte alignment. The intersection shader reaches a Region's pool through
 // the Region table: a bindless u64[4096] of pool device addresses indexed by
-// the 12-bit Region id that rides the instance custom index (ADR 0004).
+// the 12-bit Region id that rides the instance custom index.
 //
-// The ray t-range equals the camera near/far (ADR 0002): rays clip exactly
+// The ray t-range equals the camera near/far: rays clip exactly
 // like the camera. The CPU reference tracer mirrors these constants.
 
 #define RAY_T_MIN 0.01

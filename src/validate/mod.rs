@@ -1,4 +1,4 @@
-//! The correctness validator (renderer-impl ticket 01): the single test seam
+//! The correctness validator: the single test seam
 //! for the whole rendering effort.
 //!
 //! For each world it loads the .vox through the real world loader, renders
@@ -101,7 +101,7 @@ impl Default for ValidateOptions {
     }
 }
 
-/// One compared frame's outcome. The edit-at-the-seam world (ticket 03)
+/// One compared frame's outcome. The edit-at-the-seam world
 /// runs two frames (label "" then "-after-edit"); every other world runs
 /// one.
 pub struct FrameSummary {
@@ -269,32 +269,32 @@ pub fn run(args: &[String]) -> Result<(), String> {
         .map_err(|e| format!("event loop: {e}"))?;
 
     let mut failures = 0;
+
     for result in &app.results {
         match result {
             Ok(summary) => {
                 println!(
-                    "[{:>14}] {}  (mismatches: {}, hard: {})",
+                    "[{:>15}] {}  (mismatches: {}, hard: {})",
                     summary.name,
                     if summary.pass { "PASS" } else { "FAIL" },
                     summary.mismatches,
                     summary.hard_mismatches,
                 );
+
                 for frame in &summary.frames {
                     if frame.label.is_empty() {
                         continue;
                     }
                     println!(
-                        "              {}: {} (mismatches: {}, hard: {})",
+                        "              {}: {} (mismatches: {}, hard: {}), report: {}",
                         frame.label,
                         if frame.pass { "PASS" } else { "FAIL" },
                         frame.mismatches,
                         frame.hard_mismatches,
+                        summary.out_dir.join("report.txt").display()
                     );
                 }
-                println!(
-                    "              report: {}",
-                    summary.out_dir.join("report.txt").display()
-                );
+
                 if !summary.pass {
                     failures += 1;
                 }
@@ -404,13 +404,13 @@ impl ValidateApp {
         let voxel_data = open_file(&world.path);
         let mut world_data = Arc::new(World::new(&voxel_data));
         let voxel_count = world_data.voxel_count();
-        // The destination path's in-shader DDA resolves grid cells
-        // (renderer-impl ticket 02), so the reference traces the same shape:
+        // The destination path's in-shader DDA resolves grid cells,
+        // so the reference traces the same shape:
         // [p, p + 1) per voxel.
         let shape = VoxelShape::GridCell;
 
         println!(
-            "[{:>14}] {} ({} voxels) — rendering…",
+            "[{:>15}] {} ({} voxels) — rendering…",
             world.name, world.path, voxel_count
         );
 
@@ -481,10 +481,9 @@ impl ValidateApp {
             camera_inputs,
         };
 
-        // --- the input contract (renderer-impl ticket 03) ----------------
         // Startup: the world voices its initial state as one submit_batch;
         // the worker drains it into per-Region mirrors; the residency
-        // manager (ticket 04) builds the lattice from the packed mirrors
+        // manager builds the lattice from the packed mirrors
         // (never the world directly).
         let input = RendererInput::new();
         input.submit_batch(emit_snapshots(&world_data));
@@ -502,7 +501,7 @@ impl ValidateApp {
 
         let mut frames = vec![first];
 
-        // Frames 2..N (edit-at-the-seam, tickets 03/04): each step mutates
+        // Frames 2..N: each step mutates
         // the world, voices the change through the contract (zero-mask
         // snapshots for emptied Micro-chunks, fresh snapshots for added
         // voxels), the residency manager consumes the change cycle, and the
@@ -622,7 +621,6 @@ impl ValidateApp {
                     "the store's resident count must match the input contract's mirrors"
                 );
 
-                // --- ticket 05: the ordered rebuild nodes -----------------
                 // The rebuild logs/counters: a content edit rebuilds the
                 // Region's BLAS **in place** (device address stable → TLAS
                 // untouched — no `BuildTlas` entry); a residency transition
@@ -668,7 +666,7 @@ impl ValidateApp {
                         );
                     }
                 }
-                // Per-node GPU attribution (feeds ticket 07's measurement):
+                // Per-node GPU attribution ):
                 // real builds report nonzero times when timestamps exist.
                 if report.timings.supported {
                     if report.tlas_rebuilt {
@@ -751,9 +749,8 @@ impl ValidateApp {
         })
     }
 
-    /// Builds the compiled task graph over the store's stable buffers (the
-    /// residency manager's lattice, ticket 04). The setup's
-    /// swapchain/images/buffers are shared; the graph is built **once per
+    /// Builds the compiled task graph over the store's stable buffers.
+    /// The setup's swapchain/images/buffers are shared; the graph is built **once per
     /// world** and every frame executes it — residency rebuilds rewrite the
     /// store's buffers in place, so the ids never move.
     fn build_validate_frame(
@@ -778,7 +775,7 @@ impl ValidateApp {
             store,
             virtual_swapchain_id,
             &raygen,
-            // No measurement pool (renderer-impl ticket 07): the validator
+            // No measurement pool: the validator
             // never measures — no timestamp commands are recorded, so the
             // captured frames are bit-identical with or without measurement
             // (which runs on demand in the app only).

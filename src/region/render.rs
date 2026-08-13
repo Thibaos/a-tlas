@@ -1,17 +1,16 @@
-//! The Region pipeline's GPU half (renderer-impl tickets 02/04, 06): the
+//! The Region pipeline's GPU half: the
 //! shared ray tracing pipeline and the per-frame render task that
 //! ray-passes the swapchain storage images — with the capture raygen
 //! (color + t-channel for the validator) or the production raygen (color
-//! only; `t_image_id` pushed as INVALID and never dereferenced — ticket
-//! 06's app path). The pipeline builder is shared by both raygen stages;
+//! only; `t_image_id` pushed as INVALID and never dereferenced).
+//! The pipeline builder is shared by both raygen stages;
 //! the miss/intersection/closest-hit stages are the Region path's own
 //! (shaders/region), so the retired triangle path's stages (`shaders/rt`
 //! simple.*) are gone.
 //!
 //! All per-Region GPU state — voxel pools, procedural AABB BLASes, the
 //! lattice-static instance set and the stable TLAS — lives in
-//! [`RegionStore`](crate::region::residency::RegionStore) (ticket 04: the
-//! full static lattice, residency transitions, free lists). The render task
+//! [`RegionStore`](crate::region::residency::RegionStore). The render task
 //! only holds the ids the push constants and the task graph need; the store
 //! keeps the buffers alive across rebuilds.
 
@@ -108,7 +107,6 @@ pub struct RegionRenderContext {
     pub swapchain_storage_image_ids: Vec<StorageImageId>,
     /// Validation only: the capture raygen additionally writes payload.t
     /// here; the production raygen passes INVALID and never dereferences it
-    /// (shaders/region/production.rgen — ticket 06).
     pub t_image_storage_id: StorageImageId,
     #[cfg(debug_assertions)]
     pub debug_lines: Vec<Vertex3DColor>,
@@ -135,7 +133,7 @@ pub struct RegionRenderTask {
     /// alive for the whole pass — harmless retention.)
     #[allow(dead_code)]
     blases: Vec<Arc<AccelerationStructure>>,
-    /// The measurement pool (renderer-impl ticket 07): when attached, the
+    /// The measurement pool: when attached, the
     /// frame's GPU time is attributed per stage — the pool is reset at the
     /// top of the frame, then flight begin / trace begin-end / flight end
     /// timestamps are written around the node and the `trace_rays` call
@@ -151,7 +149,7 @@ impl RegionRenderTask {
     /// for every frame of the pass (residency rebuilds rewrite the buffers
     /// in place).
     ///
-    /// `timestamps` (renderer-impl ticket 07): the measurement pool, when
+    /// `timestamps`: the measurement pool, when
     /// the app measures — the task records per-stage timestamps (flight /
     /// trace_rays) around the node. The validator passes `None`.
     pub fn new(
@@ -212,8 +210,7 @@ impl RegionRenderTask {
 /// group) around the given raygen entry point. The production task and the
 /// validator's capture task differ only in which raygen they pass — the
 /// miss/intersection/closest-hit stages are the Region path's own, so this
-/// is the one pipeline builder for the whole renderer (moved here from the
-/// retired `tasks/render.rs` in ticket 06).
+/// is the one pipeline builder for the whole renderer.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn build_ray_tracing_pipeline(
     gpu: &GpuStack,
@@ -267,7 +264,7 @@ impl Task for RegionRenderTask {
         tcx: &mut TaskContext<'_>,
         rcx: &Self::World,
     ) -> TaskResult {
-        // Measurement (renderer-impl ticket 07): reset the pool (queries
+        // Measurement: reset the pool (queries
         // must be reset between uses — Vulkan spec, queries.adoc) and write
         // the flight begin as the first command of the node.
         if let Some(pool) = &self.timestamps {
