@@ -173,6 +173,12 @@ pub struct RegionStore {
     pub palette_storage_id: StorageBufferId,
     pub acceleration_structure_id: AccelerationStructureId,
     region_table_buffer_id: Id<Buffer>,
+    /// Debug-only: the bindless id of the region -> AABB-buffer table (the
+    /// Hull intersection shader's lookup, parallel to `region_table`). The
+    /// buffer itself stays alive via the bindless registration; this id is
+    /// copied into the render task each frame.
+    #[cfg(debug_assertions)]
+    pub aabb_table_storage_id: StorageBufferId,
 
     // --- instance set + TLAS --------------------------------------------
     /// Lattice-static instance data, one slot per Region id: transform
@@ -261,6 +267,26 @@ impl RegionStore {
             )
             .unwrap();
 
+        // Debug-only: the region -> AABB-buffer device-address table (the
+        // Hull intersection shader's lookup), parallel to the region table
+        // above. Absent in release — the Hull mode has no surface there.
+        #[cfg(debug_assertions)]
+        let aabb_table_buffer_id = gpu
+            .resources
+            .create_buffer(
+                &BufferCreateInfo {
+                    usage: BufferUsage::STORAGE_BUFFER | BufferUsage::TRANSFER_DST,
+                    ..Default::default()
+                },
+                &AllocationCreateInfo {
+                    memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
+                        | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
+                    ..Default::default()
+                },
+                DeviceLayout::new_sized::<capture_raygen::AabbTable>(),
+            )
+            .unwrap();
+
         // --- the stable instance buffer + TLAS ---------------------------
         let instance_buffer_id = gpu
             .resources
@@ -342,6 +368,15 @@ impl RegionStore {
             )
             .unwrap();
         let acceleration_structure_id = bcx.global_set().add_acceleration_structure(tlas.clone());
+        #[cfg(debug_assertions)]
+        let aabb_table_storage_id = bcx
+            .global_set()
+            .create_storage_buffer(
+                aabb_table_buffer_id,
+                0,
+                Some(size_of::<capture_raygen::AabbTable>() as DeviceSize),
+            )
+            .unwrap();
 
         let mut store = Self {
             camera_buffer_id,
@@ -350,6 +385,8 @@ impl RegionStore {
             palette_storage_id,
             acceleration_structure_id,
             region_table_buffer_id,
+            #[cfg(debug_assertions)]
+            aabb_table_storage_id,
             instances: static_instances(),
             resident_ids: Vec::new(),
             instance_buffer_id,
@@ -406,7 +443,52 @@ impl RegionStore {
             );
         }
 
+        // Debug-only: the region -> AABB-buffer table is written once, after
+        // the initial residency — the world is static, so the Hull shader's
+        // lookup never changes after startup.
+        #[cfg(debug_assertions)]
+        store.write_aabb_table(gpu, aabb_table_buffer_id);
+
         store
+    }
+
+    /// Debug-only: writes the region -> AABB-buffer device-address table once
+    /// (one entry per Region id, 0 for non-resident), parallel to the pool
+    /// region table. The world is static, so unlike the region table this is
+    /// a one-shot startup write rather than a rebuild-graph node.
+    #[cfg(debug_assertions)]
+    fn write_aabb_table(&self, gpu: &GpuStack, aabb_table_buffer_id: Id<Buffer>) {
+        let mut bdas = [0u64; REGION_COUNT];
+        for (id, region) in self.regions.iter().enumerate() {
+            if let Some(region) = region {
+                bdas[id] = gpu
+                    .resources
+                    .buffer(region.aabb_buffer_id)
+                    .buffer()
+                    .device_address()
+                    .get();
+            }
+        }
+        unsafe {
+            vulkano_taskgraph::execute(
+                &gpu.transfer_queue,
+                &gpu.resources,
+                gpu.graphics_flight_id,
+                |_cbf, tcx| {
+                    *tcx.write_buffer::<capture_raygen::AabbTable>(aabb_table_buffer_id, ..) =
+                        capture_raygen::AabbTable { bdas };
+                    Ok(())
+                },
+                [(aabb_table_buffer_id, HostAccessType::Write)],
+                [],
+                [],
+            )
+            .unwrap();
+        }
+        gpu.resources
+            .flight(gpu.graphics_flight_id)
+            .wait_idle()
+            .unwrap();
     }
 
     /// Consumes one change cycle: the dirty-Region set the input contract
@@ -817,8 +899,12 @@ impl RegionStore {
                 .resources
                 .create_buffer(
                     &BufferCreateInfo {
+                        // STORAGE_BUFFER lets the debug Hull shader read the
+                        // trimmed hulls back as a buffer_reference; the DDA
+                        // path (AS build input + device address) is unchanged.
                         usage: BufferUsage::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY
-                            | BufferUsage::SHADER_DEVICE_ADDRESS,
+                            | BufferUsage::SHADER_DEVICE_ADDRESS
+                            | BufferUsage::STORAGE_BUFFER,
                         ..Default::default()
                     },
                     &AllocationCreateInfo {

@@ -50,7 +50,9 @@ use crate::{
     player::PlayerController,
     region::{
         input::RendererInput,
-        render::{RegionRenderContext, RegionRenderTask, capture_raygen, production_raygen},
+        render::{
+            RegionRenderContext, RegionRenderTask, RenderMode, capture_raygen, production_raygen,
+        },
         residency::RegionStore,
         snapshot::emit_snapshots,
     },
@@ -374,6 +376,25 @@ impl App {
         }
     }
 
+    /// TAB (debug builds) flips the Render mode Voxel <-> Hull. Reads the
+    /// just-pressed edge from the shared input layer; the mode lives in the
+    /// render context and is written into the push constants every frame, so
+    /// toggling is a per-frame flag, never a pipeline rebuild.
+    #[cfg(debug_assertions)]
+    fn toggle_render_mode(&mut self) {
+        if self
+            .player_input
+            .just_pressed
+            .contains(&InputKey::ToggleRenderMode)
+        {
+            let rcx = self.rcx.as_mut().unwrap();
+            rcx.region.mode = match rcx.region.mode {
+                RenderMode::Voxel => RenderMode::Hull,
+                RenderMode::Hull => RenderMode::Voxel,
+            };
+        }
+    }
+
     fn update_delta_time(&mut self) {
         self.delta_time = self
             .schedule_controller
@@ -652,6 +673,9 @@ impl ApplicationHandler for App {
             // The production raygen never dereferences `t_image_id`
             // (shaders/region/production.rgen) — it stays INVALID.
             t_image_storage_id: StorageImageId::INVALID,
+            // Voxel is the default; TAB (debug builds) toggles this in the
+            // render context before each frame.
+            mode: RenderMode::default(),
             #[cfg(debug_assertions)]
             debug_constant_data,
             #[cfg(debug_assertions)]
@@ -831,11 +855,13 @@ impl ApplicationHandler for App {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        // Close (Escape) is an edge read from the input layer; the
-        // render-mode toggle reads the same set here.
+        // Close (Escape) and the Render-mode toggle (TAB, debug builds) are
+        // edge reads from the input layer's just-pressed set.
         if self.player_input.just_pressed.contains(&InputKey::Close) {
             self.close_requested = true;
         }
+        #[cfg(debug_assertions)]
+        self.toggle_render_mode();
         self.player_input.end_frame();
 
         if self.close_requested {

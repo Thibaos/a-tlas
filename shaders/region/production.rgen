@@ -36,7 +36,11 @@ void main() {
     payload.color = vec4(0.0);
     payload.t = -1.0;
 
-    traceRayEXT(vko_accelerationStructureEXT(acceleration_structure_id), ray_flags, 0xFFu, 0u, 0u, 0u, origin, RAY_T_MIN, direction, RAY_T_MAX, 0);
+    // The Render mode selects the hit group through the shader-binding-table
+    // record offset: 0 = Voxel (the DDA hit group), 1 = Hull (the AABB hit
+    // group, debug builds only). `mode` is a per-frame push-constant flag, so
+    // a TAB toggle never rebuilds the pipeline.
+    traceRayEXT(vko_accelerationStructureEXT(acceleration_structure_id), ray_flags, 0xFFu, mode, 0u, 0u, origin, RAY_T_MIN, direction, RAY_T_MAX, 0);
 
     imageStore(vko_image2D_rgba8(image_id), ivec2(gl_LaunchIDEXT.xy), payload.color);
 }

@@ -96,6 +96,42 @@ pub(crate) mod closest_hit {
     }
 }
 
+/// The Hull hit group's AABB intersection shader (debug builds only — the
+/// Hull mode has no surface in release).
+#[cfg(debug_assertions)]
+pub(crate) mod hull_intersect {
+    vulkano_shaders::shader! {
+        root_path_env: "CARGO_MANIFEST_DIR",
+        ty: "intersection",
+        path: "shaders/region/hull.rint",
+        vulkan_version: "1.3"
+    }
+}
+
+/// The Hull hit group's AABB closest-hit shader (debug builds only).
+#[cfg(debug_assertions)]
+pub(crate) mod hull_closest_hit {
+    vulkano_shaders::shader! {
+        root_path_env: "CARGO_MANIFEST_DIR",
+        ty: "closesthit",
+        path: "shaders/region/hull.rchit",
+        vulkan_version: "1.3"
+    }
+}
+
+/// The Render mode: what a primary ray resolves into (CONTEXT.md).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum RenderMode {
+    /// The DDA commits the surface voxel, shaded from the Palette. The
+    /// default, and the only mode in release builds.
+    #[default]
+    Voxel = 0,
+    /// Each Micro-chunk's trimmed AABB is the surface, colored by a
+    /// coordinate hash, with no DDA. Debug builds only.
+    #[cfg(debug_assertions)]
+    Hull = 1,
+}
+
 /// The per-frame world the Region render task reads (shared by the
 /// validator's graph and the app's graph).
 ///
@@ -108,6 +144,11 @@ pub struct RegionRenderContext {
     /// Validation only: the capture raygen additionally writes payload.t
     /// here; the production raygen passes INVALID and never dereferences it
     pub t_image_storage_id: StorageImageId,
+    /// The Render mode written into the push constants every frame: the
+    /// production raygen's shader-binding-table record offset (0 = Voxel,
+    /// 1 = Hull). Always Voxel in release and in the validator; the app
+    /// toggles it on TAB in debug builds.
+    pub mode: RenderMode,
     #[cfg(debug_assertions)]
     pub debug_lines: Vec<Vertex3DColor>,
     #[cfg(debug_assertions)]
@@ -123,6 +164,11 @@ pub struct RegionRenderTask {
     camera_storage_id: StorageBufferId,
     palette_storage_id: StorageBufferId,
     region_table_storage_id: StorageBufferId,
+    /// Debug-only: the bindless id of the region -> AABB-buffer table (the
+    /// Hull intersection shader's lookup). Absent in release, where the push
+    /// constant carries INVALID and no Hull shader dereferences it.
+    #[cfg(debug_assertions)]
+    aabb_table_storage_id: StorageBufferId,
     acceleration_structure_id: AccelerationStructureId,
     shader_binding_table: ShaderBindingTable,
     pipeline: Arc<RayTracingPipeline>,
@@ -192,6 +238,8 @@ impl RegionRenderTask {
             camera_storage_id: store.camera_storage_id,
             palette_storage_id: store.palette_storage_id,
             region_table_storage_id: store.region_table_storage_id,
+            #[cfg(debug_assertions)]
+            aabb_table_storage_id: store.aabb_table_storage_id,
             acceleration_structure_id: store.acceleration_structure_id,
             shader_binding_table,
             pipeline,
@@ -203,6 +251,20 @@ impl RegionRenderTask {
     /// The instance buffer the TLAS reads (declared in the task graph).
     pub fn instance_buffer_id(&self) -> Id<Buffer> {
         self.instance_buffer_id
+    }
+
+    /// The bindless id of the debug-only region -> AABB-buffer table (the
+    /// Hull intersection shader's lookup). INVALID in release, where no Hull
+    /// shader exists and the push-constant field is never dereferenced.
+    fn aabb_table_storage_id(&self) -> StorageBufferId {
+        #[cfg(debug_assertions)]
+        {
+            self.aabb_table_storage_id
+        }
+        #[cfg(not(debug_assertions))]
+        {
+            StorageBufferId::INVALID
+        }
     }
 }
 
@@ -221,14 +283,36 @@ pub(crate) fn build_ray_tracing_pipeline(
 ) -> Arc<RayTracingPipeline> {
     let bcx = gpu.resources.bindless_context().unwrap();
 
-    let stages = [
+    // Debug builds load the Hull hit group's shaders here (function scope, so
+    // the entry points outlive the pipeline create below). Release builds
+    // have no Hull surface: the stages/groups stay the DDA's three groups.
+    #[cfg(debug_assertions)]
+    let hull_intersection = unsafe {
+        hull_intersect::load(&gpu.device)
+            .unwrap()
+            .entry_point("main")
+            .unwrap()
+    };
+    #[cfg(debug_assertions)]
+    let hull_closest_hit = unsafe {
+        hull_closest_hit::load(&gpu.device)
+            .unwrap()
+            .entry_point("main")
+            .unwrap()
+    };
+
+    // `mut` only because debug builds push the Hull stages/groups; release
+    // builds leave them as the DDA's three groups.
+    #[cfg_attr(not(debug_assertions), allow(unused_mut))]
+    let mut stages = vec![
         PipelineShaderStageCreateInfo::new(raygen),
         PipelineShaderStageCreateInfo::new(miss),
         PipelineShaderStageCreateInfo::new(intersection),
         PipelineShaderStageCreateInfo::new(closest_hit),
     ];
 
-    let groups = [
+    #[cfg_attr(not(debug_assertions), allow(unused_mut))]
+    let mut groups = vec![
         RayTracingShaderGroupCreateInfo::General { general_shader: 0 },
         RayTracingShaderGroupCreateInfo::General { general_shader: 1 },
         RayTracingShaderGroupCreateInfo::ProceduralHit {
@@ -237,6 +321,23 @@ pub(crate) fn build_ray_tracing_pipeline(
             intersection_shader: 2,
         },
     ];
+
+    // The second procedural hit group (index 1; the DDA's is 0): the Hull
+    // AABB intersection + closest-hit shaders, siblings of the DDA's in the
+    // same pipeline. The production raygen selects it via sbtRecordOffset =
+    // mode, so a TAB toggle never rebuilds the pipeline.
+    #[cfg(debug_assertions)]
+    {
+        let hull_intersection_idx = stages.len() as u32;
+        let hull_closest_hit_idx = hull_intersection_idx + 1;
+        stages.push(PipelineShaderStageCreateInfo::new(&hull_intersection));
+        stages.push(PipelineShaderStageCreateInfo::new(&hull_closest_hit));
+        groups.push(RayTracingShaderGroupCreateInfo::ProceduralHit {
+            closest_hit_shader: Some(hull_closest_hit_idx),
+            any_hit_shader: None,
+            intersection_shader: hull_intersection_idx,
+        });
+    }
 
     let layout = bcx.pipeline_layout_from_stages(&stages).unwrap();
 
@@ -308,6 +409,8 @@ impl Task for RegionRenderTask {
                     camera_buffer_id: self.camera_storage_id,
                     palette_buffer_id: self.palette_storage_id,
                     region_table_buffer_id: self.region_table_storage_id,
+                    aabb_table_buffer_id: self.aabb_table_storage_id(),
+                    mode: rcx.mode as u32,
                 },
             )
         };

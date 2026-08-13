@@ -49,7 +49,7 @@ use crate::{
         input::RendererInput,
         pack::pack_regions,
         rebuild::RebuildLogEntry,
-        render::{RegionRenderContext, RegionRenderTask},
+        render::{RegionRenderContext, RegionRenderTask, RenderMode},
         residency::RegionStore,
         snapshot::{MicroChunkSnapshot, emit_snapshots},
     },
@@ -861,6 +861,9 @@ impl ValidateApp {
             camera: setup.camera,
             swapchain_storage_image_ids: setup.swapchain_storage_image_ids.clone(),
             t_image_storage_id: setup.t_image_storage_id,
+            // The validator is Voxel-only: the capture raygen hardcodes
+            // sbtRecordOffset = 0 and never toggles to Hull.
+            mode: RenderMode::default(),
             // App-only debug overlay fields: the validator never draws the
             // overlay, but builds the same world type.
             #[cfg(debug_assertions)]

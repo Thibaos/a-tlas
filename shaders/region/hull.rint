@@ -1,0 +1,122 @@
+#version 460
+
+#extension GL_EXT_nonuniform_qualifier : enable
+#extension GL_EXT_scalar_block_layout : enable
+#extension GL_EXT_GOOGLE_include_directive : enable
+#extension GL_EXT_buffer_reference2 : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
+
+#include "../rt/common.glsl"
+#include "header.glsl"
+#include "common.glsl"
+
+// Hull mode's AABB intersection: report the trimmed hull's entry distance.
+//
+// Unlike the DDA there is no occupancy read and no voxel resolution. The
+// hardware has already tested the AABB (that is why this shader ran), but it
+// does NOT compute the hit t for procedural AABBs — the shader must slab-test
+// the box and report the true entry distance, otherwise occlusion is
+// unpredictable (a constant t would break closest-hit selection). The hull is
+// read by primitive id (the bounding box index within the Region's single
+// AABB geometry) from the debug-only region -> AABB-buffer device-address
+// table, parallel to the pool region table.
+//
+// The Micro-chunk index is recovered from the hull min by integer shift (the
+// min is non-negative Region-local cell coords, so int-cast = floor and
+// >> 3 = exact divide by 8), then folded with the Region id into an 8-bit
+// coordinate hash that rides the hit kind. The closest-hit shader expands it.
+
+// The trimmed hull AABB as stored in the BLAS build-input buffer: one per
+// non-empty Micro-chunk, 24-byte stride. `scalar` keeps vec3 at 12 bytes so
+// the stride matches vulkano's #[repr(C)] AabbPositions (min/max vec3 f32).
+struct HullAabb {
+    vec3 min;
+    vec3 max;
+};
+
+layout(buffer_reference, scalar) readonly buffer HullAabbBuffer {
+    HullAabb aabbs[];
+};
+
+// 32-bit avalanche mixing (Thomas Wang-style finalizer) for the
+// Region-id + Micro-chunk-index fold.
+uint hash_mix(uint x) {
+    x ^= x >> 16u;
+    x *= 0x7feb352du;
+    x ^= x >> 15u;
+    x *= 0x846ca68bu;
+    x ^= x >> 16u;
+    return x;
+}
+
+// Slab-test the ray against [bmin, bmax] over [tmin, tmax]. Returns false on
+// a miss; on a hit, t_entry is the true entry distance (clamped to tmin, so
+// a ray originating inside the hull reports its own t).
+bool aabb_slab(vec3 origin, vec3 dir, float tmin, float tmax, vec3 bmin, vec3 bmax, out float t_entry) {
+    float t0 = tmin;
+    float t1 = tmax;
+    for (int a = 0; a < 3; ++a) {
+        float d = dir[a];
+        if (d == 0.0) {
+            if (origin[a] < bmin[a] || origin[a] > bmax[a]) {
+                return false;
+            }
+        } else {
+            float inv = 1.0 / d;
+            float a0 = (bmin[a] - origin[a]) * inv;
+            float a1 = (bmax[a] - origin[a]) * inv;
+            if (a0 > a1) {
+                float tmp = a0;
+                a0 = a1;
+                a1 = tmp;
+            }
+            t0 = max(t0, a0);
+            t1 = min(t1, a1);
+            if (t0 > t1) {
+                return false;
+            }
+        }
+    }
+    t_entry = t0;
+    return t1 > t0;
+}
+
+void main() {
+    vec3 origin = gl_ObjectRayOriginEXT;
+    vec3 dir = gl_ObjectRayDirectionEXT;
+    float tmin = gl_RayTminEXT;
+    float tmax = gl_RayTmaxEXT;
+    if (tmax <= tmin) {
+        return;
+    }
+
+    // The instance custom index is the 12-bit Region id (as the DDA reads
+    // it); the AABB table maps it to the Region's AABB-buffer device address.
+    uint region_id = gl_InstanceCustomIndexEXT & 0xFFFu;
+    uint64_t aabb_bda = aabb_table.bdas[region_id];
+    if (aabb_bda == 0ul) {
+        return;
+    }
+
+    HullAabbBuffer aabbs = HullAabbBuffer(aabb_bda);
+    HullAabb b = aabbs.aabbs[gl_PrimitiveID];
+
+    float t_entry;
+    if (!aabb_slab(origin, dir, tmin, tmax, b.min, b.max, t_entry)) {
+        return;
+    }
+
+    // Recover the Micro-chunk index from the hull min (Region-local,
+    // non-negative cell coords): >> 3 is the exact divide by 8, not a
+    // division.
+    ivec3 mc = ivec3(b.min) >> 3;
+
+    uint hash = hash_mix(region_id);
+    hash = hash_mix(hash ^ uint(mc.x));
+    hash = hash_mix(hash ^ (uint(mc.y) << 5u));
+    hash = hash_mix(hash ^ (uint(mc.z) << 10u));
+
+    // The hit kind is 8 bits in this codebase's convention (the DDA rides the
+    // 8-bit material there) — fold the hash to that width.
+    reportIntersectionEXT(t_entry, hash & 0xFFu);
+}
