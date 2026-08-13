@@ -25,7 +25,8 @@ _Avoid_: Color table, LUT
 **Micro-chunk**:
 The renderer's 8x8x8 render/acceleration-structure unit, tightly wrapped to
 occupied voxels (owner requirement; named by rendering-core ticket 03). One
-AABB per non-empty micro-chunk.
+AABB per non-empty micro-chunk. That AABB is the trimmed hull (tight occupied
+bounds), not the full 8x8x8 cell box.
 _Avoid_: cell
 
 **Region**:
@@ -91,6 +92,14 @@ ray-query) used without a dedicated pipeline. Not used in atlas-rt; reference
 term only.
 _Avoid_: Ray tracing pipeline
 
+**DDA**:
+The renderer's voxel-resolution algorithm: a ray marches cell-by-cell through
+the 8x8x8 Micro-chunk lattice (Amanatides-Woo), rejecting empty cells against
+the Occupancy mask and committing the first occupied one. The Reference
+tracer marches an independent DDA, deliberately not a mirror of the
+renderer's.
+_Avoid_: voxel ray march, ray walk
+
 **Background**:
 The color produced where no geometry is hit (the miss shader's output);
 black today. Rays that leave the loaded world hit nothing and report the
@@ -103,6 +112,14 @@ The space outside the loaded world; rays there hit nothing and report the
 Background color.
 _Avoid_: Sky, empty space ("empty" is a property of the sparse world,
 not a place)
+
+## Render mode
+
+**Render mode**:
+What the renderer resolves a primary ray into. `Voxel` (default): the DDA
+commits the surface voxel, shaded from the Palette. `Hull`: each Micro-chunk's
+trimmed AABB is the surface, colored by a coordinate hash, with no DDA.
+_Avoid_: shading mode, visualization mode
 
 ## Validation
 

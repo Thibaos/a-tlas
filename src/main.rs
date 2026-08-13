@@ -29,7 +29,7 @@ fn main() -> Result<(), impl Error> {
         .position(|arg| arg == "--world")
         .and_then(|i| args.get(i + 1))
         .map(String::as_str)
-        .unwrap_or("assets/bistro.vox");
+        .unwrap_or("assets/nuke.vox");
 
     let event_loop = EventLoop::new().unwrap();
 
