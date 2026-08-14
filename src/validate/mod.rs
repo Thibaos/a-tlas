@@ -780,6 +780,10 @@ impl ValidateApp {
             // captured frames are bit-identical with or without measurement
             // (which runs on demand in the app only).
             None,
+            // No counter: the validator's intersection shader is specialized
+            // with COUNTER_ENABLED = false (no atomicAdd), so the captured
+            // frames stay byte-identical.
+            None,
         );
         let instance_buffer_id = rt_task.instance_buffer_id();
 

@@ -549,6 +549,9 @@ impl ApplicationHandler for App {
             // The measurement pool: attached only with
             // `--measure`; `None` records no timestamps.
             self.measurement.as_ref().and_then(Measurement::pool),
+            // The march-and-miss counter: same on-demand gate; `None` (the
+            // default app) pushes INVALID and specializes COUNTER_ENABLED off.
+            self.measurement.as_ref().and_then(Measurement::counter),
         );
         let instance_buffer_id = rt_pass.instance_buffer_id();
 

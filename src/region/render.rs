@@ -26,13 +26,13 @@ use vulkano::{
         },
     },
     query::QueryPool,
-    shader::EntryPoint,
+    shader::{EntryPoint, SpecializationConstant},
     swapchain::Swapchain,
     sync::PipelineStage,
 };
 use vulkano_taskgraph::{
     Id, Task, TaskContext, TaskResult,
-    command_buffer::{DependencyInfo, MemoryBarrier, RecordingCommandBuffer},
+    command_buffer::{DependencyInfo, FillBufferInfo, MemoryBarrier, RecordingCommandBuffer},
     descriptor_set::{AccelerationStructureId, StorageBufferId, StorageImageId},
 };
 
@@ -43,7 +43,8 @@ use crate::world::Vertex3DColor;
 use crate::{
     app::GpuStack,
     measure::{
-        FLIGHT_BEGIN_SLOT, FLIGHT_END_SLOT, TIMESTAMP_SLOT_COUNT, TRACE_BEGIN_SLOT, TRACE_END_SLOT,
+        CounterBuffer, FLIGHT_BEGIN_SLOT, FLIGHT_END_SLOT, TIMESTAMP_SLOT_COUNT, TRACE_BEGIN_SLOT,
+        TRACE_END_SLOT,
     },
     region::residency::RegionStore,
 };
@@ -183,6 +184,12 @@ pub struct RegionRenderTask {
     /// (slot layout in [`crate::measure`]). `None` (the validator's path)
     /// records nothing — the harness's captured frames are bit-identical.
     timestamps: Option<Arc<QueryPool>>,
+    /// The march-and-miss counter buffer (reset with a fill + pushed each
+    /// frame only when measuring). `None` (the validator's path) records no
+    /// fill and pushes an INVALID id — and the intersection shader is
+    /// specialized with COUNTER_ENABLED = false, folding the atomicAdds away so
+    /// the validator/default pipelines render byte-identical output.
+    counter: Option<CounterBuffer>,
 }
 
 impl RegionRenderTask {
@@ -201,6 +208,7 @@ impl RegionRenderTask {
         virtual_swapchain_id: Id<Swapchain>,
         raygen: &EntryPoint,
         timestamps: Option<Arc<QueryPool>>,
+        counter: Option<&CounterBuffer>,
     ) -> Self {
         let pipeline = {
             let miss = unsafe {
@@ -212,6 +220,7 @@ impl RegionRenderTask {
             let intersection = unsafe {
                 intersect::load(&gpu.device)
                     .unwrap()
+                    .specialize(&[(0, SpecializationConstant::Bool(counter.is_some()))])
                     .entry_point("main")
                     .unwrap()
             };
@@ -241,6 +250,7 @@ impl RegionRenderTask {
             pipeline,
             blases: store.blases(),
             timestamps,
+            counter: counter.copied(),
         }
     }
 
@@ -386,6 +396,30 @@ impl Task for RegionRenderTask {
             })
         };
 
+        // Reset the march-and-miss counter (fill 0) before the ray pass —
+        // the app reads the words back after the flight idle. A fill runs on
+        // the transfer stage, so make it visible to the shader's atomicAdd.
+        if let Some(counter) = self.counter {
+            unsafe {
+                cbf.fill_buffer(&FillBufferInfo {
+                    dst_buffer: counter.buffer_id,
+                    data: 0,
+                    ..Default::default()
+                });
+                cbf.pipeline_barrier(&DependencyInfo {
+                    memory_barriers: &[MemoryBarrier {
+                        src_access: vulkano::sync::AccessFlags::TRANSFER_WRITE,
+                        dst_access: vulkano::sync::AccessFlags::SHADER_STORAGE_WRITE
+                            | vulkano::sync::AccessFlags::SHADER_STORAGE_READ,
+                        src_stages: vulkano::sync::PipelineStages::ALL_TRANSFER,
+                        dst_stages: vulkano::sync::PipelineStages::RAY_TRACING_SHADER,
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                });
+            }
+        }
+
         unsafe {
             cbf.push_constants(
                 self.pipeline.layout(),
@@ -398,6 +432,7 @@ impl Task for RegionRenderTask {
                     palette_buffer_id: self.palette_storage_id,
                     region_table_buffer_id: self.region_table_storage_id,
                     aabb_table_buffer_id: self.aabb_table_storage_id(),
+                    counter_buffer_id: self.counter.map(|counter| counter.storage_id).unwrap_or(StorageBufferId::INVALID),
                     mode: rcx.mode as u32,
                 },
             )

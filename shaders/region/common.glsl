@@ -38,6 +38,18 @@ VKO_DECLARE_STORAGE_BUFFER(aabb_table, AabbTable {
 
 #define aabb_table vko_buffer(aabb_table, aabb_table_buffer_id)
 
+// The march-and-miss counter: two uint counters the DDA intersection shader
+// increments by atomicAdd — hull_crossed (the slab passed) and march_and_miss
+// (the march hit nothing). Attached only under --measure; the increments are
+// gated by the COUNTER_ENABLED specialization constant (false by default), so
+// the default/validator pipelines render byte-identical output.
+VKO_DECLARE_STORAGE_BUFFER(counter, Counter {
+    uint hull_crossed;
+    uint march_and_miss;
+})
+
+#define counter vko_buffer(counter, counter_buffer_id)
+
 // Region push constants, shared by every stage of the region pipeline. The raygen
 // uses the images, the camera and the palette; the intersection shader uses
 // only `region_table_buffer_id` (the DDA resolves the pool through the
@@ -56,6 +68,10 @@ layout(push_constant) uniform RegionPushConstants {
     // The region -> AABB-buffer device-address table (the DDA's and the
     // Hull intersection shader's lookup, parallel to `region_table`).
     StorageBufferId aabb_table_buffer_id;
+    // The march-and-miss counter buffer (bindless); INVALID when not
+    // measuring — the DDA's increments are gated by COUNTER_ENABLED, so the
+    // field is never dereferenced in the default/validator pipelines.
+    StorageBufferId counter_buffer_id;
     // Render mode: 0 = Voxel (the DDA hit group), 1 = Hull (the AABB hit
     // group) — the production raygen's shader-binding-table record offset.
     // Always present; always 0 in release (Voxel is the only mode).

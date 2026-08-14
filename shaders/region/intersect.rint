@@ -10,6 +10,14 @@
 #include "header.glsl"
 #include "common.glsl"
 
+// March-and-miss counter gate: true only in the --measure pipeline. The
+// default/validator pipelines specialize this to false, folding the two
+// atomicAdds away (dead code) so the executed shader has no counter side
+// effect and the rendered output is byte-identical. The SPIR-V still carries
+// this gated block and the counter push-constant field — the validator's
+// byte-identity seam is the captured frames, not the shader module.
+layout(constant_id = 0) const bool COUNTER_ENABLED = false;
+
 // The lattice DDA: resolve the voxel for the invoking Micro-chunk.
 //
 // The BLAS holds one trimmed AABB per non-empty Micro-chunk. When the ray
@@ -144,6 +152,12 @@ void main() {
         return;
     }
 
+    // The invocation is committed to marching the chunk: count it as
+    // hull-crossed (the denominator of the march-and-miss rate).
+    if (COUNTER_ENABLED) {
+        atomicAdd(counter.hull_crossed, 1u);
+    }
+
     // The Micro-chunk index from the hull min (Region-local, non-negative cell
     // coords): int-cast = floor, >> 3 = exact divide by 8 (as hull.rint).
     ivec3 mc = ivec3(b.min) >> 3;
@@ -222,6 +236,11 @@ void main() {
         }
         float next_t = t_next[axis];
         if (next_t >= t1) {
+            // Marched the whole hull with no hit: count it as march-and-miss
+            // (the numerator — the upper bound on the ray-mask cull's win).
+            if (COUNTER_ENABLED) {
+                atomicAdd(counter.march_and_miss, 1u);
+            }
             return;
         }
         cell[axis] += step[axis];

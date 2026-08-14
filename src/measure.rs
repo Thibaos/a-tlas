@@ -29,13 +29,41 @@
 
 use std::sync::Arc;
 
-use vulkano::query::{QueryPool, QueryPoolCreateInfo, QueryResultFlags, QueryType};
+use vulkano::{
+    buffer::{Buffer, BufferCreateInfo, BufferUsage, Subbuffer},
+    memory::allocator::{AllocationCreateInfo, DeviceLayout, MemoryTypeFilter},
+    query::{QueryPool, QueryPoolCreateInfo, QueryResultFlags, QueryType},
+};
+use vulkano_taskgraph::{descriptor_set::StorageBufferId, Id};
 
 use crate::{app::GpuStack, region::rebuild::NodeTimings};
 
 /// The measurement window: min/avg/p95 over ~60 completed frames (the
 /// spec's ~60-frame readback).
 pub const MEASURE_WINDOW: usize = 60;
+
+/// The march-and-miss counter buffer: two uint words the DDA intersection
+/// shader increments by atomicAdd (word 0 = hull-crossed, word 1 =
+/// march-and-miss). Host-visible so the app reads it back each frame after
+/// the flight idle; the render task resets it with a fill each frame.
+#[derive(Clone, Copy)]
+pub struct CounterBuffer {
+    /// The buffer id the render task fills (reset) and the app reads back.
+    pub buffer_id: Id<Buffer>,
+    /// The bindless id pushed into the shader's push constants.
+    pub storage_id: StorageBufferId,
+}
+
+/// The two counter words the DDA shader writes, in buffer order (word 0 =
+/// hull-crossed, word 1 = march-and-miss).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct CounterWords {
+    hull_crossed: u32,
+    march_and_miss: u32,
+}
+
+/// The counter buffer's byte size (two u32 words).
+const COUNTER_BYTES: u64 = 8;
 
 // The query-pool slot layout (shared with the render task, which records
 // the writes; [`Measurement`] owns the pool and reads them back).
@@ -64,6 +92,13 @@ pub struct FrameSample {
     /// The ordered rebuild nodes' GPU time this frame (0 when no change
     /// cycle ran).
     pub rebuild_ns: u64,
+    /// Hull-crossed invocations this frame (the DDA slab passed and the
+    /// march began) — the denominator of the march-and-miss rate.
+    pub hull_crossed: u64,
+    /// March-and-miss invocations this frame (the DDA marched the whole hull
+    /// with no hit) — the numerator, and an upper bound on the ray-mask
+    /// cull's win (Vulkan may re-run intersection shaders redundantly).
+    pub march_and_miss: u64,
 }
 
 impl FrameSample {
@@ -120,6 +155,9 @@ impl StageStats {
 #[derive(Default)]
 pub struct Measurement {
     pool: Option<Arc<QueryPool>>,
+    /// The march-and-miss counter buffer (created unconditionally with the
+    /// measurement — only the --measure app constructs a Measurement).
+    counter: Option<CounterBuffer>,
     /// The frame currently being assembled: the change cycle's rebuild time
     /// lands here when it runs; the trace/flight readback and the wall
     /// interval complete it at the next frame boundary.
@@ -147,8 +185,41 @@ impl Measurement {
             .unwrap()
         });
 
+        // The march-and-miss counter buffer: two uint words the DDA
+        // increments by atomicAdd, host-visible for the per-frame readback.
+        // TRANSFER_DST lets the render task reset it with a fill each frame.
+        let counter = {
+            let buffer_id = gpu
+                .resources
+                .create_buffer(
+                    &BufferCreateInfo {
+                        usage: BufferUsage::STORAGE_BUFFER | BufferUsage::TRANSFER_DST,
+                        ..Default::default()
+                    },
+                    &AllocationCreateInfo {
+                        memory_type_filter: MemoryTypeFilter::PREFER_HOST
+                            | MemoryTypeFilter::HOST_RANDOM_ACCESS,
+                        ..Default::default()
+                    },
+                    DeviceLayout::new_unsized::<[u8]>(COUNTER_BYTES).unwrap(),
+                )
+                .unwrap();
+            let storage_id = gpu
+                .resources
+                .bindless_context()
+                .unwrap()
+                .global_set()
+                .create_storage_buffer(buffer_id, 0, Some(COUNTER_BYTES))
+                .unwrap();
+            CounterBuffer {
+                buffer_id,
+                storage_id,
+            }
+        };
+
         Self {
             pool,
+            counter: Some(counter),
             ..Default::default()
         }
     }
@@ -157,6 +228,13 @@ impl Measurement {
     /// writes). `None` → the render task records no timestamps.
     pub fn pool(&self) -> Option<Arc<QueryPool>> {
         self.pool.clone()
+    }
+
+    /// The march-and-miss counter buffer (its buffer id + bindless storage id),
+    /// for the render task to reset and push. `None` would mean the counter is
+    /// absent, but a [`Measurement`] always creates one.
+    pub fn counter(&self) -> Option<&CounterBuffer> {
+        self.counter.as_ref()
     }
 
     /// Whether timestamp queries are available on this device.
@@ -192,6 +270,14 @@ impl Measurement {
             self.pending.flight_ns = read_pool(gpu, pool, FLIGHT_BEGIN_SLOT, FLIGHT_END_SLOT);
             self.pending.trace_ns = read_pool(gpu, pool, TRACE_BEGIN_SLOT, TRACE_END_SLOT);
         }
+        // The counter lags one frame, like the timestamps: the flight idle
+        // before this call completed the previous execute, so the words are
+        // that frame's counts (the render task resets them with its fill).
+        if let Some(counter) = &self.counter {
+            let words = read_counter(gpu, counter);
+            self.pending.hull_crossed = u64::from(words.hull_crossed);
+            self.pending.march_and_miss = u64::from(words.march_and_miss);
+        }
 
         self.push_sample(self.pending);
         self.pending = FrameSample::default();
@@ -213,6 +299,25 @@ impl Measurement {
         let n = self.window.len();
         if n == 0 {
             return;
+        }
+
+        // The march-and-miss rate is independent of timestamp support, so it
+        // prints first. The ratio is the redundancy-robust invariant (Vulkan
+        // may re-run intersection shaders, so the raw totals are upper bounds).
+        let miss: u64 = self.window.iter().map(|s| s.march_and_miss).sum();
+        let hull: u64 = self.window.iter().map(|s| s.hull_crossed).sum();
+        if hull > 0 {
+            println!(
+                "  march-and-miss {:.4} ({} / {} hull-crossed, n={n})",
+                miss as f64 / hull as f64,
+                miss,
+                hull,
+            );
+            println!(
+                "    raw totals are upper bounds — Vulkan may re-run intersection shaders; the ratio is the invariant"
+            );
+        } else {
+            println!("  march-and-miss n/a (0 hull-crossed invocations, n={n})");
         }
 
         if !self.enabled() {
@@ -274,6 +379,19 @@ fn read_pool(gpu: &GpuStack, pool: &QueryPool, begin_slot: u32, end_slot: u32) -
     let begin = values[begin_slot as usize];
     let end = values[end_slot as usize];
     (end.wrapping_sub(begin) as f64 * period) as u64
+}
+
+/// Reads the two counter words back from host-visible memory. The caller
+/// waits the flight idle first, so the words are the completed frame's counts
+/// (the render task resets them with a fill at the top of the next execute).
+fn read_counter(gpu: &GpuStack, counter: &CounterBuffer) -> CounterWords {
+    let buffer = gpu.resources.buffer(counter.buffer_id).buffer().clone();
+    let sub = Subbuffer::new(buffer).cast_aligned::<u32>();
+    let guard = sub.read().unwrap();
+    CounterWords {
+        hull_crossed: guard[0],
+        march_and_miss: guard[1],
+    }
 }
 
 /// Whether the graphics queue family supports timestamp queries.
