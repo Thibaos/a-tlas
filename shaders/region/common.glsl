@@ -38,14 +38,16 @@ VKO_DECLARE_STORAGE_BUFFER(aabb_table, AabbTable {
 
 #define aabb_table vko_buffer(aabb_table, aabb_table_buffer_id)
 
-// The march-and-miss counter: two uint counters the DDA intersection shader
-// increments by atomicAdd — hull_crossed (the slab passed) and march_and_miss
-// (the march hit nothing). Attached only under --measure; the increments are
-// gated by the COUNTER_ENABLED specialization constant (false by default), so
-// the default/validator pipelines render byte-identical output.
+// The march-and-miss counter: three uint counters the DDA intersection shader
+// increments by atomicAdd — hull_crossed (the slab passed), march_and_miss
+// (the march hit nothing), and empty_and (the forward box has no occupancy).
+// Attached only under --measure; the increments are gated by the
+// COUNTER_ENABLED specialization constant (false by default), so the
+// default/validator pipelines render byte-identical output.
 VKO_DECLARE_STORAGE_BUFFER(counter, Counter {
     uint hull_crossed;
     uint march_and_miss;
+    uint empty_and;
 })
 
 #define counter vko_buffer(counter, counter_buffer_id)

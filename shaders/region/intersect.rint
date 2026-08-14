@@ -11,7 +11,7 @@
 #include "common.glsl"
 
 // March-and-miss counter gate: true only in the --measure pipeline. The
-// default/validator pipelines specialize this to false, folding the two
+// default/validator pipelines specialize this to false, folding the three
 // atomicAdds away (dead code) so the executed shader has no counter side
 // effect and the rendered output is byte-identical. The SPIR-V still carries
 // this gated block and the counter push-constant field — the validator's
@@ -83,6 +83,32 @@ uint material_rank(RegionPool pool, uint block_offset, uint idx) {
     }
     count += bitCount(pool.words[base + word] & ((1u << bit) - 1u));
     return count;
+}
+
+// Whether the occupancy box [lo, hi] (inclusive, chunk-local cell coords) has
+// no set bit — the provisional empty-AND test for the ray-mask cull's lower
+// bound (ticket 11). Conservative: the DDA only steps a coordinate in its
+// direction sign, so every cell it visits lies in this box. The 512-bit mask
+// is walked as 8 z-planes x 2 words; each 32-bit word is 4 y-rows of an 8-bit
+// x-range mask.
+bool occupancy_box_empty(RegionPool pool, uint block_offset, ivec3 lo, ivec3 hi) {
+    uint base = block_offset >> 2u;
+    uint xmask = ((1u << uint(hi.x - lo.x + 1)) - 1u) << uint(lo.x);
+    uint acc = 0u;
+    for (int z = lo.z; z <= hi.z; ++z) {
+        for (int j = 0; j < 2; ++j) {
+            uint word_mask = 0u;
+            for (int yr = 0; yr < 4; ++yr) {
+                int gy = 4 * j + yr;
+                if (gy >= lo.y && gy <= hi.y) {
+                    word_mask |= xmask << uint(8 * yr);
+                }
+            }
+            uint w = uint(2 * z + j);
+            acc |= pool.words[base + w] & word_mask;
+        }
+    }
+    return acc == 0u;
 }
 
 // Slab test of the ray against [bmin, bmax] over [tmin, tmax]. Returns false
@@ -195,6 +221,34 @@ void main() {
 
     float t_entry = t0;
     ivec3 chunk_origin = mc << 3;
+
+    // The provisional empty-AND test (ticket 11): the forward box from the
+    // clamped start cell, extended in each direction sign, has no occupancy.
+    // It is the lower bound on the ray-mask cull's win. The sentinel guard
+    // matches the DDA's occupancy test (defensive — the BLAS holds an AABB
+    // only per non-empty chunk, so it never fires in practice).
+    if (COUNTER_ENABLED && block_offset != OFFSET_SENTINEL) {
+        ivec3 anchor = clamp(cell - chunk_origin, ivec3(0), ivec3(7));
+        ivec3 lo = ivec3(0);
+        ivec3 hi = ivec3(0);
+        for (int a = 0; a < 3; ++a) {
+            float d = dir[a];
+            if (d > 0.0) {
+                lo[a] = anchor[a];
+                hi[a] = 7;
+            } else if (d < 0.0) {
+                lo[a] = 0;
+                hi[a] = anchor[a];
+            } else {
+                lo[a] = anchor[a];
+                hi[a] = anchor[a];
+            }
+        }
+        if (occupancy_box_empty(pool, block_offset, lo, hi)) {
+            atomicAdd(counter.empty_and, 1u);
+        }
+    }
+
     while (true) {
         // Chunk-local cell, by exact subtraction from the fixed chunk origin.
         // The march is bounded to the hull, but the entry point can land a

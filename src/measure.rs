@@ -42,10 +42,11 @@ use crate::{app::GpuStack, region::rebuild::NodeTimings};
 /// spec's ~60-frame readback).
 pub const MEASURE_WINDOW: usize = 60;
 
-/// The march-and-miss counter buffer: two uint words the DDA intersection
+/// The march-and-miss counter buffer: three uint words the DDA intersection
 /// shader increments by atomicAdd (word 0 = hull-crossed, word 1 =
-/// march-and-miss). Host-visible so the app reads it back each frame after
-/// the flight idle; the render task resets it with a fill each frame.
+/// march-and-miss, word 2 = empty-and). Host-visible so the app reads it back
+/// each frame after the flight idle; the render task resets it with a fill
+/// each frame.
 #[derive(Clone, Copy)]
 pub struct CounterBuffer {
     /// The buffer id the render task fills (reset) and the app reads back.
@@ -54,16 +55,20 @@ pub struct CounterBuffer {
     pub storage_id: StorageBufferId,
 }
 
-/// The two counter words the DDA shader writes, in buffer order (word 0 =
-/// hull-crossed, word 1 = march-and-miss).
+/// The three counter words the DDA shader writes, in buffer order (word 0 =
+/// hull-crossed, word 1 = march-and-miss, word 2 = empty-and). `repr(C)` keeps
+/// its size exactly the shader Counter block's byte size.
+#[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct CounterWords {
     hull_crossed: u32,
     march_and_miss: u32,
+    empty_and: u32,
 }
 
-/// The counter buffer's byte size (two u32 words).
-const COUNTER_BYTES: u64 = 8;
+/// The counter buffer's byte size — derived from the word struct so a future
+/// fourth word cannot silently desync it from the shader Counter block.
+const COUNTER_BYTES: u64 = std::mem::size_of::<CounterWords>() as u64;
 
 // The query-pool slot layout (shared with the render task, which records
 // the writes; [`Measurement`] owns the pool and reads them back).
@@ -99,6 +104,9 @@ pub struct FrameSample {
     /// with no hit) — the numerator, and an upper bound on the ray-mask
     /// cull's win (Vulkan may re-run intersection shaders redundantly).
     pub march_and_miss: u64,
+    /// Empty-AND invocations this frame (the provisional forward-box mask ANDs
+    /// against the occupancy to zero) — the lower bound on the cull's win.
+    pub empty_and: u64,
 }
 
 impl FrameSample {
@@ -185,7 +193,7 @@ impl Measurement {
             .unwrap()
         });
 
-        // The march-and-miss counter buffer: two uint words the DDA
+        // The march-and-miss counter buffer: three uint words the DDA
         // increments by atomicAdd, host-visible for the per-frame readback.
         // TRANSFER_DST lets the render task reset it with a fill each frame.
         let counter = {
@@ -277,6 +285,7 @@ impl Measurement {
             let words = read_counter(gpu, counter);
             self.pending.hull_crossed = u64::from(words.hull_crossed);
             self.pending.march_and_miss = u64::from(words.march_and_miss);
+            self.pending.empty_and = u64::from(words.empty_and);
         }
 
         self.push_sample(self.pending);
@@ -306,15 +315,24 @@ impl Measurement {
         // may re-run intersection shaders, so the raw totals are upper bounds).
         let miss: u64 = self.window.iter().map(|s| s.march_and_miss).sum();
         let hull: u64 = self.window.iter().map(|s| s.hull_crossed).sum();
+        let empty: u64 = self.window.iter().map(|s| s.empty_and).sum();
         if hull > 0 {
+            let miss_ratio = miss as f64 / hull as f64;
+            let empty_ratio = empty as f64 / hull as f64;
             println!(
-                "  march-and-miss {:.4} ({} / {} hull-crossed, n={n})",
-                miss as f64 / hull as f64,
-                miss,
-                hull,
+                "  march-and-miss {miss_ratio:.4} ({miss} / {hull} hull-crossed, n={n})"
             );
             println!(
-                "    raw totals are upper bounds — Vulkan may re-run intersection shaders; the ratio is the invariant"
+                "  empty-and     {empty_ratio:.4} ({empty} / {hull} hull-crossed) — lower bound on the cull's win"
+            );
+            if miss > 0 {
+                println!(
+                    "    cull win in [{empty_ratio:.4}, {miss_ratio:.4}] of hull-crossed; empty-and rejects {:.4} of wasted marches",
+                    empty as f64 / miss as f64,
+                );
+            }
+            println!(
+                "    raw totals are upper bounds — Vulkan may re-run intersection shaders; the ratios are the invariant"
             );
         } else {
             println!("  march-and-miss n/a (0 hull-crossed invocations, n={n})");
@@ -381,7 +399,7 @@ fn read_pool(gpu: &GpuStack, pool: &QueryPool, begin_slot: u32, end_slot: u32) -
     (end.wrapping_sub(begin) as f64 * period) as u64
 }
 
-/// Reads the two counter words back from host-visible memory. The caller
+/// Reads the three counter words back from host-visible memory. The caller
 /// waits the flight idle first, so the words are the completed frame's counts
 /// (the render task resets them with a fill at the top of the next execute).
 fn read_counter(gpu: &GpuStack, counter: &CounterBuffer) -> CounterWords {
@@ -391,6 +409,7 @@ fn read_counter(gpu: &GpuStack, counter: &CounterBuffer) -> CounterWords {
     CounterWords {
         hull_crossed: guard[0],
         march_and_miss: guard[1],
+        empty_and: guard[2],
     }
 }
 
