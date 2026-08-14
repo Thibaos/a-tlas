@@ -163,10 +163,8 @@ pub struct RegionRenderTask {
     camera_storage_id: StorageBufferId,
     palette_storage_id: StorageBufferId,
     region_table_storage_id: StorageBufferId,
-    /// Debug-only: the bindless id of the region -> AABB-buffer table (the
-    /// Hull intersection shader's lookup). Absent in release, where the push
-    /// constant carries INVALID and no Hull shader dereferences it.
-    #[cfg(debug_assertions)]
+    /// The bindless id of the region -> AABB-buffer table (the DDA's and the
+    /// debug Hull shader's lookup). The push constant carries it every frame.
     aabb_table_storage_id: StorageBufferId,
     acceleration_structure_id: AccelerationStructureId,
     shader_binding_table: ShaderBindingTable,
@@ -237,7 +235,6 @@ impl RegionRenderTask {
             camera_storage_id: store.camera_storage_id,
             palette_storage_id: store.palette_storage_id,
             region_table_storage_id: store.region_table_storage_id,
-            #[cfg(debug_assertions)]
             aabb_table_storage_id: store.aabb_table_storage_id,
             acceleration_structure_id: store.acceleration_structure_id,
             shader_binding_table,
@@ -252,18 +249,10 @@ impl RegionRenderTask {
         self.instance_buffer_id
     }
 
-    /// The bindless id of the debug-only region -> AABB-buffer table (the
-    /// Hull intersection shader's lookup). INVALID in release, where no Hull
-    /// shader exists and the push-constant field is never dereferenced.
+    /// The bindless id of the region -> AABB-buffer table (the DDA's and the
+    /// debug Hull shader's lookup).
     fn aabb_table_storage_id(&self) -> StorageBufferId {
-        #[cfg(debug_assertions)]
-        {
-            self.aabb_table_storage_id
-        }
-        #[cfg(not(debug_assertions))]
-        {
-            StorageBufferId::INVALID
-        }
+        self.aabb_table_storage_id
     }
 }
 

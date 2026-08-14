@@ -28,10 +28,10 @@ VKO_DECLARE_STORAGE_BUFFER(region_table, RegionTable {
 
 #define region_table vko_buffer(region_table, region_table_buffer_id)
 
-// Debug-only Hull path: the region -> AABB-buffer device-address table,
-// parallel to `region_table` (one entry per Region id, 0 for non-resident).
-// The buffer is allocated, registered and written once only in debug builds;
-// the declaration is inert in release (no Hull shader reads it there).
+// The region -> AABB-buffer device-address table, parallel to `region_table`
+// (one entry per Region id, 0 for non-resident). The DDA reads the invoking
+// Micro-chunk's trimmed hull back through it by primitive id; the debug Hull
+// mode uses the same table. Allocated, registered and written once at startup.
 VKO_DECLARE_STORAGE_BUFFER(aabb_table, AabbTable {
     uint64_t bdas[REGION_TABLE_ENTRIES];
 })
@@ -53,9 +53,8 @@ layout(push_constant) uniform RegionPushConstants {
     StorageBufferId camera_buffer_id;
     StorageBufferId palette_buffer_id;
     StorageBufferId region_table_buffer_id;
-    // Debug-only Hull path: the region -> AABB-buffer device-address table
-    // (the Hull intersection shader's lookup, parallel to `region_table`).
-    // INVALID in release — no Hull shader exists to dereference it.
+    // The region -> AABB-buffer device-address table (the DDA's and the
+    // Hull intersection shader's lookup, parallel to `region_table`).
     StorageBufferId aabb_table_buffer_id;
     // Render mode: 0 = Voxel (the DDA hit group), 1 = Hull (the AABB hit
     // group) — the production raygen's shader-binding-table record offset.
