@@ -1,9 +1,5 @@
-// The Region path's own header. Deliberately NOT
-// shaders/rt/deps.glsl: that file also declares the retired path's nameless
-// push-constant block, whose members leak into the global scope and collide
-// with the Region push constants. The Camera and Palette buffer declarations
-// are byte-identical to deps.glsl (the struct registry validates them equal
-// across shaders), so both paths share the bindless layout.
+// The Region path's header: the Camera and Palette buffer declarations shared
+// by every Region stage (raygen, miss, intersection, closest-hit).
 
 #extension GL_EXT_ray_tracing : require
 

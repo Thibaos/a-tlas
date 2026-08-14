@@ -5,8 +5,7 @@
 //! only; `t_image_id` pushed as INVALID and never dereferenced).
 //! The pipeline builder is shared by both raygen stages;
 //! the miss/intersection/closest-hit stages are the Region path's own
-//! (shaders/region), so the retired triangle path's stages (`shaders/rt`
-//! simple.*) are gone.
+//! (shaders/region).
 //!
 //! All per-Region GPU state — voxel pools, procedural AABB BLASes, the
 //! lattice-static instance set and the stable TLAS — lives in

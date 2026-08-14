@@ -12,7 +12,7 @@
 //! The validator now runs the destination path,
 //! whose in-shader DDA resolves grid cells — so the validator uses
 //! [`VoxelShape::GridCell`]; [`VoxelShape::CenteredUnitCube`] remains only
-//! for the unit tests and the retired triangle-per-voxel path.
+//! for the unit tests.
 //!
 //! To stay fast on dense worlds (custom.vox is ~1M voxels) the tracer steps
 //! the ray over the world's grid cells instead of testing every voxel per
