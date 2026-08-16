@@ -23,10 +23,12 @@ const uint MODE_HULL = 1u;
 const uint MODE_RAY_LATENCY = 2u;
 const uint MODE_HULL_CROSSED = 3u;
 
-// The latency heatmap's tick budget: clock ticks that saturate to "hot".
-// clockRealtime2x32EXT ticks at a device rate, so this is a tunable debug knob,
-// not a physical duration.
-const float LATENCY_TICK_CAP = 2000000.0;
+// The latency heatmap's log2 span: the clock delta is mapped log2(delta) /
+// this value onto the blue->red ramp, spanning 2^0 .. 2^20 ticks (~1 tick ..
+// ~1 ms at a ~1 GHz clock). clockRealtime2x32EXT ticks at a device rate, so a
+// different rate only shifts the whole map (a log scale is rate-agnostic in
+// shape) — this is a tunable debug knob, not a physical duration.
+const float LATENCY_LOG2_TICKS = 20.0;
 
 // Production raygen for the Region path. The ray
 // is built by the shared raygen_common.glsl (byte-identical to the capture
@@ -69,7 +71,11 @@ void main() {
         uvec2 t1 = clockRealtime2x32EXT();
         // Low-32-bit delta (u32 wraparound): exact for sub-2^32-tick latencies.
         uint delta = t1.x - t0.x;
-        payload.color = heat_color(float(delta) / LATENCY_TICK_CAP);
+        // Log2 scale: per-ray latency spans orders of magnitude, so a linear
+        // ramp crushes everything into the cold end. Map 2^0 .. 2^20 ticks
+        // onto the ramp; a different clock rate shifts the map, not its shape.
+        float t = clamp(log2(float(max(delta, 1u))) / LATENCY_LOG2_TICKS, 0.0, 1.0);
+        payload.color = heat_color(t);
         imageStore(vko_image2D_rgba8(image_id), ivec2(gl_LaunchIDEXT.xy), payload.color);
         return;
     }
