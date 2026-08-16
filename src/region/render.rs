@@ -61,6 +61,18 @@ pub(crate) mod capture_raygen {
 }
 
 pub(crate) mod production_raygen {
+    // Debug builds compile the Ray latency branch (clockRealtime); release
+    // builds omit it so the raygen carries no ShaderClock capability and the
+    // device needs no shader_device_clock feature.
+    #[cfg(debug_assertions)]
+    vulkano_shaders::shader! {
+        root_path_env: "CARGO_MANIFEST_DIR",
+        ty: "raygen",
+        path: "shaders/region/production.rgen",
+        define: [("ATLAS_RT_RAY_LATENCY", "1")],
+        vulkan_version: "1.3"
+    }
+    #[cfg(not(debug_assertions))]
     vulkano_shaders::shader! {
         root_path_env: "CARGO_MANIFEST_DIR",
         ty: "raygen",
@@ -119,7 +131,9 @@ pub(crate) mod hull_closest_hit {
     }
 }
 
-/// The Render mode: what a primary ray resolves into (CONTEXT.md).
+/// The Render mode: what the ray pass paints each pixel with (CONTEXT.md) —
+/// surface identity (Voxel, Hull) or a diagnostic quantity (Ray latency,
+/// hull-crossed). The diagnostic modes are debug-build-only.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum RenderMode {
     /// The DDA commits the surface voxel, shaded from the Palette. The
@@ -130,6 +144,32 @@ pub enum RenderMode {
     /// coordinate hash, with no DDA. Debug builds only.
     #[cfg(debug_assertions)]
     Hull = 1,
+    /// Each pixel is colored by its ray's wall-clock lifetime (a
+    /// `clockRealtime` delta around `traceRayEXT`). Latency, not cost. Debug
+    /// builds only.
+    #[cfg(debug_assertions)]
+    RayLatency = 2,
+    /// Each pixel is colored by how many Micro-chunk hulls its ray entered
+    /// (the spatial form of the march-and-miss counter's `hull_crossed` word).
+    /// Debug builds only.
+    #[cfg(debug_assertions)]
+    HullCrossed = 3,
+}
+
+/// The per-pixel hull-crossed count buffer (debug builds): one uint per ray
+/// pass pixel, incremented by the DDA intersection shader's atomicAdd at
+/// slab-pass when the hull-crossed mode selects its hit group. Reset with a
+/// fill each frame; read on the GPU by the heatmap overlay node. The count is
+/// the same quantity as the `--measure` counter's `hull_crossed` word: a lower
+/// bound on traversal work (hulls entered, not rejected AABB tests) and an
+/// upper bound per-pixel (Vulkan may invoke intersection shaders redundantly).
+/// The validator and release paths pass `None` and never attach it.
+#[derive(Clone, Copy)]
+pub struct HullCrossedCounter {
+    /// The buffer id the render task fills (reset) each frame.
+    pub buffer_id: Id<Buffer>,
+    /// The bindless id pushed into the shader's push constants.
+    pub storage_id: StorageBufferId,
 }
 
 /// The per-frame world the Region render task reads (shared by the
@@ -190,6 +230,11 @@ pub struct RegionRenderTask {
     /// specialized with COUNTER_ENABLED = false, folding the atomicAdds away so
     /// the validator/default pipelines render byte-identical output.
     counter: Option<CounterBuffer>,
+    /// The per-pixel hull-crossed count buffer (debug builds only): reset with
+    /// a fill, pushed into the intersection shader's push constants, and read
+    /// by the heatmap overlay node. `None` (the validator's and release paths)
+    /// pushes INVALID and never attaches the hull-crossed hit group.
+    hull_crossed: Option<HullCrossedCounter>,
 }
 
 impl RegionRenderTask {
@@ -209,6 +254,7 @@ impl RegionRenderTask {
         raygen: &EntryPoint,
         timestamps: Option<Arc<QueryPool>>,
         counter: Option<&CounterBuffer>,
+        hull_crossed: Option<&HullCrossedCounter>,
     ) -> Self {
         let pipeline = {
             let miss = unsafe {
@@ -251,6 +297,7 @@ impl RegionRenderTask {
             blases: store.blases(),
             timestamps,
             counter: counter.copied(),
+            hull_crossed: hull_crossed.copied(),
         }
     }
 
@@ -299,6 +346,21 @@ pub(crate) fn build_ray_tracing_pipeline(
             .unwrap()
     };
 
+    // The hull-crossed hit group's intersection stage (debug builds): the DDA
+    // intersection re-specialized with PER_PIXEL_COUNTER = true. Declared at
+    // function scope like the Hull stages so it outlives the pipeline create.
+    #[cfg(debug_assertions)]
+    let hull_crossed_intersection = unsafe {
+        intersect::load(&gpu.device)
+            .unwrap()
+            .specialize(&[
+                (0, SpecializationConstant::Bool(false)),
+                (1, SpecializationConstant::Bool(true)),
+            ])
+            .entry_point("main")
+            .unwrap()
+    };
+
     // `mut` only because debug builds push the Hull stages/groups; release
     // builds leave them as the DDA's three groups.
     #[cfg_attr(not(debug_assertions), allow(unused_mut))]
@@ -334,6 +396,21 @@ pub(crate) fn build_ray_tracing_pipeline(
             closest_hit_shader: Some(hull_closest_hit_idx),
             any_hit_shader: None,
             intersection_shader: hull_intersection_idx,
+        });
+
+        // The third procedural hit group (index 2): the DDA intersection shader
+        // re-specialized with PER_PIXEL_COUNTER = true, sharing the DDA
+        // closest-hit (stage index 3). It runs the same real DDA march, but
+        // also increments the per-pixel hull-crossed count at slab-pass. The
+        // production raygen selects it via sbtRecordOffset = 2 (the third
+        // hit-region index; HullCrossed = 3 is the mode value the raygen maps
+        // to hit-region 2).
+        let hull_crossed_idx = stages.len() as u32;
+        stages.push(PipelineShaderStageCreateInfo::new(&hull_crossed_intersection));
+        groups.push(RayTracingShaderGroupCreateInfo::ProceduralHit {
+            closest_hit_shader: Some(3),
+            any_hit_shader: None,
+            intersection_shader: hull_crossed_idx,
         });
     }
 
@@ -420,6 +497,30 @@ impl Task for RegionRenderTask {
             }
         }
 
+        // Reset the per-pixel hull-crossed count buffer (fill 0) before the
+        // ray pass — the heatmap overlay reads it after. Same transfer-stage
+        // visibility discipline as the counter fill above.
+        if let Some(hull_crossed) = self.hull_crossed {
+            unsafe {
+                cbf.fill_buffer(&FillBufferInfo {
+                    dst_buffer: hull_crossed.buffer_id,
+                    data: 0,
+                    ..Default::default()
+                });
+                cbf.pipeline_barrier(&DependencyInfo {
+                    memory_barriers: &[MemoryBarrier {
+                        src_access: vulkano::sync::AccessFlags::TRANSFER_WRITE,
+                        dst_access: vulkano::sync::AccessFlags::SHADER_STORAGE_WRITE
+                            | vulkano::sync::AccessFlags::SHADER_STORAGE_READ,
+                        src_stages: vulkano::sync::PipelineStages::ALL_TRANSFER,
+                        dst_stages: vulkano::sync::PipelineStages::RAY_TRACING_SHADER,
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                });
+            }
+        }
+
         unsafe {
             cbf.push_constants(
                 self.pipeline.layout(),
@@ -433,6 +534,7 @@ impl Task for RegionRenderTask {
                     region_table_buffer_id: self.region_table_storage_id,
                     aabb_table_buffer_id: self.aabb_table_storage_id(),
                     counter_buffer_id: self.counter.map(|counter| counter.storage_id).unwrap_or(StorageBufferId::INVALID),
+                    hull_count_buffer_id: self.hull_crossed.map(|hull_crossed| hull_crossed.storage_id).unwrap_or(StorageBufferId::INVALID),
                     mode: rcx.mode as u32,
                 },
             )

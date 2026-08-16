@@ -17,6 +17,14 @@
 // this gated block and the counter push-constant field — the validator's
 // byte-identity seam is the captured frames, not the shader module.
 layout(constant_id = 0) const bool COUNTER_ENABLED = false;
+// Per-pixel hull-crossed count gate: true only for the debug hull-crossed hit
+// group. Like COUNTER_ENABLED, false folds the atomicAdd away so the default
+// and validator pipelines render byte-identical output.
+layout(constant_id = 1) const bool PER_PIXEL_COUNTER = false;
+
+// The count buffer's fixed 4K pixel ceiling (matches app.rs HEATMAP_MAX_PIXELS);
+// the bounds check below clamps a larger debug window instead of OOB-writing.
+const uint HULL_COUNT_MAX_PIXELS = 3840u * 2160u;
 
 // The lattice DDA: resolve the voxel for the invoking Micro-chunk.
 //
@@ -182,6 +190,18 @@ void main() {
     // hull-crossed (the denominator of the march-and-miss rate).
     if (COUNTER_ENABLED) {
         atomicAdd(counter.hull_crossed, 1u);
+    }
+    // The per-pixel hull-crossed count (debug builds): the same slab-passed
+    // point, but to a per-pixel buffer the heatmap overlay reads. The index
+    // is the ray pass launch coordinate (y-major, matching gl_LaunchSizeEXT).
+    // Like the scalar counter, it is a lower bound on traversal work (hulls
+    // entered, not rejected AABB tests) and an upper bound per-pixel (Vulkan
+    // may invoke intersection shaders redundantly).
+    if (PER_PIXEL_COUNTER) {
+        uint pixel = gl_LaunchIDEXT.y * gl_LaunchSizeEXT.x + gl_LaunchIDEXT.x;
+        if (pixel < HULL_COUNT_MAX_PIXELS) {
+            atomicAdd(hull_count.pixels[pixel], 1u);
+        }
     }
 
     // The Micro-chunk index from the hull min (Region-local, non-negative cell

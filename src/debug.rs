@@ -3,7 +3,8 @@ use std::sync::Arc;
 use vulkano::{
     buffer::Buffer,
     pipeline::{
-        DynamicState, GraphicsPipeline, PipelineShaderStageCreateInfo,
+        ComputePipeline, DynamicState, GraphicsPipeline, PipelineShaderStageCreateInfo,
+        compute::ComputePipelineCreateInfo,
         graphics::{
             GraphicsPipelineCreateInfo,
             color_blend::{ColorBlendAttachmentState, ColorBlendState},
@@ -14,12 +15,20 @@ use vulkano::{
             viewport::ViewportState,
         },
     },
+    swapchain::Swapchain,
 };
 use vulkano_taskgraph::{
-    Id, Task, TaskContext, TaskResult, command_buffer::RecordingCommandBuffer, graph::TaskNode,
+    Id, Task, TaskContext, TaskResult,
+    command_buffer::RecordingCommandBuffer,
+    descriptor_set::StorageBufferId,
+    graph::TaskNode,
 };
 
-use crate::{app::App, region::render::RegionRenderContext, world::Vertex3DColor};
+use crate::{
+    app::App,
+    region::render::{RegionRenderContext, RenderMode},
+    world::Vertex3DColor,
+};
 
 pub mod shader {
     pub(crate) mod vert {
@@ -140,6 +149,96 @@ impl Task for DrawDebugTask {
         unsafe { cbf.bind_vertex_buffers(0, &[self.vertex_buffer_id], &[0], &[], &[]) };
         unsafe { cbf.push_constants(pipeline.layout(), 0, &push_constants) };
         unsafe { cbf.draw(debug_lines_count, 1, 0, 0) };
+
+        Ok(())
+    }
+}
+
+pub mod heatmap {
+    vulkano_shaders::shader! {
+        root_path_env: "CARGO_MANIFEST_DIR",
+        ty: "compute",
+        path: "shaders/debug/heatmap.comp",
+        vulkan_version: "1.3"
+    }
+}
+
+/// Builds the hull-crossed heatmap compute pipeline: reads the per-pixel count
+/// buffer (bindless) and paints the swapchain storage image (debug builds
+/// only — the hull-crossed mode has no surface in release).
+pub fn create_heatmap_pipeline(app: &App) -> Arc<ComputePipeline> {
+    let shader = unsafe {
+        heatmap::load(&app.gpu.device)
+            .unwrap()
+            .entry_point("main")
+            .unwrap()
+    };
+    let stage = PipelineShaderStageCreateInfo::new(&shader);
+    let bcx = app.gpu.resources.bindless_context().unwrap();
+    let layout = bcx
+        .pipeline_layout_from_stages(slice::from_ref(&stage))
+        .unwrap();
+    ComputePipeline::new(
+        &app.gpu.device,
+        None,
+        &ComputePipelineCreateInfo::new(stage, &layout),
+    )
+    .unwrap()
+}
+
+/// The hull-crossed heatmap overlay node: a full-screen compute pass that reads
+/// the per-pixel count buffer and repaints the swapchain image. It runs only
+/// when the Render mode is [`RenderMode::HullCrossed`]; otherwise it is a no-op
+/// and leaves the ray pass's output untouched.
+pub struct DrawHeatmapTask {
+    pub swapchain_id: Id<Swapchain>,
+    pub hull_count_storage_id: StorageBufferId,
+    pub pipeline: Option<Arc<ComputePipeline>>,
+}
+
+impl DrawHeatmapTask {
+    pub fn new(swapchain_id: Id<Swapchain>, hull_count_storage_id: StorageBufferId) -> Self {
+        Self {
+            swapchain_id,
+            hull_count_storage_id,
+            pipeline: None,
+        }
+    }
+}
+
+impl Task for DrawHeatmapTask {
+    type World = RegionRenderContext;
+
+    unsafe fn execute(
+        &self,
+        cbf: &mut RecordingCommandBuffer<'_>,
+        tcx: &mut TaskContext<'_>,
+        rcx: &Self::World,
+    ) -> TaskResult {
+        if rcx.mode != RenderMode::HullCrossed {
+            return Ok(());
+        }
+
+        let swapchain_state = tcx.swapchain(self.swapchain_id);
+        let image_index = swapchain_state.current_image_index().unwrap();
+        let extent = swapchain_state.images()[0].extent();
+
+        let pipeline = self.pipeline.as_ref().unwrap();
+
+        unsafe { cbf.bind_pipeline(pipeline) };
+        unsafe {
+            cbf.push_constants(
+                pipeline.layout(),
+                0,
+                &heatmap::PushConstants {
+                    image_id: rcx.swapchain_storage_image_ids[image_index as usize],
+                    hull_count_buffer_id: self.hull_count_storage_id,
+                    width: extent[0],
+                    height: extent[1],
+                },
+            )
+        };
+        unsafe { cbf.dispatch([extent[0].div_ceil(16), extent[1].div_ceil(16), 1]) };
 
         Ok(())
     }

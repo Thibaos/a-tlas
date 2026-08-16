@@ -52,6 +52,17 @@ VKO_DECLARE_STORAGE_BUFFER(counter, Counter {
 
 #define counter vko_buffer(counter, counter_buffer_id)
 
+// The per-pixel hull-crossed count buffer (debug builds): one uint per ray
+// pass pixel, incremented by the DDA intersection shader's atomicAdd at
+// slab-pass when the hull-crossed mode selects its hit group. Attached only in
+// debug builds; the validator and release paths push INVALID and never
+// dereference it (PER_PIXEL_COUNTER is false there).
+VKO_DECLARE_STORAGE_BUFFER(hull_count, HullCountBuffer {
+    uint pixels[];
+})
+
+#define hull_count vko_buffer(hull_count, hull_count_buffer_id)
+
 // Region push constants, shared by every stage of the region pipeline. The raygen
 // uses the images, the camera and the palette; the intersection shader uses
 // only `region_table_buffer_id` (the DDA resolves the pool through the
@@ -74,8 +85,13 @@ layout(push_constant) uniform RegionPushConstants {
     // measuring — the DDA's increments are gated by COUNTER_ENABLED, so the
     // field is never dereferenced in the default/validator pipelines.
     StorageBufferId counter_buffer_id;
-    // Render mode: 0 = Voxel (the DDA hit group), 1 = Hull (the AABB hit
-    // group) — the production raygen's shader-binding-table record offset.
+    // The per-pixel hull-crossed count buffer (bindless); INVALID when not in
+    // the hull-crossed debug mode — the intersection shader's PER_PIXEL_COUNTER
+    // gate folds the atomicAdd away in the default/validator pipelines.
+    StorageBufferId hull_count_buffer_id;
+    // Render mode: 0 = Voxel, 1 = Hull, 2 = Ray latency, 3 = hull-crossed —
+    // what the raygen paints. The raygen maps it to a hit-group record offset
+    // (Ray latency traces hit-region 0, the DDA, and only changes the paint).
     // Always present; always 0 in release (Voxel is the only mode).
     uint mode;
 };

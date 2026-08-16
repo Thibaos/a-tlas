@@ -784,6 +784,10 @@ impl ValidateApp {
             // with COUNTER_ENABLED = false (no atomicAdd), so the captured
             // frames stay byte-identical.
             None,
+            // No hull-crossed counter: the validator's capture raygen hardcodes
+            // Voxel, so the hull-crossed hit group is never selected and the
+            // captured frames stay byte-identical.
+            None,
         );
         let instance_buffer_id = rt_task.instance_buffer_id();
 

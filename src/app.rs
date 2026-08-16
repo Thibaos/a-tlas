@@ -51,7 +51,8 @@ use crate::{
     region::{
         input::RendererInput,
         render::{
-            RegionRenderContext, RegionRenderTask, RenderMode, capture_raygen, production_raygen,
+            HullCrossedCounter, RegionRenderContext, RegionRenderTask, RenderMode, capture_raygen,
+            production_raygen,
         },
         residency::RegionStore,
         snapshot::emit_snapshots,
@@ -61,12 +62,18 @@ use crate::{
 };
 
 #[cfg(debug_assertions)]
-use crate::debug::{self, DrawDebugTask, create_debug_pipeline};
+use crate::debug::{
+    self, DrawDebugTask, DrawHeatmapTask, create_debug_pipeline, create_heatmap_pipeline,
+};
 
 pub const MAX_FRAMES_IN_FLIGHT: u32 = 2;
 pub const MIN_SWAPCHAIN_IMAGES: u32 = MAX_FRAMES_IN_FLIGHT + 1;
 pub const TICKS_PER_SECOND: u32 = 1;
 pub const MAX_DEBUG_LINES: u32 = 4096;
+/// The per-pixel hull-crossed count buffer's fixed pixel ceiling (4K): debug
+/// builds only. Resizing the window beyond it is unsupported in the heatmap.
+#[cfg(debug_assertions)]
+const HEATMAP_MAX_PIXELS: u64 = 3840 * 2160;
 
 /// The shared GPU stack (instance, device, queues, allocator, taskgraph
 /// resources and flights). Constructed once per event loop by [`App::new`] and
@@ -126,6 +133,11 @@ impl GpuStack {
             shader_int64: true,
             shader_int8: true,
             shader_subgroup_clock: true,
+            // The device-scope clock for the debug Ray-latency mode (a
+            // clockRealtime delta). Debug-only: the release raygen omits the
+            // clock (ATLAS_RT_RAY_LATENCY undefined), so release needs no
+            // shader_device_clock feature.
+            shader_device_clock: cfg!(debug_assertions),
             storage_buffer8_bit_access: true,
             ..BindlessContext::required_features(&instance)
         };
@@ -376,10 +388,11 @@ impl App {
         }
     }
 
-    /// TAB (debug builds) flips the Render mode Voxel <-> Hull. Reads the
-    /// just-pressed edge from the shared input layer; the mode lives in the
-    /// render context and is written into the push constants every frame, so
-    /// toggling is a per-frame flag, never a pipeline rebuild.
+    /// TAB (debug builds) cycles the Render mode Voxel -> Hull -> Ray
+    /// latency -> hull-crossed. Reads the just-pressed edge from the shared
+    /// input layer; the mode lives in the render context and is written into
+    /// the push constants every frame, so toggling is a per-frame flag, never a
+    /// pipeline rebuild.
     #[cfg(debug_assertions)]
     fn toggle_render_mode(&mut self) {
         if self
@@ -390,7 +403,9 @@ impl App {
             let rcx = self.rcx.as_mut().unwrap();
             rcx.region.mode = match rcx.region.mode {
                 RenderMode::Voxel => RenderMode::Hull,
-                RenderMode::Hull => RenderMode::Voxel,
+                RenderMode::Hull => RenderMode::RayLatency,
+                RenderMode::RayLatency => RenderMode::HullCrossed,
+                RenderMode::HullCrossed => RenderMode::Voxel,
             };
         }
     }
@@ -541,6 +556,39 @@ impl ApplicationHandler for App {
                 .unwrap()
         };
 
+        // The per-pixel hull-crossed count buffer (debug builds): the heatmap
+        // overlay reads it and the render task resets it each frame. Fixed-size
+        // for the 4K window ceiling. Release and the validator pass None.
+        #[cfg(debug_assertions)]
+        let hull_crossed = {
+            let buffer_id = self
+                .gpu
+                .resources
+                .create_buffer(
+                    &BufferCreateInfo {
+                        usage: BufferUsage::STORAGE_BUFFER | BufferUsage::TRANSFER_DST,
+                        ..Default::default()
+                    },
+                    &AllocationCreateInfo {
+                        memory_type_filter: MemoryTypeFilter::PREFER_DEVICE,
+                        ..Default::default()
+                    },
+                    DeviceLayout::new_unsized::<[u32]>(HEATMAP_MAX_PIXELS).unwrap(),
+                )
+                .unwrap();
+            let storage_id = self
+                .gpu
+                .resources
+                .bindless_context()
+                .unwrap()
+                .global_set()
+                .create_storage_buffer(buffer_id, 0, Some(HEATMAP_MAX_PIXELS * 4))
+                .unwrap();
+            Some(HullCrossedCounter { buffer_id, storage_id })
+        };
+        #[cfg(not(debug_assertions))]
+        let hull_crossed: Option<HullCrossedCounter> = None;
+
         let rt_pass = RegionRenderTask::new(
             &self.gpu,
             &self.store,
@@ -552,23 +600,34 @@ impl ApplicationHandler for App {
             // The march-and-miss counter: same on-demand gate; `None` (the
             // default app) pushes INVALID and specializes COUNTER_ENABLED off.
             self.measurement.as_ref().and_then(Measurement::counter),
+            hull_crossed.as_ref(),
         );
         let instance_buffer_id = rt_pass.instance_buffer_id();
 
         // The render node id is needed only by the debug edge below.
-        #[cfg_attr(not(debug_assertions), allow(unused_variables))]
-        let rt_node_id = task_graph
-            .create_task_node("Render", QueueFamilyType::Graphics, rt_pass)
-            .image_access(
-                virtual_swapchain_id.current_image_id(),
+        let mut rt_node = task_graph.create_task_node("Render", QueueFamilyType::Graphics, rt_pass);
+        rt_node.image_access(
+            virtual_swapchain_id.current_image_id(),
+            AccessTypes::RAY_TRACING_SHADER_STORAGE_WRITE,
+            ImageLayoutType::General,
+        );
+        rt_node.buffer_access(
+            instance_buffer_id,
+            AccessTypes::RAY_TRACING_SHADER_ACCELERATION_STRUCTURE_READ,
+        );
+        // The count buffer is written by the intersection shader's atomicAdd in
+        // hull-crossed mode (debug only); declaring it here makes the
+        // rt -> heatmap edge insert the memory barrier that makes those
+        // atomics visible to the heatmap's read.
+        #[cfg(debug_assertions)]
+        {
+            rt_node.buffer_access(
+                hull_crossed.as_ref().unwrap().buffer_id,
                 AccessTypes::RAY_TRACING_SHADER_STORAGE_WRITE,
-                ImageLayoutType::General,
-            )
-            .buffer_access(
-                instance_buffer_id,
-                AccessTypes::RAY_TRACING_SHADER_ACCELERATION_STRUCTURE_READ,
-            )
-            .build();
+            );
+        }
+        #[cfg_attr(not(debug_assertions), allow(unused_variables))]
+        let rt_node_id = rt_node.build();
 
         // The debug overlay's framebuffer + vertex buffer (app-only).
         #[cfg(debug_assertions)]
@@ -619,8 +678,35 @@ impl ApplicationHandler for App {
         #[cfg(debug_assertions)]
         task_graph.add_host_buffer_access(debug_vertex_buffer_id, HostAccessType::Write);
 
+        // The hull-crossed heatmap overlay node (debug builds): a compute pass
+        // that reads the per-pixel count buffer and repaints the swapchain
+        // image when the mode is hull-crossed. Ordered after the ray pass and
+        // before the debug line overlay.
         #[cfg(debug_assertions)]
-        task_graph.add_edge(rt_node_id, debug_node_id).unwrap();
+        let heatmap_node_id = task_graph
+            .create_task_node(
+                "Heatmap",
+                QueueFamilyType::Graphics,
+                DrawHeatmapTask::new(
+                    virtual_swapchain_id,
+                    hull_crossed.as_ref().unwrap().storage_id,
+                ),
+            )
+            .image_access(
+                virtual_swapchain_id.current_image_id(),
+                AccessTypes::COMPUTE_SHADER_STORAGE_WRITE,
+                ImageLayoutType::General,
+            )
+            .buffer_access(
+                hull_crossed.as_ref().unwrap().buffer_id,
+                AccessTypes::COMPUTE_SHADER_STORAGE_READ,
+            )
+            .build();
+
+        #[cfg(debug_assertions)]
+        task_graph.add_edge(rt_node_id, heatmap_node_id).unwrap();
+        #[cfg(debug_assertions)]
+        task_graph.add_edge(heatmap_node_id, debug_node_id).unwrap();
 
         let task_graph = unsafe {
             task_graph.compile(&CompileInfo {
@@ -650,6 +736,17 @@ impl ApplicationHandler for App {
                 .downcast_mut::<DrawDebugTask>()
                 .unwrap()
                 .pipeline = Some(debug_pipeline);
+
+            // The heatmap compute pipeline has no subpass, so it is created
+            // from the app only (no task-node reference).
+            let heatmap_pipeline = create_heatmap_pipeline(self);
+            task_graph
+                .task_node_mut(heatmap_node_id)
+                .unwrap()
+                .task_mut()
+                .downcast_mut::<DrawHeatmapTask>()
+                .unwrap()
+                .pipeline = Some(heatmap_pipeline);
         }
 
         #[cfg(debug_assertions)]

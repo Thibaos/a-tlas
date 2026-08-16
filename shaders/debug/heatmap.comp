@@ -1,0 +1,39 @@
+#version 460
+
+#extension GL_EXT_scalar_block_layout : enable
+#extension GL_EXT_GOOGLE_include_directive : enable
+
+#include <vulkano.glsl>
+#include "../rt/heat_ramp.glsl"
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+// The per-pixel hull-crossed count buffer (bindless): one uint per ray pass
+// pixel, y-major (y * width + x), written by the DDA intersection shader's
+// atomicAdd. The heatmap overlay reads it and paints the swapchain image.
+VKO_DECLARE_STORAGE_BUFFER(hull_count, HullCountBuffer {
+    uint pixels[];
+})
+
+layout(push_constant) uniform PushConstants {
+    StorageImageId image_id;
+    StorageBufferId hull_count_buffer_id;
+    uint width;
+    uint height;
+};
+
+#define hull_count vko_buffer(hull_count, hull_count_buffer_id)
+
+// The hull-crossed count that saturates to "hot" (the DDA marches <= ~24 cells
+// per hull; long empty rays can cross more hulls and saturate).
+const float HULL_CROSSED_CAP = 32.0;
+
+void main() {
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    if (uint(p.x) >= width || uint(p.y) >= height) {
+        return;
+    }
+    uint idx = uint(p.y) * width + uint(p.x);
+    vec4 color = heat_color(float(hull_count.pixels[idx]) / HULL_CROSSED_CAP);
+    imageStore(vko_image2D_rgba8(image_id), p, color);
+}

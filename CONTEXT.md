@@ -100,6 +100,14 @@ tracer marches an independent DDA, deliberately not a mirror of the
 renderer's.
 _Avoid_: voxel ray march, ray walk
 
+**t pre-pass**:
+A candidate primary-visibility optimization under evaluation: a coarse
+(lower-resolution) ray pass records each tile's nearest-hit t, which the
+full-resolution pass then uses to skip nearer empty space. Named by its
+mechanism — a lower-res t pass — not an effect.
+_Avoid_: beam (classic beam tracing is secondary-ray cone tracing, out of
+scope), depth pre-pass (implies a raster depth buffer this renderer lacks)
+
 **Background**:
 The color produced where no geometry is hit (the miss shader's output);
 black today. Rays that leave the loaded world hit nothing and report the
@@ -116,10 +124,31 @@ not a place)
 ## Render mode
 
 **Render mode**:
-What the renderer resolves a primary ray into. `Voxel` (default): the DDA
-commits the surface voxel, shaded from the Palette. `Hull`: each Micro-chunk's
-trimmed AABB is the surface, colored by a coordinate hash, with no DDA.
+What the ray pass paints each pixel with: surface identity (`Voxel`, `Hull`) or
+a diagnostic quantity (`Ray latency`, `hull-crossed`). `Voxel` (default): the
+DDA commits the surface voxel, shaded from the Palette. `Hull`: each
+Micro-chunk's trimmed AABB is the surface, colored by a coordinate hash, with
+no DDA. The diagnostic modes are debug-build-only.
 _Avoid_: shading mode, visualization mode
+
+**Ray latency**:
+A diagnostic Render mode (debug builds): each pixel is colored by its ray's
+wall-clock lifetime, read as a `clockRealtime` delta around `traceRayEXT` in
+the raygen. Latency, not cost — it includes stalls, occupancy contention, and
+the slowest warp lane, and is not reproducible frame-to-frame; it is the only
+per-pixel instrument that sees the hardware BVH traversal, which no
+shader-side counter observes.
+_Avoid_: traversal time
+
+**hull-crossed**:
+The count of Micro-chunk hulls a ray enters (slab-passed, march begun) before
+committing or missing; the same quantity the `--measure` counter's
+`hull_crossed` word totals per frame. A diagnostic Render mode (debug builds)
+paints each pixel by this count. A lower bound on traversal work (hulls
+entered, not the close-but-rejected AABB tests the hardware performs before
+any shader runs) and an upper bound per-pixel (Vulkan may invoke intersection
+shaders redundantly).
+_Avoid_: traversal count
 
 ## Validation
 

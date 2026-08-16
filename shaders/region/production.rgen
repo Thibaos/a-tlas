@@ -4,20 +4,36 @@
 #extension GL_EXT_GOOGLE_include_directive : enable
 #extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
 #extension GL_EXT_buffer_reference2 : require
+#ifdef ATLAS_RT_RAY_LATENCY
+#extension GL_EXT_shader_realtime_clock : require
+#endif
 
 #include "../rt/common.glsl"
 #include "header.glsl"
 #include "common.glsl"
 #include "../rt/raygen_common.glsl"
+#include "../rt/heat_ramp.glsl"
 
 layout(location = 0) rayPayloadEXT MainPassPayload payload;
+
+// Render-mode selectors (match RenderMode in src/region/render.rs). Hull and
+// the diagnostic modes are debug-build-only; release traces Voxel always.
+const uint MODE_VOXEL = 0u;
+const uint MODE_HULL = 1u;
+const uint MODE_RAY_LATENCY = 2u;
+const uint MODE_HULL_CROSSED = 3u;
+
+// The latency heatmap's tick budget: clock ticks that saturate to "hot".
+// clockRealtime2x32EXT ticks at a device rate, so this is a tunable debug knob,
+// not a physical duration.
+const float LATENCY_TICK_CAP = 2000000.0;
 
 // Production raygen for the Region path. The ray
 // is built by the shared raygen_common.glsl (byte-identical to the capture
 // raygen), traverses world-space f32 with Opaque over the camera near/far
 // range, and writes the primary-visibility result to the
 // swapchain storage image. Unlike the validation raygen it never
-// dereferences `t_image_id` (the app pushes INVALID), so the frame is one
+// dereferences t_image_id (the app pushes INVALID), so the frame is one
 // imageStore per pixel.
 //
 // Deliberately NOT TerminateOnFirstHit: that flag terminates the trace at
@@ -37,10 +53,29 @@ void main() {
     payload.t = -1.0;
 
     // The Render mode selects the hit group through the shader-binding-table
-    // record offset: 0 = Voxel (the DDA hit group), 1 = Hull (the AABB hit
-    // group, debug builds only). `mode` is a per-frame push-constant flag, so
-    // a TAB toggle never rebuilds the pipeline.
-    traceRayEXT(vko_accelerationStructureEXT(acceleration_structure_id), ray_flags, 0xFFu, mode, 0u, 0u, origin, RAY_T_MIN, direction, RAY_T_MAX, 0);
+    // record offset: Hull = 1, hull-crossed = 2; Voxel and Ray latency trace
+    // the DDA hit group (0) so the latency measures the real traversal. mode
+    // is a per-frame push-constant flag, so a TAB toggle never rebuilds the
+    // pipeline.
+    uint sbt_offset = (mode == MODE_HULL) ? 1u : ((mode == MODE_HULL_CROSSED) ? 2u : 0u);
+
+#ifdef ATLAS_RT_RAY_LATENCY
+    if (mode == MODE_RAY_LATENCY) {
+        // Ray latency: the wall-clock of the whole trace, warp-contaminated
+        // (CONTEXT.md) — the only per-pixel instrument that includes the
+        // hardware BVH traversal. Latency, not cost.
+        uvec2 t0 = clockRealtime2x32EXT();
+        traceRayEXT(vko_accelerationStructureEXT(acceleration_structure_id), ray_flags, 0xFFu, sbt_offset, 0u, 0u, origin, RAY_T_MIN, direction, RAY_T_MAX, 0);
+        uvec2 t1 = clockRealtime2x32EXT();
+        // Low-32-bit delta (u32 wraparound): exact for sub-2^32-tick latencies.
+        uint delta = t1.x - t0.x;
+        payload.color = heat_color(float(delta) / LATENCY_TICK_CAP);
+        imageStore(vko_image2D_rgba8(image_id), ivec2(gl_LaunchIDEXT.xy), payload.color);
+        return;
+    }
+#endif
+
+    traceRayEXT(vko_accelerationStructureEXT(acceleration_structure_id), ray_flags, 0xFFu, sbt_offset, 0u, 0u, origin, RAY_T_MIN, direction, RAY_T_MAX, 0);
 
     imageStore(vko_image2D_rgba8(image_id), ivec2(gl_LaunchIDEXT.xy), payload.color);
 }
