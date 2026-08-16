@@ -1,5 +1,3 @@
-#[cfg(debug_assertions)]
-use glam::Mat4;
 use std::{f32::consts::PI, sync::Arc, time::Duration};
 use vulkano::{
     VulkanError, VulkanLibrary,
@@ -17,10 +15,6 @@ use vulkano::{
 use vulkano::buffer::{BufferCreateInfo, BufferUsage};
 #[cfg(debug_assertions)]
 use vulkano::memory::allocator::{AllocationCreateInfo, DeviceLayout, MemoryTypeFilter};
-#[cfg(debug_assertions)]
-use vulkano_taskgraph::graph::AttachmentInfo;
-#[cfg(debug_assertions)]
-use vulkano_taskgraph::resource::HostAccessType;
 use vulkano_taskgraph::{
     Id, QueueFamilyType,
     descriptor_set::{BindlessContext, StorageImageId},
@@ -28,9 +22,6 @@ use vulkano_taskgraph::{
     resource::{AccessTypes, Flight, ImageLayoutType, Resources, ResourcesCreateInfo},
     resource_map,
 };
-
-#[cfg(debug_assertions)]
-use vulkano::pipeline::graphics::viewport::Viewport;
 
 use winit::{
     application::ApplicationHandler,
@@ -40,8 +31,6 @@ use winit::{
     window::{Window, WindowAttributes},
 };
 
-#[cfg(debug_assertions)]
-use crate::world::Vertex3DColor;
 use crate::{
     grid::LATTICE_HALF_EXTENT,
     input::{self, Input, InputButton, InputKey},
@@ -62,14 +51,11 @@ use crate::{
 };
 
 #[cfg(debug_assertions)]
-use crate::debug::{
-    self, DrawDebugTask, DrawHeatmapTask, create_debug_pipeline, create_heatmap_pipeline,
-};
+use crate::debug::{DrawHeatmapTask, create_heatmap_pipeline};
 
 pub const MAX_FRAMES_IN_FLIGHT: u32 = 2;
 pub const MIN_SWAPCHAIN_IMAGES: u32 = MAX_FRAMES_IN_FLIGHT + 1;
 pub const TICKS_PER_SECOND: u32 = 1;
-pub const MAX_DEBUG_LINES: u32 = 4096;
 /// The per-pixel hull-crossed count buffer's fixed pixel ceiling (4K): debug
 /// builds only. Resizing the window beyond it is unsupported in the heatmap.
 #[cfg(debug_assertions)]
@@ -454,15 +440,6 @@ impl App {
             proj_inverse: proj.inverse().to_cols_array_2d(),
             view_inverse: view.inverse().to_cols_array_2d(),
         };
-
-        #[cfg(debug_assertions)]
-        {
-            rcx.region.debug_constant_data = debug::shader::vert::PushConstants {
-                world: Mat4::default().to_cols_array_2d(),
-                view: view.to_cols_array_2d(),
-                proj: proj.to_cols_array_2d(),
-            };
-        }
     }
 }
 
@@ -534,10 +511,6 @@ impl ApplicationHandler for App {
         };
 
         let swapchain_id = swapchain.0;
-        // The swapchain format is needed only by the debug overlay's color
-        // attachment (the ray pass writes storage images, format-agnostic).
-        #[cfg(debug_assertions)]
-        let swapchain_format = swapchain.1;
 
         let swapchain_storage_image_ids =
             window_size_dependent_setup(&self.gpu.resources, swapchain_id);
@@ -604,7 +577,7 @@ impl ApplicationHandler for App {
         );
         let instance_buffer_id = rt_pass.instance_buffer_id();
 
-        // The render node id is needed only by the debug edge below.
+        // The render node id is needed only by the heatmap edge below.
         let mut rt_node = task_graph.create_task_node("Render", QueueFamilyType::Graphics, rt_pass);
         rt_node.image_access(
             virtual_swapchain_id.current_image_id(),
@@ -629,59 +602,9 @@ impl ApplicationHandler for App {
         #[cfg_attr(not(debug_assertions), allow(unused_variables))]
         let rt_node_id = rt_node.build();
 
-        // The debug overlay's framebuffer + vertex buffer (app-only).
-        #[cfg(debug_assertions)]
-        let virtual_framebuffer_id = task_graph.add_framebuffer();
-
-        #[cfg(debug_assertions)]
-        let debug_vertex_buffer_id = self
-            .gpu
-            .resources
-            .create_buffer(
-                &BufferCreateInfo {
-                    usage: BufferUsage::VERTEX_BUFFER,
-                    ..Default::default()
-                },
-                &AllocationCreateInfo {
-                    memory_type_filter: MemoryTypeFilter::HOST_RANDOM_ACCESS
-                        | MemoryTypeFilter::PREFER_DEVICE,
-                    ..Default::default()
-                },
-                DeviceLayout::new_unsized::<[Vertex3DColor]>(MAX_DEBUG_LINES.into()).unwrap(),
-            )
-            .unwrap();
-
-        #[cfg(debug_assertions)]
-        let debug_pass = DrawDebugTask::new(debug_vertex_buffer_id);
-
-        #[cfg(debug_assertions)]
-        let debug_node_id = task_graph
-            .create_task_node("Debug", QueueFamilyType::Graphics, debug_pass)
-            .framebuffer(virtual_framebuffer_id)
-            .color_attachment(
-                virtual_swapchain_id.current_image_id(),
-                AccessTypes::COLOR_ATTACHMENT_WRITE,
-                ImageLayoutType::Optimal,
-                &AttachmentInfo {
-                    format: swapchain_format,
-                    ..Default::default()
-                },
-            )
-            .image_access(
-                virtual_swapchain_id.current_image_id(),
-                AccessTypes::COLOR_ATTACHMENT_READ,
-                ImageLayoutType::Optimal,
-            )
-            .buffer_access(debug_vertex_buffer_id, AccessTypes::VERTEX_ATTRIBUTE_READ)
-            .build();
-
-        #[cfg(debug_assertions)]
-        task_graph.add_host_buffer_access(debug_vertex_buffer_id, HostAccessType::Write);
-
         // The hull-crossed heatmap overlay node (debug builds): a compute pass
         // that reads the per-pixel count buffer and repaints the swapchain
-        // image when the mode is hull-crossed. Ordered after the ray pass and
-        // before the debug line overlay.
+        // image when the mode is hull-crossed. Ordered after the ray pass.
         #[cfg(debug_assertions)]
         let heatmap_node_id = task_graph
             .create_task_node(
@@ -705,8 +628,6 @@ impl ApplicationHandler for App {
 
         #[cfg(debug_assertions)]
         task_graph.add_edge(rt_node_id, heatmap_node_id).unwrap();
-        #[cfg(debug_assertions)]
-        task_graph.add_edge(heatmap_node_id, debug_node_id).unwrap();
 
         let task_graph = unsafe {
             task_graph.compile(&CompileInfo {
@@ -718,25 +639,13 @@ impl ApplicationHandler for App {
         }
         .unwrap();
 
-        // The debug pipeline is injected into the compiled graph only in
-        // debug builds (the overlay is app-only and cfg'd out in release).
+        // The heatmap compute pipeline is injected into the compiled graph
+        // only in debug builds (the overlay is app-only).
         #[cfg(debug_assertions)]
         let mut task_graph = task_graph;
 
         #[cfg(debug_assertions)]
         {
-            let node = task_graph.task_node(debug_node_id).unwrap();
-
-            let debug_pipeline = create_debug_pipeline(self, node);
-
-            task_graph
-                .task_node_mut(debug_node_id)
-                .unwrap()
-                .task_mut()
-                .downcast_mut::<DrawDebugTask>()
-                .unwrap()
-                .pipeline = Some(debug_pipeline);
-
             // The heatmap compute pipeline has no subpass, so it is created
             // from the app only (no task-node reference).
             let heatmap_pipeline = create_heatmap_pipeline(self);
@@ -748,21 +657,6 @@ impl ApplicationHandler for App {
                 .unwrap()
                 .pipeline = Some(heatmap_pipeline);
         }
-
-        #[cfg(debug_assertions)]
-        let viewport = Viewport {
-            offset: [0.0, 0.0],
-            extent: window_size.into(),
-            min_depth: 0.0,
-            max_depth: 1.0,
-        };
-
-        #[cfg(debug_assertions)]
-        let debug_constant_data = debug::shader::vert::PushConstants {
-            world: Mat4::default().to_cols_array_2d(),
-            view: Mat4::default().to_cols_array_2d(),
-            proj: Mat4::default().to_cols_array_2d(),
-        };
 
         let region = RegionRenderContext {
             camera: capture_raygen::Camera {
@@ -776,12 +670,6 @@ impl ApplicationHandler for App {
             // Voxel is the default; TAB (debug builds) toggles this in the
             // render context before each frame.
             mode: RenderMode::default(),
-            #[cfg(debug_assertions)]
-            debug_constant_data,
-            #[cfg(debug_assertions)]
-            debug_lines: vec![],
-            #[cfg(debug_assertions)]
-            viewport,
         };
 
         self.rcx = Some(RenderContext {
@@ -849,16 +737,6 @@ impl ApplicationHandler for App {
                                 }
                             })
                             .expect("failed to recreate swapchain");
-
-                        #[cfg(debug_assertions)]
-                        {
-                            rcx.region.viewport = Viewport {
-                                offset: [0.0, 0.0],
-                                extent: window_size.into(),
-                                min_depth: 0.0,
-                                max_depth: 1.0,
-                            };
-                        }
 
                         let mut batch = self.gpu.resources.create_deferred_batch();
 

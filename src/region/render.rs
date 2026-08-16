@@ -36,10 +36,6 @@ use vulkano_taskgraph::{
     descriptor_set::{AccelerationStructureId, StorageBufferId, StorageImageId},
 };
 
-#[cfg(debug_assertions)]
-use crate::debug;
-#[cfg(debug_assertions)]
-use crate::world::Vertex3DColor;
 use crate::{
     app::GpuStack,
     measure::{
@@ -48,8 +44,6 @@ use crate::{
     },
     region::residency::RegionStore,
 };
-#[cfg(debug_assertions)]
-use vulkano::pipeline::graphics::viewport::Viewport;
 
 pub(crate) mod capture_raygen {
     vulkano_shaders::shader! {
@@ -174,10 +168,6 @@ pub struct HullCrossedCounter {
 
 /// The per-frame world the Region render task reads (shared by the
 /// validator's graph and the app's graph).
-///
-/// The debug-overlay fields are app-only (the validator's graph never draws
-/// the overlay, but builds the same world type): the app's per-frame debug
-/// lines, push constants, and viewport, behind `debug_assertions`.
 pub struct RegionRenderContext {
     pub camera: capture_raygen::Camera,
     pub swapchain_storage_image_ids: Vec<StorageImageId>,
@@ -189,12 +179,6 @@ pub struct RegionRenderContext {
     /// 1 = Hull). Always Voxel in release and in the validator; the app
     /// toggles it on TAB in debug builds.
     pub mode: RenderMode,
-    #[cfg(debug_assertions)]
-    pub debug_lines: Vec<Vertex3DColor>,
-    #[cfg(debug_assertions)]
-    pub debug_constant_data: debug::shader::vert::PushConstants,
-    #[cfg(debug_assertions)]
-    pub viewport: Viewport,
 }
 
 pub struct RegionRenderTask {

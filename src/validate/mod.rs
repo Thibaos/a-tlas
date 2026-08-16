@@ -858,13 +858,6 @@ impl ValidateApp {
         }
         .map_err(|e| format!("compile: {e}"))?;
 
-        // The viewport extent follows the hidden window (the debug overlay
-        // is app-only; the validator never draws it).
-        #[cfg(debug_assertions)]
-        let extent = self.gpu.resources.swapchain(setup.swapchain_id).images()[0].extent();
-        #[cfg(debug_assertions)]
-        let viewport_extent = [extent[0] as f32, extent[1] as f32];
-
         let rcx = RegionRenderContext {
             camera: setup.camera,
             swapchain_storage_image_ids: setup.swapchain_storage_image_ids.clone(),
@@ -872,23 +865,6 @@ impl ValidateApp {
             // The validator is Voxel-only: the capture raygen hardcodes
             // sbtRecordOffset = 0 and never toggles to Hull.
             mode: RenderMode::default(),
-            // App-only debug overlay fields: the validator never draws the
-            // overlay, but builds the same world type.
-            #[cfg(debug_assertions)]
-            debug_lines: Vec::new(),
-            #[cfg(debug_assertions)]
-            debug_constant_data: crate::debug::shader::vert::PushConstants {
-                world: glam::Mat4::default().to_cols_array_2d(),
-                view: glam::Mat4::default().to_cols_array_2d(),
-                proj: glam::Mat4::default().to_cols_array_2d(),
-            },
-            #[cfg(debug_assertions)]
-            viewport: vulkano::pipeline::graphics::viewport::Viewport {
-                offset: [0.0, 0.0],
-                extent: viewport_extent,
-                min_depth: 0.0,
-                max_depth: 1.0,
-            },
         };
 
         Ok(ValidateFrame {
