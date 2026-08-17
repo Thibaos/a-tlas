@@ -168,8 +168,15 @@ struct BlasAllocation {
 pub struct RegionStore {
     // --- static (per-world) buffers + bindless ids ---------------------
     pub camera_buffer_id: Id<Buffer>,
+    /// The Scene buffer (ticket 06): the analytic lights' constants (Sun
+    /// direction/illuminance, sky knots, disk), updated every frame from
+    /// the render context (tunable). The capture pipeline never reads it
+    /// (its miss shader stays black) — the byte-exact validator is
+    /// unchanged.
+    pub scene_buffer_id: Id<Buffer>,
     pub region_table_storage_id: StorageBufferId,
     pub camera_storage_id: StorageBufferId,
+    pub scene_storage_id: StorageBufferId,
     pub palette_storage_id: StorageBufferId,
     /// The bindless Material table (ADR 0008): one entry per palette index
     /// (albedo+metallic / emission+roughness), uploaded once at startup — the
@@ -237,6 +244,26 @@ impl RegionStore {
                     ..Default::default()
                 },
                 DeviceLayout::new_sized::<capture_raygen::Camera>(),
+            )
+            .unwrap();
+
+        // The Scene buffer (ticket 06): the analytic lights' constants —
+        // the Sun (direction + illuminance), the Procedural sky's μ-gradient
+        // knots, and the disk. Written with the defaults at creation and
+        // updated every frame from the render context (tunable).
+        let scene_buffer_id = gpu
+            .resources
+            .create_buffer(
+                &BufferCreateInfo {
+                    usage: BufferUsage::STORAGE_BUFFER | BufferUsage::TRANSFER_DST,
+                    ..Default::default()
+                },
+                &AllocationCreateInfo {
+                    memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
+                        | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
+                    ..Default::default()
+                },
+                DeviceLayout::new_sized::<capture_raygen::Scene>(),
             )
             .unwrap();
 
@@ -370,11 +397,14 @@ impl RegionStore {
                             albedo_metallic,
                             rough_emit,
                         };
+                    *tcx.write_buffer::<capture_raygen::Scene>(scene_buffer_id, ..) =
+                        crate::region::render::default_scene();
                     Ok(())
                 },
                 [
                     (palette_buffer_id, HostAccessType::Write),
                     (material_table_buffer_id, HostAccessType::Write),
+                    (scene_buffer_id, HostAccessType::Write),
                 ],
                 [],
                 [],
@@ -420,6 +450,14 @@ impl RegionStore {
                 Some(size_of::<capture_raygen::MaterialTable>() as DeviceSize),
             )
             .unwrap();
+        let scene_storage_id = bcx
+            .global_set()
+            .create_storage_buffer(
+                scene_buffer_id,
+                0,
+                Some(size_of::<capture_raygen::Scene>() as DeviceSize),
+            )
+            .unwrap();
         let acceleration_structure_id = bcx.global_set().add_acceleration_structure(tlas.clone());
         let aabb_table_storage_id = bcx
             .global_set()
@@ -432,8 +470,10 @@ impl RegionStore {
 
         let mut store = Self {
             camera_buffer_id,
+            scene_buffer_id,
             region_table_storage_id,
             camera_storage_id,
+            scene_storage_id,
             palette_storage_id,
             material_table_storage_id,
             acceleration_structure_id,

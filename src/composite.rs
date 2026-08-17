@@ -93,6 +93,8 @@ impl Task for CompositeTask {
                 &composite::PushConstants {
                     image_id: rcx.swapchain_storage_image_ids[image_index as usize],
                     radiance_id: rcx.diff_radiance_image_id,
+                    spec_radiance_id: rcx.spec_radiance_image_id,
+                    albedo_metal_id: rcx.albedo_metal_image_id,
                     ev: rcx.ev,
                     mode: rcx.mode as u32,
                     width: extent[0],

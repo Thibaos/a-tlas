@@ -84,6 +84,12 @@ layout(push_constant) uniform RegionPushConstants {
     // and the production raygen reads it through the payload's hit_kind in
     // Voxel mode (real metalness + emission-as-albedo-light in the stub).
     StorageBufferId material_table_buffer_id;
+    // The Scene buffer (ticket 06): the analytic lights' constants (sun
+    // direction/illuminance, sky knots, disk). Read by the production sky
+    // miss shader and the production raygen's Voxel mode; the capture
+    // stages never dereference it (INVALID would do — the store's id is
+    // pushed uniformly).
+    StorageBufferId scene_buffer_id;
     StorageBufferId region_table_buffer_id;
     // The region -> AABB-buffer device-address table (the DDA's and the
     // Hull intersection shader's lookup, parallel to `region_table`).
@@ -101,6 +107,11 @@ layout(push_constant) uniform RegionPushConstants {
     // (Ray latency traces hit-region 0, the DDA, and only changes the paint).
     // Always present; always 0 in release (Voxel is the only mode).
     uint mode;
+    // Path-tracing RNG seed (ticket 05, ADR 0010): the per-frame counter the
+    // raygen mixes into the per-pixel path seed so consecutive frames
+    // decorrelate for the Denoise pass's temporal accumulation. The capture
+    // raygen never reads it; the validator pushes 0.
+    uint frame_seed;
     // Path-tracing output contract (ADR 0007): the trace pass's noisy
     // radiance pair and auxiliary guide buffers, written by the production
     // raygen in Voxel mode (diffuse+specular radiance with in-lobe hit

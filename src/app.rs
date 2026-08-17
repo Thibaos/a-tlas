@@ -43,6 +43,7 @@ use crate::{
         input::RendererInput,
         render::{
             HullCrossedCounter, RegionRenderContext, RegionRenderTask, RenderMode, capture_raygen,
+            default_scene,
             production_raygen,
         },
         residency::RegionStore,
@@ -242,6 +243,11 @@ pub struct App {
 
     delta_time: Duration,
     focused: bool,
+    /// The path-tracing RNG's per-frame seed (ticket 05, ADR 0010):
+    /// incremented every rendered frame and written into the render
+    /// context's `frame_seed`, so consecutive frames decorrelate for the
+    /// Denoise pass's temporal accumulation.
+    frame_seed: u32,
 
     pub voxel_data: dot_vox::DotVoxData,
     pub world: Arc<World>,
@@ -343,6 +349,7 @@ impl App {
 
             delta_time: Duration::ZERO,
             focused: false,
+            frame_seed: 0,
 
             player_controller: PlayerController::default(),
             player_input: Input::default(),
@@ -592,6 +599,9 @@ impl ApplicationHandler for App {
             // default app) pushes INVALID and specializes COUNTER_ENABLED off.
             self.measurement.as_ref().and_then(Measurement::counter),
             hull_crossed.as_ref(),
+            // The production pipeline's miss shader returns the Procedural
+            // sky (ticket 06).
+            true,
         );
         let instance_buffer_id = rt_pass.instance_buffer_id();
 
@@ -755,6 +765,9 @@ impl ApplicationHandler for App {
                 proj_inverse: [[0.0; 4]; 4],
                 view_inverse: [[0.0; 4]; 4],
             },
+            // The analytic lights' constants (ticket 06): the defaults —
+            // tunable later (the Scene buffer is written every frame).
+            scene: default_scene(),
             swapchain_storage_image_ids,
             // The production raygen never dereferences `t_image_id`
             // (shaders/region/production.rgen) — it stays INVALID.
@@ -773,6 +786,9 @@ impl ApplicationHandler for App {
             // Voxel is the default; TAB (debug builds) toggles this in the
             // render context before each frame.
             mode: RenderMode::default(),
+            // The path-tracing RNG seed starts at 0; the frame loop
+            // increments it before each frame (ticket 05).
+            frame_seed: 0,
         };
 
         self.rcx = Some(RenderContext {
@@ -802,6 +818,11 @@ impl ApplicationHandler for App {
             WindowEvent::RedrawRequested => {
                 self.update_delta_time();
                 self.update_camera();
+                // The path-tracing RNG's per-frame seed (ticket 05):
+                // increment before this frame renders so consecutive frames
+                // decorrelate for the Denoise pass's temporal accumulation.
+                self.frame_seed = self.frame_seed.wrapping_add(1);
+                self.rcx.as_mut().unwrap().region.frame_seed = self.frame_seed;
                 self.physics_controller.request_update();
                 self.request_log();
 

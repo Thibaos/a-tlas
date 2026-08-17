@@ -30,6 +30,20 @@ VKO_DECLARE_STORAGE_BUFFER(material_table, MaterialTable{
     vec4[256] rough_emit;
 })
 
+// The Scene buffer (ticket 06): the analytic lights' constants — the Sun
+// (delta: world direction + illuminance) and the Procedural sky (the
+// μ-gradient knots + the disk). Read by the production sky miss shader and
+// the production raygen's Voxel mode (NEE); the capture stages declare the
+// binding but never dereference it, so the byte-exact validator is
+// unchanged. All values are data (packed by the app); the CPU path tracer
+// (07) mirrors the same packed values.
+VKO_DECLARE_STORAGE_BUFFER(scene, Scene{
+    vec4 sun_dir;   // xyz = unit sun direction (world); w = unused
+    vec4 sky_knots; // x = ground radiance (μ = -1), y = horizon (μ = 0), z = zenith (μ = 1); w = unused
+    vec4 sun_disk;  // x = E_sun (illuminance, lux), y = cos(θ_disk), z = L_disk (disk radiance); w = unused
+})
+
 #define camera vko_buffer(camera, camera_buffer_id)
 #define palette vko_buffer(palette, palette_buffer_id)
 #define material_table vko_buffer(material_table, material_table_buffer_id)
+#define scene vko_buffer(scene, scene_buffer_id)

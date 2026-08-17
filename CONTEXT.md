@@ -136,7 +136,9 @@ scope), depth pre-pass (implies a raster depth buffer this renderer lacks)
 The radiance produced where no geometry is hit (the miss shader's output):
 the Procedural sky. Rays that leave the loaded world hit nothing and report
 the Background color. The ray pass's t-range equals the camera's near/far, so
-Background also appears beyond the far plane.
+Background also appears beyond the far plane. The camera's direct view of the
+Background adds the Sun disk (the Sun's visual), evaluated by the raygen's
+primary-miss branch.
 _Avoid_: skybox, environment map (a sampled asset; the Procedural sky is
 analytic)
 
@@ -172,28 +174,52 @@ via path hits — there is no next-event sampling of Emissive voxels.
 _Avoid_: light (say Sun, Procedural sky, or Emissive voxel — which one)
 
 **Sun**:
-The analytic directional light: fixed direction and intensity constants,
-sampled by NEE with MIS against the Procedural sky and the BSDF.
+The analytic directional light: a delta light at infinity — fixed world
+direction and illuminance (`E_sun`, lux on a surface perpendicular to its
+rays) constants — sampled by NEE with MIS weight 1: a delta has no solid
+angle, so the BSDF sampler can never produce exactly its direction.
 
 **Procedural sky**:
-The analytic environment light — a gradient plus sun-disk radiance function
-evaluated by the miss shader; the Background. Importance-sampleable; no
-assets.
+The analytic environment light — a piecewise-linear radiance gradient in
+μ = cos(elevation), knots at ground/horizon/zenith (all positive), evaluated
+by the miss shader; the Background. Importance-sampleable by analytic CDF
+inversion; no assets. The Sun disk (below) is the Sun's visual, not part of
+the transport radiance — NEE and BSDF-miss samples see the gradient only.
 _Avoid_: skybox, environment map
+
+**Sun disk**:
+The Sun's visual: the measure-zero radiance bump on the Procedural sky in
+the Sun's direction, detected by a dot test. Seen only by the camera's
+direct view of the sky (the primary-miss branch); the transport never
+importance-samples it — the delta Sun light carries the light, and sampling
+a bright bump with a gradient-matched pdf would firefly at 1 spp.
+_Avoid_: the Sun (the disk is the look; the Sun is the light)
 
 **NEE**:
 Next-event estimation: a Bounce samples a light directly (Sun or Procedural
-sky) rather than waiting for a path hit; combined with the BSDF estimate by
-MIS.
+sky) rather than waiting for a path hit; one light is picked per Bounce
+(equal probability), with a shadow ray against the world; combined with the
+BSDF estimate by MIS.
 _Avoid_: direct lighting (unqualified), light sampling (unqualified)
 
 **MIS**:
-Multiple importance sampling: the weighting combining the NEE and BSDF
-estimators for the Sun and Procedural sky so neither dominates.
+Multiple importance sampling: the balance-heuristic weighting combining the
+NEE and BSDF estimators for the Sun and Procedural sky so neither dominates.
+The Sun's delta is NEE-only (weight 1); the sky and the BSDF split by their
+direction pdfs.
 
 **Russian roulette**:
 Probabilistic path termination: a Bounce continues with probability equal to
 its throughput weight, keeping the estimator unbiased.
+
+**Lobe selection**:
+The per-pixel coin flip at the primary hit that picks which of the diffuse
+or specular lobes the first Bounce samples (p = 0.5, inside NRD's [1/4, 3/4]
+clamp for its AREA_3X3 hit-distance reconstruction mode); the whole path's
+radiance is attributed to the selected lobe's channel, the other channel gets
+0 that frame, and the Denoise pass's temporal accumulation fills both.
+_Avoid_: split path (per-pixel the path is single-lobe by design —
+subsequent Bounces sample the full BSDF)
 
 **Trace pass**:
 The ray pass under the path-tracing output contract (ADR 0007): in Voxel
@@ -215,6 +241,17 @@ in-lobe hit distance in alpha — written per pixel and consumed by the
 Denoise pass; exposed to the swapchain after exposure and tonemap in the
 Composite.
 _Avoid_: render target, output image
+
+**De-modulation**:
+The removal of the surface's color response from radiance before denoising:
+the trace pass writes diffuse radiance divided by albedo (eps-guarded) and
+specular radiance divided by its BRDF average, so the Denoise pass filters
+pure light at a uniform noise level instead of albedo-tinted light; the
+Composite re-modulates (multiplies the color back) before exposure and
+tonemap. Emission is albedo-proportional, so it de-modulates to a constant
+and denoises as pure light.
+_Avoid_: unmodulated, normalized radiance ("de-modulated" names the NRD
+input contract specifically)
 
 **Composite**:
 The node that exposes the (denoised) radiance to the swapchain:

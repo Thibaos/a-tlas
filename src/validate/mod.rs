@@ -49,7 +49,7 @@ use crate::{
         input::RendererInput,
         pack::pack_regions,
         rebuild::RebuildLogEntry,
-        render::{RegionRenderContext, RegionRenderTask, RenderMode},
+        render::{RegionRenderContext, RegionRenderTask, RenderMode, default_scene},
         residency::RegionStore,
         snapshot::{MicroChunkSnapshot, emit_snapshots},
     },
@@ -788,6 +788,10 @@ impl ValidateApp {
             // Voxel, so the hull-crossed hit group is never selected and the
             // captured frames stay byte-identical.
             None,
+            // The capture pipeline's miss shader stays black: the byte-exact
+            // Reference comparison is against a constant background, so the
+            // sky (ticket 06) is production-only.
+            false,
         );
         let instance_buffer_id = rt_task.instance_buffer_id();
 
@@ -860,6 +864,11 @@ impl ValidateApp {
 
         let rcx = RegionRenderContext {
             camera: setup.camera,
+            // The analytic lights' constants (ticket 06): written into the
+            // Scene buffer every frame, but the capture path never reads
+            // them (its miss shader is black). The defaults keep the buffer
+            // well-formed.
+            scene: default_scene(),
             swapchain_storage_image_ids: setup.swapchain_storage_image_ids.clone(),
             t_image_storage_id: setup.t_image_storage_id,
             // The validator's capture raygen never writes the trace pass's
@@ -874,6 +883,9 @@ impl ValidateApp {
             // The validator is Voxel-only: the capture raygen hardcodes
             // sbtRecordOffset = 0 and never toggles to Hull.
             mode: RenderMode::default(),
+            // The capture raygen never reads frame_seed (the path tracer is
+            // production-only); 0 keeps the capture byte-identical.
+            frame_seed: 0,
         };
 
         Ok(ValidateFrame {

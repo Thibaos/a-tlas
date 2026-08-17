@@ -93,6 +93,20 @@ pub(crate) mod miss {
     }
 }
 
+/// The production miss shader (ticket 06): the Procedural sky's radiance —
+/// the gradient at the ray's world direction (the disk is the camera's
+/// direct view, added by the raygen's primary-miss branch). The capture
+/// pipeline keeps the black `miss` module, so the byte-exact validator is
+/// unchanged.
+pub(crate) mod miss_sky {
+    vulkano_shaders::shader! {
+        root_path_env: "CARGO_MANIFEST_DIR",
+        ty: "miss",
+        path: "shaders/region/miss_sky.rmiss",
+        vulkan_version: "1.3"
+    }
+}
+
 pub(crate) mod closest_hit {
     vulkano_shaders::shader! {
         root_path_env: "CARGO_MANIFEST_DIR",
@@ -177,6 +191,12 @@ pub struct HullCrossedCounter {
 /// validator's graph and the app's graph).
 pub struct RegionRenderContext {
     pub camera: capture_raygen::Camera,
+    /// The analytic lights' constants (ticket 06): the Sun (direction +
+    /// illuminance), the Procedural sky's μ-gradient knots, and the disk.
+    /// Written into the Scene buffer every frame (tunable); the capture
+    /// path never reads them (its miss shader is black), so the byte-exact
+    /// validator is unchanged.
+    pub scene: capture_raygen::Scene,
     pub swapchain_storage_image_ids: Vec<StorageImageId>,
     /// Validation only: the capture raygen additionally writes payload.t
     /// here; the production raygen passes INVALID and never dereferences it
@@ -203,6 +223,11 @@ pub struct RegionRenderContext {
     /// DDA hit group 0). Always Voxel in release and in the validator; the
     /// app toggles it on TAB in debug builds.
     pub mode: RenderMode,
+    /// The path-tracing RNG's per-frame seed (ticket 05, ADR 0010): the app
+    /// increments it every frame so consecutive frames decorrelate for the
+    /// Denoise pass's temporal accumulation. The validator's capture raygen
+    /// never reads it and pushes 0.
+    pub frame_seed: u32,
 }
 
 pub struct RegionRenderTask {
@@ -211,6 +236,12 @@ pub struct RegionRenderTask {
     instance_buffer_id: Id<Buffer>,
     camera_storage_id: StorageBufferId,
     palette_storage_id: StorageBufferId,
+    /// The Scene buffer (ticket 06): the analytic lights' constants —
+    /// updated every frame from the context like the camera; pushed into
+    /// the bindless Scene binding (the production sky miss shader and the
+    /// production raygen read it; the capture path never dereferences it).
+    scene_buffer_id: Id<Buffer>,
+    scene_storage_id: StorageBufferId,
     /// The bindless Material table (ADR 0008): pushed every frame; the DDA
     /// closest-hit reads it for the surface color (albedo == palette, so the
     /// capture path stays byte-identical) and the production raygen reads it
@@ -261,6 +292,12 @@ impl RegionRenderTask {
     /// `timestamps`: the measurement pool, when
     /// the app measures — the task records per-stage timestamps (flight /
     /// trace_rays) around the node. The validator passes `None`.
+    /// `hull_crossed`: the per-pixel hull-crossed count buffer (debug
+    /// builds only). `sky_background` (ticket 06): whether the miss shader
+    /// returns the Procedural sky (the app's production pipeline) or stays
+    /// black (the validator's capture pipeline — its byte-exact Reference
+    /// comparison is against a constant background).
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         gpu: &GpuStack,
         store: &RegionStore,
@@ -269,13 +306,23 @@ impl RegionRenderTask {
         timestamps: Option<Arc<QueryPool>>,
         counter: Option<&CounterBuffer>,
         hull_crossed: Option<&HullCrossedCounter>,
+        sky_background: bool,
     ) -> Self {
         let pipeline = {
-            let miss = unsafe {
-                miss::load(&gpu.device)
-                    .unwrap()
-                    .entry_point("main")
-                    .unwrap()
+            let miss = if sky_background {
+                unsafe {
+                    miss_sky::load(&gpu.device)
+                        .unwrap()
+                        .entry_point("main")
+                        .unwrap()
+                }
+            } else {
+                unsafe {
+                    miss::load(&gpu.device)
+                        .unwrap()
+                        .entry_point("main")
+                        .unwrap()
+                }
             };
             let intersection = unsafe {
                 intersect::load(&gpu.device)
@@ -302,6 +349,8 @@ impl RegionRenderTask {
             camera_buffer_id: store.camera_buffer_id,
             instance_buffer_id: store.instance_buffer_id,
             camera_storage_id: store.camera_storage_id,
+            scene_buffer_id: store.scene_buffer_id,
+            scene_storage_id: store.scene_storage_id,
             palette_storage_id: store.palette_storage_id,
             material_table_storage_id: store.material_table_storage_id,
             region_table_storage_id: store.region_table_storage_id,
@@ -325,6 +374,34 @@ impl RegionRenderTask {
     /// debug Hull shader's lookup).
     fn aabb_table_storage_id(&self) -> StorageBufferId {
         self.aabb_table_storage_id
+    }
+}
+
+/// The analytic lights' default constants (ticket 06): the Sun's world
+/// direction and illuminance, the Procedural sky's μ-gradient knots, and
+/// the Sun disk. Tunable (the context writes them every frame; the app can
+/// expose them later); the CPU path tracer (07) mirrors the same packed
+/// values as data.
+pub fn default_scene() -> capture_raygen::Scene {
+    // Sun: normalize(0.45, 0.8, 0.35) — ~52° elevation, world-fixed. The
+    // packed direction is data; the shader never renormalizes.
+    let sun_dir = glam::Vec3::new(0.45, 0.8, 0.35).normalize();
+    // Sky: the piecewise-linear radiance gradient in μ = cos(elevation),
+    // knots at ground (μ = -1) / horizon (0) / zenith (1) — all strictly
+    // positive (the marginal pdf stays positive everywhere).
+    let knots = [0.15, 0.6, 1.2];
+    // Sun disk: 0.5° angular radius (the real Sun); the disk radiance is
+    // E_sun / Ω_disk, so the disk's integrated radiance equals the Sun's
+    // illuminance — the same source: the disk is the visual (the camera's
+    // direct view), the delta is the transport.
+    let e_sun: f32 = 16.0;
+    let cos_disk = (0.5_f32 * std::f32::consts::PI / 180.0).cos();
+    let omega = 2.0 * std::f32::consts::PI * (1.0 - cos_disk);
+    let l_disk = e_sun / omega;
+    capture_raygen::Scene {
+        sun_dir: [sun_dir.x, sun_dir.y, sun_dir.z, 0.0],
+        sky_knots: [knots[0], knots[1], knots[2], 0.0],
+        sun_disk: [e_sun, cos_disk, l_disk, 0.0],
     }
 }
 
@@ -472,6 +549,10 @@ impl Task for RegionRenderTask {
 
         unsafe { cbf.update_buffer(self.camera_buffer_id, 0, &rcx.camera) };
 
+        // The Scene buffer (ticket 06): the analytic lights' constants,
+        // updated per frame like the camera (tunable).
+        unsafe { cbf.update_buffer(self.scene_buffer_id, 0, &rcx.scene) };
+
         // vkCmdUpdateBuffer's writes are not tracked by the taskgraph, so
         // make them visible to the ray pass explicitly.
         unsafe {
@@ -547,11 +628,13 @@ impl Task for RegionRenderTask {
                     camera_buffer_id: self.camera_storage_id,
                     palette_buffer_id: self.palette_storage_id,
                     material_table_buffer_id: self.material_table_storage_id,
+                    scene_buffer_id: self.scene_storage_id,
                     region_table_buffer_id: self.region_table_storage_id,
                     aabb_table_buffer_id: self.aabb_table_storage_id(),
                     counter_buffer_id: self.counter.map(|counter| counter.storage_id).unwrap_or(StorageBufferId::INVALID),
                     hull_count_buffer_id: self.hull_crossed.map(|hull_crossed| hull_crossed.storage_id).unwrap_or(StorageBufferId::INVALID),
                     mode: rcx.mode as u32,
+                    frame_seed: rcx.frame_seed,
                     diff_radiance_image_id: rcx.diff_radiance_image_id,
                     spec_radiance_image_id: rcx.spec_radiance_image_id,
                     normal_roughness_image_id: rcx.normal_roughness_image_id,
