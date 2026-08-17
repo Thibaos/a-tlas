@@ -862,6 +862,15 @@ impl ValidateApp {
             camera: setup.camera,
             swapchain_storage_image_ids: setup.swapchain_storage_image_ids.clone(),
             t_image_storage_id: setup.t_image_storage_id,
+            // The validator's capture raygen never writes the trace pass's
+            // output set (ADR 0007) — all six stay INVALID.
+            diff_radiance_image_id: StorageImageId::INVALID,
+            spec_radiance_image_id: StorageImageId::INVALID,
+            normal_roughness_image_id: StorageImageId::INVALID,
+            viewz_image_id: StorageImageId::INVALID,
+            mv_image_id: StorageImageId::INVALID,
+            albedo_metal_image_id: StorageImageId::INVALID,
+            ev: 0.0,
             // The validator is Voxel-only: the capture raygen hardcodes
             // sbtRecordOffset = 0 and never toggles to Hull.
             mode: RenderMode::default(),

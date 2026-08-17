@@ -1,4 +1,5 @@
 pub mod app;
+mod composite;
 #[cfg(debug_assertions)]
 mod debug;
 mod grid;

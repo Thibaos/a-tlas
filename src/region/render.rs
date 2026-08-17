@@ -174,6 +174,22 @@ pub struct RegionRenderContext {
     /// Validation only: the capture raygen additionally writes payload.t
     /// here; the production raygen passes INVALID and never dereferences it
     pub t_image_storage_id: StorageImageId,
+    /// Path-tracing output contract (ADR 0007): the trace pass's noisy
+    /// radiance pair and auxiliary guide buffers, written by the production
+    /// raygen in Voxel mode (diffuse+specular radiance with in-lobe hit
+    /// distance in alpha, normal+roughness, linear viewZ, backward motion
+    /// vectors, albedo+metalness). The composite node exposes them (and, from
+    /// ticket 08, the Denoise pass consumes them). The validator pushes
+    /// INVALID for all six — the capture raygen never writes them.
+    pub diff_radiance_image_id: StorageImageId,
+    pub spec_radiance_image_id: StorageImageId,
+    pub normal_roughness_image_id: StorageImageId,
+    pub viewz_image_id: StorageImageId,
+    pub mv_image_id: StorageImageId,
+    pub albedo_metal_image_id: StorageImageId,
+    /// Manual exposure in EV stops, applied by the composite node
+    /// (ADR 0007). App-only; the validator leaves it at 0.
+    pub ev: f32,
     /// The Render mode written into the push constants every frame: the
     /// production raygen's shader-binding-table record offset (0 = Voxel,
     /// 1 = Hull). Always Voxel in release and in the validator; the app
@@ -520,6 +536,12 @@ impl Task for RegionRenderTask {
                     counter_buffer_id: self.counter.map(|counter| counter.storage_id).unwrap_or(StorageBufferId::INVALID),
                     hull_count_buffer_id: self.hull_crossed.map(|hull_crossed| hull_crossed.storage_id).unwrap_or(StorageBufferId::INVALID),
                     mode: rcx.mode as u32,
+                    diff_radiance_image_id: rcx.diff_radiance_image_id,
+                    spec_radiance_image_id: rcx.spec_radiance_image_id,
+                    normal_roughness_image_id: rcx.normal_roughness_image_id,
+                    viewz_image_id: rcx.viewz_image_id,
+                    mv_image_id: rcx.mv_image_id,
+                    albedo_metal_image_id: rcx.albedo_metal_image_id,
                 },
             )
         };

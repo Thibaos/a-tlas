@@ -94,4 +94,18 @@ layout(push_constant) uniform RegionPushConstants {
     // (Ray latency traces hit-region 0, the DDA, and only changes the paint).
     // Always present; always 0 in release (Voxel is the only mode).
     uint mode;
+    // Path-tracing output contract (ADR 0007): the trace pass's noisy
+    // radiance pair and auxiliary guide buffers, written by the production
+    // raygen in Voxel mode (diffuse+specular radiance with in-lobe hit
+    // distance in alpha, normal+roughness, linear viewZ, backward motion
+    // vectors, albedo+metalness). The composite node exposes them (and, from
+    // ticket 08, the Denoise pass consumes them). INVALID for the debug
+    // modes, which paint the swapchain directly, and in the validator (the
+    // capture raygen never writes them).
+    StorageImageId diff_radiance_image_id;
+    StorageImageId spec_radiance_image_id;
+    StorageImageId normal_roughness_image_id;
+    StorageImageId viewz_image_id;
+    StorageImageId mv_image_id;
+    StorageImageId albedo_metal_image_id;
 };

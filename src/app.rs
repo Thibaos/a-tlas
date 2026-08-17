@@ -5,16 +5,17 @@ use vulkano::{
         Device, DeviceCreateInfo, DeviceExtensions, DeviceFeatures, Queue, QueueCreateInfo,
         QueueFlags, physical::PhysicalDeviceType,
     },
-    image::{ImageFormatInfo, ImageLayout, ImageUsage, view::ImageView},
+    format::Format,
+    image::{Image, ImageCreateInfo, ImageFormatInfo, ImageLayout, ImageType, ImageUsage, view::ImageView},
     instance::{Instance, InstanceCreateFlags, InstanceCreateInfo, InstanceExtensions},
-    memory::allocator::{MemoryAllocator, StandardMemoryAllocator},
+    memory::allocator::{AllocationCreateInfo, MemoryAllocator, StandardMemoryAllocator},
     swapchain::{PresentMode, Surface, Swapchain, SwapchainCreateInfo},
 };
 
 #[cfg(debug_assertions)]
 use vulkano::buffer::{BufferCreateInfo, BufferUsage};
 #[cfg(debug_assertions)]
-use vulkano::memory::allocator::{AllocationCreateInfo, DeviceLayout, MemoryTypeFilter};
+use vulkano::memory::allocator::{DeviceLayout, MemoryTypeFilter};
 use vulkano_taskgraph::{
     Id, QueueFamilyType,
     descriptor_set::{BindlessContext, StorageImageId},
@@ -32,6 +33,7 @@ use winit::{
 };
 
 use crate::{
+    composite::{CompositeTask, create_composite_pipeline},
     grid::LATTICE_HALF_EXTENT,
     input::{self, Input, InputButton, InputKey},
     measure::Measurement,
@@ -277,6 +279,9 @@ pub struct RenderContext {
     virtual_swapchain_id: Id<Swapchain>,
     recreate_swapchain: bool,
     task_graph: ExecutableTaskGraph<RegionRenderContext>,
+    /// The trace pass's output images (ADR 0007): virtual graph resources
+    /// plus the physical images recreated on resize.
+    trace_pass_images: TracePassImages,
     /// The per-frame world the graph executes with (camera, storage
     /// images, the app's debug overlay fields — see
     /// [`RegionRenderContext`]).
@@ -519,6 +524,18 @@ impl ApplicationHandler for App {
 
         let virtual_swapchain_id = task_graph.add_swapchain(&SwapchainCreateInfo::default());
 
+        // The trace pass's output images (ADR 0007): virtual graph resources
+        // first (the nodes' accesses reference them below), physical images
+        // + bindless ids attached right after (sized to the window and
+        // recreated on resize — the per-frame resource map binds the
+        // virtual ids, so recreation needs no graph rebuild).
+        let mut trace_pass_images = TracePassImages::add_virtual(&mut task_graph);
+        let swapchain_state = self.gpu.resources.swapchain(swapchain_id);
+        let extent = swapchain_state.images()[0].extent();
+        let physical_trace_pass_images =
+            create_trace_pass_images(&self.gpu.resources, extent[0], extent[1]);
+        trace_pass_images.attach_physical(physical_trace_pass_images);
+
         // The Region render task: ray-passes
         // the store's stable TLAS with the production raygen (color only;
         // `t_image_id` stays INVALID and is never dereferenced).
@@ -599,6 +616,40 @@ impl ApplicationHandler for App {
                 AccessTypes::RAY_TRACING_SHADER_STORAGE_WRITE,
             );
         }
+        // The trace pass's output images (ADR 0007): written by the
+        // production raygen in Voxel mode, consumed by the composite (and,
+        // from ticket 08, the Denoise pass). Accessed through the virtual
+        // ids, which the per-frame resource map binds to the physical images.
+        rt_node.image_access(
+            trace_pass_images.diff_radiance.virtual_id,
+            AccessTypes::RAY_TRACING_SHADER_STORAGE_WRITE,
+            ImageLayoutType::General,
+        );
+        rt_node.image_access(
+            trace_pass_images.spec_radiance.virtual_id,
+            AccessTypes::RAY_TRACING_SHADER_STORAGE_WRITE,
+            ImageLayoutType::General,
+        );
+        rt_node.image_access(
+            trace_pass_images.normal_roughness.virtual_id,
+            AccessTypes::RAY_TRACING_SHADER_STORAGE_WRITE,
+            ImageLayoutType::General,
+        );
+        rt_node.image_access(
+            trace_pass_images.viewz.virtual_id,
+            AccessTypes::RAY_TRACING_SHADER_STORAGE_WRITE,
+            ImageLayoutType::General,
+        );
+        rt_node.image_access(
+            trace_pass_images.mv.virtual_id,
+            AccessTypes::RAY_TRACING_SHADER_STORAGE_WRITE,
+            ImageLayoutType::General,
+        );
+        rt_node.image_access(
+            trace_pass_images.albedo_metal.virtual_id,
+            AccessTypes::RAY_TRACING_SHADER_STORAGE_WRITE,
+            ImageLayoutType::General,
+        );
         #[cfg_attr(not(debug_assertions), allow(unused_variables))]
         let rt_node_id = rt_node.build();
 
@@ -629,6 +680,35 @@ impl ApplicationHandler for App {
         #[cfg(debug_assertions)]
         task_graph.add_edge(rt_node_id, heatmap_node_id).unwrap();
 
+        // The composite node (ADR 0007): exposes the trace pass's radiance to
+        // the swapchain (manual EV + ACES tonemap) in Voxel mode; a no-op for
+        // the debug modes, which paint the swapchain directly from the raygen.
+        let composite_node_id = task_graph
+            .create_task_node(
+                "Composite",
+                QueueFamilyType::Graphics,
+                CompositeTask::new(virtual_swapchain_id),
+            )
+            .image_access(
+                virtual_swapchain_id.current_image_id(),
+                AccessTypes::COMPUTE_SHADER_STORAGE_WRITE,
+                ImageLayoutType::General,
+            )
+            .image_access(
+                trace_pass_images.diff_radiance.virtual_id,
+                AccessTypes::COMPUTE_SHADER_STORAGE_READ,
+                ImageLayoutType::General,
+            )
+            .build();
+
+        // The composite follows the heatmap overlay (debug builds) or the
+        // render node directly (release); either way it is the last node
+        // before present.
+        #[cfg(debug_assertions)]
+        task_graph.add_edge(heatmap_node_id, composite_node_id).unwrap();
+        #[cfg(not(debug_assertions))]
+        task_graph.add_edge(rt_node_id, composite_node_id).unwrap();
+
         let task_graph = unsafe {
             task_graph.compile(&CompileInfo {
                 queues: &[&self.gpu.graphics_queue],
@@ -639,15 +719,13 @@ impl ApplicationHandler for App {
         }
         .unwrap();
 
+        // Pipeline injection needs mutable access to the compiled graph.
+        let mut task_graph = task_graph;
+
         // The heatmap compute pipeline is injected into the compiled graph
         // only in debug builds (the overlay is app-only).
         #[cfg(debug_assertions)]
-        let mut task_graph = task_graph;
-
-        #[cfg(debug_assertions)]
         {
-            // The heatmap compute pipeline has no subpass, so it is created
-            // from the app only (no task-node reference).
             let heatmap_pipeline = create_heatmap_pipeline(self);
             task_graph
                 .task_node_mut(heatmap_node_id)
@@ -656,6 +734,19 @@ impl ApplicationHandler for App {
                 .downcast_mut::<DrawHeatmapTask>()
                 .unwrap()
                 .pipeline = Some(heatmap_pipeline);
+        }
+
+        // The composite compute pipeline has no subpass, so it is created
+        // from the app only (no task-node reference), like the heatmap's.
+        {
+            let composite_pipeline = create_composite_pipeline(self);
+            task_graph
+                .task_node_mut(composite_node_id)
+                .unwrap()
+                .task_mut()
+                .downcast_mut::<CompositeTask>()
+                .unwrap()
+                .pipeline = Some(composite_pipeline);
         }
 
         let region = RegionRenderContext {
@@ -667,6 +758,17 @@ impl ApplicationHandler for App {
             // The production raygen never dereferences `t_image_id`
             // (shaders/region/production.rgen) — it stays INVALID.
             t_image_storage_id: StorageImageId::INVALID,
+            // The trace pass's output set (ADR 0007): the storage ids the
+            // production raygen writes in Voxel mode.
+            diff_radiance_image_id: trace_pass_images.diff_radiance.storage_id,
+            spec_radiance_image_id: trace_pass_images.spec_radiance.storage_id,
+            normal_roughness_image_id: trace_pass_images.normal_roughness.storage_id,
+            viewz_image_id: trace_pass_images.viewz.storage_id,
+            mv_image_id: trace_pass_images.mv.storage_id,
+            albedo_metal_image_id: trace_pass_images.albedo_metal.storage_id,
+            // Manual exposure: 0 EV (radiance unchanged) until adjusted with
+            // [ / ] (ADR 0007).
+            ev: 0.0,
             // Voxel is the default; TAB (debug builds) toggles this in the
             // render context before each frame.
             mode: RenderMode::default(),
@@ -678,6 +780,7 @@ impl ApplicationHandler for App {
             virtual_swapchain_id,
             recreate_swapchain: false,
             task_graph,
+            trace_pass_images,
             region,
         });
     }
@@ -744,10 +847,47 @@ impl ApplicationHandler for App {
                             batch.destroy_storage_image(id);
                         }
 
+                        // The trace pass's output images are window-sized
+                        // too: destroy the physical images and their bindless
+                        // ids, then recreate them. The graph references the
+                        // virtual ids (mapped per frame), so no graph rebuild
+                        // is needed.
+                        let t = &rcx.trace_pass_images;
+                        for image in [
+                            &t.diff_radiance,
+                            &t.spec_radiance,
+                            &t.normal_roughness,
+                            &t.viewz,
+                            &t.mv,
+                            &t.albedo_metal,
+                        ] {
+                            batch.destroy_image(image.physical_id);
+                            batch.destroy_storage_image(image.storage_id);
+                        }
+
                         batch.enqueue();
 
                         rcx.region.swapchain_storage_image_ids =
                             window_size_dependent_setup(&self.gpu.resources, rcx.swapchain_id);
+
+                        let swapchain_state = self.gpu.resources.swapchain(rcx.swapchain_id);
+                        let extent = swapchain_state.images()[0].extent();
+                        let physical = create_trace_pass_images(
+                            &self.gpu.resources,
+                            extent[0],
+                            extent[1],
+                        );
+                        rcx.trace_pass_images.attach_physical(physical);
+                        rcx.region.diff_radiance_image_id =
+                            rcx.trace_pass_images.diff_radiance.storage_id;
+                        rcx.region.spec_radiance_image_id =
+                            rcx.trace_pass_images.spec_radiance.storage_id;
+                        rcx.region.normal_roughness_image_id =
+                            rcx.trace_pass_images.normal_roughness.storage_id;
+                        rcx.region.viewz_image_id = rcx.trace_pass_images.viewz.storage_id;
+                        rcx.region.mv_image_id = rcx.trace_pass_images.mv.storage_id;
+                        rcx.region.albedo_metal_image_id =
+                            rcx.trace_pass_images.albedo_metal.storage_id;
 
                         rcx.recreate_swapchain = false;
                     }
@@ -769,9 +909,23 @@ impl ApplicationHandler for App {
 
                 let rcx = self.rcx.as_mut().unwrap();
 
-                let resource_map =
-                    resource_map!(&rcx.task_graph, rcx.virtual_swapchain_id => rcx.swapchain_id)
-                        .unwrap();
+                let resource_map = resource_map!(
+                    &rcx.task_graph,
+                    rcx.virtual_swapchain_id => rcx.swapchain_id,
+                    rcx.trace_pass_images.diff_radiance.virtual_id =>
+                        rcx.trace_pass_images.diff_radiance.physical_id,
+                    rcx.trace_pass_images.spec_radiance.virtual_id =>
+                        rcx.trace_pass_images.spec_radiance.physical_id,
+                    rcx.trace_pass_images.normal_roughness.virtual_id =>
+                        rcx.trace_pass_images.normal_roughness.physical_id,
+                    rcx.trace_pass_images.viewz.virtual_id =>
+                        rcx.trace_pass_images.viewz.physical_id,
+                    rcx.trace_pass_images.mv.virtual_id =>
+                        rcx.trace_pass_images.mv.physical_id,
+                    rcx.trace_pass_images.albedo_metal.virtual_id =>
+                        rcx.trace_pass_images.albedo_metal.physical_id,
+                )
+                .unwrap();
 
                 let execute_result = unsafe {
                     rcx.task_graph.execute(resource_map, &rcx.region, || {
@@ -838,6 +992,17 @@ impl ApplicationHandler for App {
         if self.player_input.just_pressed.contains(&InputKey::Close) {
             self.close_requested = true;
         }
+        // Manual exposure (ADR 0007): [ / ] step the composite's EV by half
+        // a stop per press, app-wide (not debug-gated — exposure is a
+        // rendering control, not a diagnostic).
+        if let Some(rcx) = &mut self.rcx {
+            if self.player_input.just_pressed.contains(&InputKey::ExposureUp) {
+                rcx.region.ev += 0.5;
+            }
+            if self.player_input.just_pressed.contains(&InputKey::ExposureDown) {
+                rcx.region.ev -= 0.5;
+            }
+        }
         #[cfg(debug_assertions)]
         self.toggle_render_mode();
         self.player_input.end_frame();
@@ -859,6 +1024,127 @@ impl ApplicationHandler for App {
             self.player_input.mouse_motion.0 += delta.0;
             self.player_input.mouse_motion.1 += delta.1;
         };
+    }
+}
+
+/// One of the trace pass's six output images (ADR 0007): the virtual graph
+/// resource the nodes' accesses reference, the physical image, and its
+/// bindless storage id. The graph maps the virtual id to the physical id
+/// per frame, so a window resize can destroy and recreate the physical
+/// image without rebuilding the graph.
+pub(crate) struct TracePassImage {
+    pub virtual_id: Id<Image>,
+    pub physical_id: Id<Image>,
+    pub storage_id: StorageImageId,
+}
+
+/// The trace pass's output images (ADR 0007): the noisy radiance pair and
+/// the auxiliary guide buffers the production raygen writes in Voxel mode
+/// (diffuse+specular radiance with in-lobe hit distance in alpha,
+/// normal+roughness, linear viewZ, backward motion vectors,
+/// albedo+metalness). The composite node exposes them (and, from ticket 08,
+/// the Denoise pass consumes them).
+pub(crate) struct TracePassImages {
+    pub diff_radiance: TracePassImage,
+    pub spec_radiance: TracePassImage,
+    pub normal_roughness: TracePassImage,
+    pub viewz: TracePassImage,
+    pub mv: TracePassImage,
+    pub albedo_metal: TracePassImage,
+}
+
+impl TracePassImages {
+    /// Adds the six virtual image resources to the task graph (the nodes'
+    /// accesses reference these; the per-frame resource map binds them to
+    /// the physical images). The create infos must match the physical
+    /// images' format and sharing mode (the map asserts on it). Physical
+    /// ids and storage ids are filled in by [`Self::attach_physical`].
+    fn add_virtual(task_graph: &mut TaskGraph<RegionRenderContext>) -> Self {
+        let mut add = |format: Format| {
+            task_graph.add_image(&ImageCreateInfo {
+                image_type: ImageType::Dim2d,
+                format,
+                usage: ImageUsage::STORAGE,
+                ..Default::default()
+            })
+        };
+        let image = |virtual_id| TracePassImage {
+            virtual_id,
+            physical_id: Id::INVALID,
+            storage_id: StorageImageId::INVALID,
+        };
+        Self {
+            diff_radiance: image(add(Format::R16G16B16A16_SFLOAT)),
+            spec_radiance: image(add(Format::R16G16B16A16_SFLOAT)),
+            normal_roughness: image(add(Format::R8G8B8A8_UNORM)),
+            viewz: image(add(Format::R32_SFLOAT)),
+            mv: image(add(Format::R16G16B16A16_SFLOAT)),
+            albedo_metal: image(add(Format::R8G8B8A8_UNORM)),
+        }
+    }
+
+    /// Replaces the physical images and bindless storage ids with the given
+    /// freshly created ones (startup and resize), keeping the virtual ids.
+    /// The task graph is untouched — the per-frame resource map binds the
+    /// virtual ids to the new physical images.
+    fn attach_physical(&mut self, physical: TracePassImages) {
+        self.diff_radiance.physical_id = physical.diff_radiance.physical_id;
+        self.diff_radiance.storage_id = physical.diff_radiance.storage_id;
+        self.spec_radiance.physical_id = physical.spec_radiance.physical_id;
+        self.spec_radiance.storage_id = physical.spec_radiance.storage_id;
+        self.normal_roughness.physical_id = physical.normal_roughness.physical_id;
+        self.normal_roughness.storage_id = physical.normal_roughness.storage_id;
+        self.viewz.physical_id = physical.viewz.physical_id;
+        self.viewz.storage_id = physical.viewz.storage_id;
+        self.mv.physical_id = physical.mv.physical_id;
+        self.mv.storage_id = physical.mv.storage_id;
+        self.albedo_metal.physical_id = physical.albedo_metal.physical_id;
+        self.albedo_metal.storage_id = physical.albedo_metal.storage_id;
+    }
+}
+
+/// Creates the trace pass's six physical output images (ADR 0007), sized to
+/// the window, and registers them in the bindless set. Called at startup
+/// and again on resize (the old images are destroyed first); the virtual
+/// ids in the returned struct are INVALID — they ride on the render
+/// context's [`TracePassImages`].
+pub(crate) fn create_trace_pass_images(
+    resources: &Resources,
+    width: u32,
+    height: u32,
+) -> TracePassImages {
+    let bcx = resources.bindless_context().unwrap();
+    let create = |format: Format| {
+        let physical_id = resources
+            .create_image(
+                &ImageCreateInfo {
+                    image_type: ImageType::Dim2d,
+                    format,
+                    extent: [width, height, 1],
+                    usage: ImageUsage::STORAGE,
+                    ..Default::default()
+                },
+                &AllocationCreateInfo::default(),
+            )
+            .unwrap();
+        let image = resources.image(physical_id).image().clone();
+        let image_view = ImageView::new_default(&image).unwrap();
+        let storage_id = bcx
+            .global_set()
+            .add_storage_image(image_view, ImageLayout::General);
+        TracePassImage {
+            virtual_id: Id::INVALID,
+            physical_id,
+            storage_id,
+        }
+    };
+    TracePassImages {
+        diff_radiance: create(Format::R16G16B16A16_SFLOAT),
+        spec_radiance: create(Format::R16G16B16A16_SFLOAT),
+        normal_roughness: create(Format::R8G8B8A8_UNORM),
+        viewz: create(Format::R32_SFLOAT),
+        mv: create(Format::R16G16B16A16_SFLOAT),
+        albedo_metal: create(Format::R8G8B8A8_UNORM),
     }
 }
 

@@ -41,6 +41,10 @@ pub enum InputKey {
     Down,
     /// Toggle the Render mode (Tab)
     ToggleRenderMode,
+    /// Raise the composite's manual exposure (]) — +0.5 EV per press.
+    ExposureUp,
+    /// Lower the composite's manual exposure ([) — -0.5 EV per press.
+    ExposureDown,
     /// Request the app to close (Escape).
     Close,
 }
@@ -92,6 +96,8 @@ pub fn map_key(key: &Key) -> Option<InputKey> {
             "s" => Some(InputKey::Backward),
             "q" => Some(InputKey::Left),
             "d" => Some(InputKey::Right),
+            "]" => Some(InputKey::ExposureUp),
+            "[" => Some(InputKey::ExposureDown),
             _ => None,
         },
         Key::Named(NamedKey::Space) => Some(InputKey::Up),
@@ -171,6 +177,8 @@ mod tests {
         assert_eq!(map_key(&char_key("s")), Some(InputKey::Backward));
         assert_eq!(map_key(&char_key("q")), Some(InputKey::Left));
         assert_eq!(map_key(&char_key("d")), Some(InputKey::Right));
+        assert_eq!(map_key(&char_key("]")), Some(InputKey::ExposureUp));
+        assert_eq!(map_key(&char_key("[")), Some(InputKey::ExposureDown));
         assert_eq!(map_key(&Key::Named(NamedKey::Space)), Some(InputKey::Up));
         assert_eq!(
             map_key(&Key::Named(NamedKey::Control)),

@@ -13,7 +13,10 @@ t_max = far (10000), so the ray pass clips exactly like the camera.
 
 ## Status
 
-accepted (rendering-core ticket 05, 2026-08-10)
+accepted (rendering-core ticket 05, 2026-08-10) — **superseded by
+[0007](0007-path-trace-output-contract.md)** (path-tracing ticket 02,
+2026-08-17) for the app path; retained unchanged for the validator's
+capture path.
 
 ## Considered Options
 

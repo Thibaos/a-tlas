@@ -18,9 +18,17 @@ _Avoid_: Block size, grid resolution
 _Note_: differs from wgpu-rt (1/8 m) — do not assume a shared scale.
 
 **Palette**:
-A 256-entry RGBA8 color table from the .vox file mapping material indices to
-surface colors. GPU-side: a bindless vec4[256] storage buffer.
+A 256-entry RGBA8 color table from the .vox file mapping Material indices to
+albedo colors. GPU-side: a bindless vec4[256] storage buffer.
 _Avoid_: Color table, LUT
+
+**Material**:
+The per-palette-index surface properties: albedo (the Palette color),
+metallic, roughness, and Emission. Loaded from the .vox MATL chunk; one
+Material per Palette index (256 max); GPU-side a bindless table beside the
+Palette.
+_Avoid_: texture, material system (the PBR triad is a Material, not a
+system)
 
 **Micro-chunk**:
 The renderer's 8x8x8 render/acceleration-structure unit, tightly wrapped to
@@ -109,11 +117,12 @@ _Avoid_: beam (classic beam tracing is secondary-ray cone tracing, out of
 scope), depth pre-pass (implies a raster depth buffer this renderer lacks)
 
 **Background**:
-The color produced where no geometry is hit (the miss shader's output);
-black today. Rays that leave the loaded world hit nothing and report the
-Background color. The ray pass's t-range equals the camera's near/far, so
+The radiance produced where no geometry is hit (the miss shader's output):
+the Procedural sky. Rays that leave the loaded world hit nothing and report
+the Background color. The ray pass's t-range equals the camera's near/far, so
 Background also appears beyond the far plane.
-_Avoid_: Sky (implies atmosphere/secondary-ray semantics — out of scope)
+_Avoid_: skybox, environment map (a sampled asset; the Procedural sky is
+analytic)
 
 **Void**:
 The space outside the loaded world; rays there hit nothing and report the
@@ -121,12 +130,90 @@ Background color.
 _Avoid_: Sky, empty space ("empty" is a property of the sparse world,
 not a place)
 
+## Light transport
+
+**Path tracing**:
+The renderer's lighting algorithm: per-pixel light transport — a primary ray
+plus up to N BSDF-scattered Bounces, terminated by Russian roulette and a
+depth cap. Path tracing replaces flat palette shading as the default Render
+mode's output.
+_Avoid_: raytracing (that is the *mechanism*; path tracing is the algorithm),
+GI (an effect path tracing delivers — describe what is seen)
+
+**Sample**:
+One path per pixel, produced once per frame (1 spp by design); samples become
+an image through the Denoise pass, never accumulation.
+_Avoid_: accumulation, spp ("per frame" is the point)
+
+**Bounce**:
+One BSDF-scattered secondary trace in a path; the default cap is depth 4 plus
+Russian roulette.
+
+**Emission**:
+The per-Material emissive radiance; a voxel whose Material has emission > 0
+is an Emissive voxel and a light source. Emissive light reaches pixels only
+via path hits — there is no next-event sampling of Emissive voxels.
+_Avoid_: light (say Sun, Procedural sky, or Emissive voxel — which one)
+
+**Sun**:
+The analytic directional light: fixed direction and intensity constants,
+sampled by NEE with MIS against the Procedural sky and the BSDF.
+
+**Procedural sky**:
+The analytic environment light — a gradient plus sun-disk radiance function
+evaluated by the miss shader; the Background. Importance-sampleable; no
+assets.
+_Avoid_: skybox, environment map
+
+**NEE**:
+Next-event estimation: a Bounce samples a light directly (Sun or Procedural
+sky) rather than waiting for a path hit; combined with the BSDF estimate by
+MIS.
+_Avoid_: direct lighting (unqualified), light sampling (unqualified)
+
+**MIS**:
+Multiple importance sampling: the weighting combining the NEE and BSDF
+estimators for the Sun and Procedural sky so neither dominates.
+
+**Russian roulette**:
+Probabilistic path termination: a Bounce continues with probability equal to
+its throughput weight, keeping the estimator unbiased.
+
+**Trace pass**:
+The ray pass under the path-tracing output contract (ADR 0007): in Voxel
+mode it writes the Beauty buffer (the noisy radiance pair) and the
+auxiliary buffers instead of the swapchain; the debug Render modes still
+paint the swapchain directly.
+_Avoid_: g-buffer pass (a raster concept this renderer lacks)
+
+**Denoise pass**:
+The real-time denoiser (NRD ReBLUR, bound through FFI) turning the 1-Sample
+radiance into a clean image from the Beauty buffer, motion vectors, and the
+auxiliary buffers (normal+roughness, viewZ, motion vectors,
+albedo+metalness).
+_Avoid_: filter, temporal AA
+
+**Beauty buffer**:
+The trace pass's noisy radiance output — a diffuse + specular RGBA16F pair,
+in-lobe hit distance in alpha — written per pixel and consumed by the
+Denoise pass; exposed to the swapchain after exposure and tonemap in the
+Composite.
+_Avoid_: render target, output image
+
+**Composite**:
+The node that exposes the (denoised) radiance to the swapchain:
+re-modulation by albedo/metallic, manual EV exposure, and the ACES tonemap.
+A no-op for the debug Render modes, which paint the swapchain directly.
+_Avoid_: post-processing (beyond exposure/tonemap — out of scope), final
+pass
+
 ## Render mode
 
 **Render mode**:
 What the ray pass paints each pixel with: surface identity (`Voxel`, `Hull`) or
 a diagnostic quantity (`Ray latency`, `hull-crossed`). `Voxel` (default): the
-DDA commits the surface voxel, shaded from the Palette. `Hull`: each
+DDA commits the surface voxel, shaded by Path tracing from the surface's
+Material. `Hull`: each
 Micro-chunk's trimmed AABB is the surface, colored by a coordinate hash, with
 no DDA. The diagnostic modes are debug-build-only.
 _Avoid_: shading mode, visualization mode
@@ -176,10 +263,12 @@ spike shows up in the AS-rebuild line, never in trace_rays.
 _Avoid_: Total frame time (that is flight's job)
 
 **Gate**:
-The 16 ms/frame budget; computed as the **GPU timestamp sum** (trace_rays +
-AS rebuilds), with the wall-clock frame interval reported beside it. A
-wall-clock over 16 ms with a small GPU sum means CPU/present-bound — a
-different fix than traversal.
+Retired by the path-tracing effort (2026-08-17): the 16 ms/frame budget is
+removed — performance requirements are not absolute; lower latency is always
+better. What remains is report-only: the **GPU timestamp sum** and per-stage
+attribution, with the wall-clock frame interval reported beside it. A
+wall-clock far over the GPU sum means CPU/present-bound — a different fix
+than traversal.
 _Avoid_: FPS target, frame-time target
 
 **Flight**:

@@ -83,5 +83,37 @@ void main() {
 
     traceRayEXT(vko_accelerationStructureEXT(acceleration_structure_id), ray_flags, 0xFFu, sbt_offset, 0u, 0u, origin, RAY_T_MIN, direction, RAY_T_MAX, 0);
 
+    if (mode == MODE_VOXEL) {
+        // Path-tracing output contract (ADR 0007): in Voxel mode the trace
+        // pass writes the noisy radiance pair and the auxiliary guide
+        // buffers instead of the swapchain — the composite node exposes them
+        // (and, from ticket 08, the Denoise pass consumes them).
+        //
+        // Slice contents (real values land with tickets 03/05/08): the
+        // diffuse radiance carries the palette color stub so the composite
+        // still shows the world; specular is zero; the normal is the +Z
+        // octahedral placeholder and roughness 1.0; viewZ is the real linear
+        // view-space depth; the motion vector is zero (the prev-view-proj
+        // plumbing lands with the Denoise pass); albedo is the real palette
+        // color, metalness zero (the MATL chunk lands in ticket 03).
+        ivec2 pixel = ivec2(gl_LaunchIDEXT.xy);
+        float hit_t = payload.t;
+        // Linear view-space Z of the primary hit: the ray's distance along
+        // the view axis (view_inverse column 2 is the world-space backward
+        // axis). Miss (the t == 0.0 sentinel) → 0.0.
+        float viewz = (hit_t > 0.0) ? -hit_t * dot(direction, camera.view_inverse[2].xyz) : 0.0;
+        vec3 albedo = payload.color.rgb;
+
+        imageStore(vko_image2D_rgba16f(diff_radiance_image_id), pixel, vec4(albedo, 0.0));
+        imageStore(vko_image2D_rgba16f(spec_radiance_image_id), pixel, vec4(0.0));
+        imageStore(vko_image2D_rgba8(normal_roughness_image_id), pixel, vec4(0.5, 0.5, 0.0, 1.0));
+        imageStore(vko_image2D_r32f(viewz_image_id), pixel, vec4(viewz));
+        imageStore(vko_image2D_rgba16f(mv_image_id), pixel, vec4(0.0));
+        imageStore(vko_image2D_rgba8(albedo_metal_image_id), pixel, vec4(albedo, 0.0));
+        return;
+    }
+
+    // Debug modes (Hull, hull-crossed) paint the swapchain directly — the
+    // composite node no-ops for them (shaders/region/composite.comp).
     imageStore(vko_image2D_rgba8(image_id), ivec2(gl_LaunchIDEXT.xy), payload.color);
 }

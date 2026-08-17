@@ -1,0 +1,54 @@
+#version 460
+
+#extension GL_EXT_scalar_block_layout : enable
+#extension GL_EXT_GOOGLE_include_directive : enable
+
+#include <vulkano.glsl>
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+// The composite node's per-frame state: the swapchain storage image, the
+// radiance source, the manual exposure (EV stops), and the Render mode. The
+// composite is a no-op for the debug modes — their raygen paints the
+// swapchain directly, and the composite must not overwrite it.
+layout(push_constant) uniform PushConstants {
+    StorageImageId image_id;
+    // The radiance source: in this slice the trace pass's noisy diffuse
+    // radiance; from ticket 08 the Denoise pass's output (the composite then
+    // also reads the specular, albedo, roughness and viewZ buffers).
+    StorageImageId radiance_id;
+    // Manual exposure in EV stops (radiance *= 2^ev); adjusted by the app.
+    float ev;
+    // Render mode: 0 = Voxel (expose the trace pass's output); anything else
+    // is a debug mode that already painted the swapchain — no-op.
+    uint mode;
+    uint width;
+    uint height;
+};
+
+// The ACES filmic fit (Narkowicz 2015) — the tonemap of the path-tracing
+// output contract (ADR 0007). Linear radiance in, tonemapped to [0, 1].
+vec3 aces_fit(vec3 x) {
+    const float a = 2.51;
+    const float b = 0.03;
+    const float c = 2.43;
+    const float d = 0.59;
+    const float e = 0.14;
+    return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
+}
+
+void main() {
+    if (mode != 0u) {
+        return;
+    }
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    if (uint(p.x) >= width || uint(p.y) >= height) {
+        return;
+    }
+
+    vec3 radiance = imageLoad(vko_image2D_rgba16f(radiance_id), p).rgb;
+    vec3 color = aces_fit(radiance * exp2(ev));
+    // Gamma to the swapchain's sRGB-ish transfer.
+    color = pow(color, vec3(1.0 / 2.2));
+    imageStore(vko_image2D_rgba8(image_id), p, vec4(color, 1.0));
+}
