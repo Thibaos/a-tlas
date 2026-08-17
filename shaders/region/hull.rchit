@@ -30,4 +30,7 @@ void main() {
     vec3 rgb = hsv_to_rgb(vec3(hue, 1.0, 1.0));
     incoming_payload.color = vec4(rgb, 1.0);
     incoming_payload.t = gl_RayTmaxEXT;
+    // Surface identity (never read by the Hull paint path; set for hygiene
+    // so a payload inspection is well-defined).
+    incoming_payload.hit_kind = gl_HitKindEXT;
 }

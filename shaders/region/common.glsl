@@ -77,6 +77,13 @@ layout(push_constant) uniform RegionPushConstants {
     AccelerationStructureId acceleration_structure_id;
     StorageBufferId camera_buffer_id;
     StorageBufferId palette_buffer_id;
+    // The bindless Material table (ticket 03, ADR 0008): one entry per
+    // palette index, packed albedo.rgb+metallic / emission.rgb+roughness.
+    // The DDA closest-hit reads it for the surface color (albedo == palette
+    // color by construction, so the byte-exact capture path is unchanged)
+    // and the production raygen reads it through the payload's hit_kind in
+    // Voxel mode (real metalness + emission-as-albedo-light in the stub).
+    StorageBufferId material_table_buffer_id;
     StorageBufferId region_table_buffer_id;
     // The region -> AABB-buffer device-address table (the DDA's and the
     // Hull intersection shader's lookup, parallel to `region_table`).

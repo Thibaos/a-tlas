@@ -22,7 +22,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use dot_vox::{Color, Dict, DotVoxData, Frame, Model, SceneNode, ShapeModel, Size, Voxel};
+use dot_vox::{Color, Dict, DotVoxData, Frame, Material as VoxMaterial, Model, SceneNode, ShapeModel, Size, Voxel};
 use glam::IVec3;
 
 pub const TEST_WORLDS_DIR: &str = "assets/test";
@@ -227,6 +227,17 @@ pub fn test_suite() -> Vec<WorldSpec> {
             edit: None,
         },
         WorldSpec {
+            name: "materials".to_string(),
+            path: "assets/test/materials.vox".to_string(),
+            description: "a strip of voxels with known MATL-chunk Material properties (defaults, metallic, roughness, emissive) — the Material table (ADR 0008): its albedo column must equal the palette for the byte-exact capture path, so this world doubles as the invariant guard (GPU reads the table, the CPU reference reads the palette — any divergence fails the diff)".to_string(),
+            camera: Some(CameraSpec {
+                eye: [-8.0, 2.0, 8.0],
+                target: [4.0, 0.0, 0.0],
+                up: [0.0, 1.0, 0.0],
+            }),
+            edit: None,
+        },
+        WorldSpec {
             name: "residency".to_string(),
             path: "assets/test/residency.vox".to_string(),
             description: "a 2x2x2 cube per Region along +x (Regions (0,0,0)..(2,0,0)); after the first frame Region (1,0,0) is emptied through the contract (left residency), then re-populated (became resident again) — both frames must match the reference".to_string(),
@@ -299,6 +310,7 @@ pub fn generate_all(out_dir: &Path) -> io::Result<Vec<PathBuf>> {
         ("edit-seam", edit_seam_world()),
         ("multi-region", multi_region_world()),
         ("residency", residency_world()),
+        ("materials", materials_world()),
     ];
 
     let mut written = Vec::new();
@@ -526,6 +538,52 @@ fn residency_world() -> DotVoxData {
     transformed_world(&voxels)
 }
 
+/// A strip of voxels with known MATL-chunk Material properties — the
+/// Material-table world (ADR 0008). Materials 1..=8 along +x:
+///
+/// - 1: no MATL entry — the table's defaults (diffuse, metallic 0,
+///   roughness 0.3, emission 0).
+/// - 2: `_type: diffuse` — defaults (the type is informational in v1).
+/// - 3: `_metal 0.5`, `_rough 0.2`.
+/// - 4: `_metal 1.0`, `_rough 0.1` (full metal, low roughness).
+/// - 5: `_rough 0.9` (rough dielectric).
+/// - 6: `_type: _emit`, `_emit 1.0` (full emissive → albedo × EMISSION_SCALE).
+/// - 7: `_type: _emit`, `_emit 0.25` (dim emissive).
+/// - 8: `_emit 0.5` with no `_type` — the properties drive, not the type.
+///
+/// The albedo column of the resulting table equals the palette by
+/// construction, so this world passes through the byte-exact capture
+/// validator while exercising the GPU table read on every hit.
+fn materials_world() -> DotVoxData {
+    let voxels: Vec<(IVec3, u8)> = (1u8..=8)
+        .enumerate()
+        .map(|(x, material)| (IVec3::new(x as i32, 0, 0), material))
+        .collect();
+    let mut data = scene_less_world(&voxels);
+
+    let material = |id: u32, properties: &[(&str, &str)]| VoxMaterial {
+        id,
+        properties: properties
+            .iter()
+            .map(|(key, value)| (key.to_string(), value.to_string()))
+            .collect(),
+    };
+
+    // Material 1 has no entry on purpose (defaults). Material 2 is the
+    // diffuse type. 3–5 are metallic/roughness variants; 6–8 emissive.
+    data.materials = vec![
+        material(2, &[("_type", "diffuse")]),
+        material(3, &[("_metal", "0.5"), ("_rough", "0.2")]),
+        material(4, &[("_metal", "1.0"), ("_rough", "0.1")]),
+        material(5, &[("_rough", "0.9")]),
+        material(6, &[("_type", "_emit"), ("_emit", "1.0")]),
+        material(7, &[("_type", "_emit"), ("_emit", "0.25")]),
+        material(8, &[("_emit", "0.5")]),
+    ];
+
+    data
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -586,7 +644,7 @@ mod tests {
     fn every_test_world_writes_and_loads() {
         let dir = std::env::temp_dir().join("atlas-rt-test-worlds");
         let paths = generate_all(&dir).unwrap();
-        assert_eq!(paths.len(), 11);
+        assert_eq!(paths.len(), 12);
 
         for path in &paths {
             let data = open_file(path.to_str().unwrap());
@@ -598,6 +656,54 @@ mod tests {
                 path.display()
             );
         }
+    }
+
+    /// The materials world's MATL chunk survives the .vox write/read round
+    /// trip, and the CPU mirror (`get_material_table`) yields exactly the
+    /// authored properties — the table decision's mapping (ADR 0008).
+    #[test]
+    fn materials_world_material_table_round_trips() {
+        use crate::world::voxel::{EMISSION_SCALE, get_material_table};
+
+        let dir = std::env::temp_dir().join("atlas-rt-test-worlds");
+        let paths = generate_all(&dir).unwrap();
+        let path = paths
+            .iter()
+            .find(|p| p.to_string_lossy().ends_with("materials.vox"))
+            .expect("materials.vox in the generated set");
+        let data = open_file(path.to_str().unwrap());
+        let table = get_material_table(&data);
+
+        // 1: no MATL entry — defaults.
+        assert_eq!(table[1].metallic, 0.0);
+        assert_eq!(table[1].roughness, 0.3);
+        assert_eq!(table[1].emission, [0.0; 3]);
+
+        // 2: `_type: diffuse` — still defaults (type is informational).
+        assert_eq!(table[2].metallic, 0.0);
+        assert_eq!(table[2].roughness, 0.3);
+
+        // 3/4/5: metallic + roughness variants.
+        assert_eq!(table[3].metallic, 0.5);
+        assert_eq!(table[3].roughness, 0.2);
+        assert_eq!(table[4].metallic, 1.0);
+        assert_eq!(table[4].roughness, 0.1);
+        assert_eq!(table[5].roughness, 0.9);
+        assert_eq!(table[5].metallic, 0.0);
+
+        // 6/7/8: emission = `_emit` × albedo × EMISSION_SCALE (linear RGB).
+        for (i, emit) in [(6usize, 1.0f32), (7, 0.25), (8, 0.5)] {
+            for channel in 0..3 {
+                let expected = table[i].albedo[channel] * emit * EMISSION_SCALE;
+                assert!(
+                    (table[i].emission[channel] - expected).abs() < 1e-6,
+                    "material {i} emission[{channel}]: expected {expected}, got {}",
+                    table[i].emission[channel]
+                );
+            }
+        }
+        assert_eq!(table[6].metallic, 0.0, "emissive materials are dielectrics by default");
+        assert_eq!(table[6].roughness, 0.3);
     }
 
     /// An out-of-lattice voxel (beyond ±2048) panics at load — the world

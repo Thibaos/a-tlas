@@ -203,6 +203,12 @@ pub struct RegionRenderTask {
     instance_buffer_id: Id<Buffer>,
     camera_storage_id: StorageBufferId,
     palette_storage_id: StorageBufferId,
+    /// The bindless Material table (ADR 0008): pushed every frame; the DDA
+    /// closest-hit reads it for the surface color (albedo == palette, so the
+    /// capture path stays byte-identical) and the production raygen reads it
+    /// through the payload's hit_kind in Voxel mode (real metalness +
+    /// emission-as-albedo-light).
+    material_table_storage_id: StorageBufferId,
     region_table_storage_id: StorageBufferId,
     /// The bindless id of the region -> AABB-buffer table (the DDA's and the
     /// debug Hull shader's lookup). The push constant carries it every frame.
@@ -289,6 +295,7 @@ impl RegionRenderTask {
             instance_buffer_id: store.instance_buffer_id,
             camera_storage_id: store.camera_storage_id,
             palette_storage_id: store.palette_storage_id,
+            material_table_storage_id: store.material_table_storage_id,
             region_table_storage_id: store.region_table_storage_id,
             aabb_table_storage_id: store.aabb_table_storage_id,
             acceleration_structure_id: store.acceleration_structure_id,
@@ -531,6 +538,7 @@ impl Task for RegionRenderTask {
                     acceleration_structure_id: self.acceleration_structure_id,
                     camera_buffer_id: self.camera_storage_id,
                     palette_buffer_id: self.palette_storage_id,
+                    material_table_buffer_id: self.material_table_storage_id,
                     region_table_buffer_id: self.region_table_storage_id,
                     aabb_table_buffer_id: self.aabb_table_storage_id(),
                     counter_buffer_id: self.counter.map(|counter| counter.storage_id).unwrap_or(StorageBufferId::INVALID),

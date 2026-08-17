@@ -42,7 +42,7 @@ use crate::{
         render::capture_raygen,
     },
     rt::acceleration_structure,
-    world::voxel::get_palette,
+    world::voxel::{get_material_table, get_palette},
 };
 
 /// One resident Region's GPU resources plus its allocation capacities.
@@ -171,6 +171,12 @@ pub struct RegionStore {
     pub region_table_storage_id: StorageBufferId,
     pub camera_storage_id: StorageBufferId,
     pub palette_storage_id: StorageBufferId,
+    /// The bindless Material table (ADR 0008): one entry per palette index
+    /// (albedo+metallic / emission+roughness), uploaded once at startup — the
+    /// GPU twin of `world::voxel::get_material_table`'s mirror. Read by the
+    /// DDA closest-hit (surface color — albedo == palette, so the byte-exact
+    /// capture path is unchanged) and the production raygen in Voxel mode.
+    pub material_table_storage_id: StorageBufferId,
     pub acceleration_structure_id: AccelerationStructureId,
     region_table_buffer_id: Id<Buffer>,
     /// The bindless id of the region -> AABB-buffer table (the DDA's and the
@@ -250,6 +256,27 @@ impl RegionStore {
             )
             .unwrap();
 
+        // The Material table (ADR 0008): one entry per palette index, packed
+        // as two vec4[256] columns — albedo.rgb+metallic and
+        // emission.rgb+roughness — uploaded once at startup from the CPU
+        // mirror (`world::voxel::get_material_table`, the single source of
+        // truth). Beside the Palette, bindless like it.
+        let material_table_buffer_id = gpu
+            .resources
+            .create_buffer(
+                &BufferCreateInfo {
+                    usage: BufferUsage::STORAGE_BUFFER | BufferUsage::TRANSFER_DST,
+                    ..Default::default()
+                },
+                &AllocationCreateInfo {
+                    memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
+                        | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
+                    ..Default::default()
+                },
+                DeviceLayout::new_sized::<capture_raygen::MaterialTable>(),
+            )
+            .unwrap();
+
         let region_table_buffer_id = gpu
             .resources
             .create_buffer(
@@ -316,8 +343,20 @@ impl RegionStore {
 
         let dummy_blas = create_dummy_blas(gpu);
 
-        // --- palette content (one-shot) ----------------------------------
+        // --- palette + material table content (one-shot) -----------------
+        // Both are world-static (the world is static per the effort scope),
+        // uploaded once and never rewritten — the palette from the .vox
+        // palette, the material table as the packed twin of the CPU mirror.
         let palette = get_palette(voxel_data).map(|color| [color.x, color.y, color.z, 1.0]);
+        let material_table = get_material_table(voxel_data);
+        let albedo_metallic: [[f32; 4]; 256] = std::array::from_fn(|i| {
+            let m = &material_table[i];
+            [m.albedo[0], m.albedo[1], m.albedo[2], m.metallic]
+        });
+        let rough_emit: [[f32; 4]; 256] = std::array::from_fn(|i| {
+            let m = &material_table[i];
+            [m.emission[0], m.emission[1], m.emission[2], m.roughness]
+        });
         unsafe {
             vulkano_taskgraph::execute(
                 &gpu.transfer_queue,
@@ -326,9 +365,17 @@ impl RegionStore {
                 |_cbf, tcx| {
                     *tcx.write_buffer::<capture_raygen::Palette>(palette_buffer_id, ..) =
                         capture_raygen::Palette { colors: palette };
+                    *tcx.write_buffer::<capture_raygen::MaterialTable>(material_table_buffer_id, ..) =
+                        capture_raygen::MaterialTable {
+                            albedo_metallic,
+                            rough_emit,
+                        };
                     Ok(())
                 },
-                [(palette_buffer_id, HostAccessType::Write)],
+                [
+                    (palette_buffer_id, HostAccessType::Write),
+                    (material_table_buffer_id, HostAccessType::Write),
+                ],
                 [],
                 [],
             )
@@ -365,6 +412,14 @@ impl RegionStore {
                 Some(size_of::<capture_raygen::Palette>() as DeviceSize),
             )
             .unwrap();
+        let material_table_storage_id = bcx
+            .global_set()
+            .create_storage_buffer(
+                material_table_buffer_id,
+                0,
+                Some(size_of::<capture_raygen::MaterialTable>() as DeviceSize),
+            )
+            .unwrap();
         let acceleration_structure_id = bcx.global_set().add_acceleration_structure(tlas.clone());
         let aabb_table_storage_id = bcx
             .global_set()
@@ -380,6 +435,7 @@ impl RegionStore {
             region_table_storage_id,
             camera_storage_id,
             palette_storage_id,
+            material_table_storage_id,
             acceleration_structure_id,
             region_table_buffer_id,
             aabb_table_storage_id,
