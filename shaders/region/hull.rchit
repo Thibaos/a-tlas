@@ -33,4 +33,7 @@ void main() {
     // Surface identity (never read by the Hull paint path; set for hygiene
     // so a payload inspection is well-defined).
     incoming_payload.hit_kind = gl_HitKindEXT;
+    // No surface normal in Hull mode (the hull AABB face is not a voxel
+    // face; the paint path never reads it) — zeroed for hygiene.
+    incoming_payload.normal = vec3(0.0);
 }

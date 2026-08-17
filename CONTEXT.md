@@ -30,6 +30,22 @@ Palette.
 _Avoid_: texture, material system (the PBR triad is a Material, not a
 system)
 
+**Normal**:
+The geometric surface normal at a voxel hit: the face the DDA's march
+entered the committed voxel through (the entered face, never a neighbor
+average). The DDA intersection shader knows it exactly as the last
+Amanatides-Woo step axis, but reportIntersectionEXT carries only (t, 8-bit
+hitKind) and the payload is opaque to intersection shaders, so the closest
+hit reconstructs it from the hit point (the reported t is the cell-entry
+boundary crossing): p[a] is an integer, within epsilon, exactly on the
+crossed axis. Ties (edge/corner entries) break to the first axis in x, y, z
+order — the DDA's own preference order. A camera embedded in a voxel (the
+t_min commit, no crossed face) gets the camera-facing direction instead.
+Object space == world space up to the translation instance transform. Carried
+in the ray payload; the Normal debug Render mode paints it as a heatmap
+(x red, y green, z blue).
+_Avoid_: facet normal, interpolated normal (no raster interpolants exist)
+
 **Micro-chunk**:
 The renderer's 8x8x8 render/acceleration-structure unit, tightly wrapped to
 occupied voxels (owner requirement; named by rendering-core ticket 03). One
@@ -211,7 +227,8 @@ pass
 
 **Render mode**:
 What the ray pass paints each pixel with: surface identity (`Voxel`, `Hull`) or
-a diagnostic quantity (`Ray latency`, `hull-crossed`). `Voxel` (default): the
+a diagnostic quantity (`Ray latency`, `hull-crossed`, the `Normal` heatmap).
+`Voxel` (default): the
 DDA commits the surface voxel, shaded by Path tracing from the surface's
 Material. `Hull`: each
 Micro-chunk's trimmed AABB is the surface, colored by a coordinate hash, with
@@ -236,6 +253,13 @@ entered, not the close-but-rejected AABB tests the hardware performs before
 any shader runs) and an upper bound per-pixel (Vulkan may invoke intersection
 shaders redundantly).
 _Avoid_: traversal count
+
+**Normal (Render mode)**:
+A diagnostic Render mode (debug builds): each pixel is colored by its hit's
+geometric Normal, -1..1 mapped to 0..1 per channel — voxel faces paint by
+their axis (x red, y green, z blue; + side bright, - side dark), background
+gray. Traces the DDA hit group like Voxel; the normal rides the payload.
+_Avoid_: normal map visualization (a texture-space concept)
 
 ## Validation
 

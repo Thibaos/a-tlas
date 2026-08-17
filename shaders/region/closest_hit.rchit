@@ -26,4 +26,46 @@ void main() {
     // The surface identity the raygen needs for its own table read (ticket
     // 03: real metalness + emission in Voxel mode; later, the normal).
     incoming_payload.hit_kind = gl_HitKindEXT;
+
+    // The geometric normal at the hit (ticket 04, ADR 0009): the face the
+    // DDA's march entered the committed voxel through. The intersection
+    // shader knows it exactly (the last Amanatides-Woo step axis), but
+    // reportIntersectionEXT carries only (t, 8-bit hitKind) and the payload
+    // is opaque to intersection shaders, so the closest-hit recovers the
+    // face from the hit point: the reported t is the cell-entry boundary
+    // crossing, so p[a] is an integer (within epsilon) exactly on the
+    // crossed axis, and strictly interior on the others. Ties (edge/corner
+    // entries) break to the first axis in x, y, z order — the DDA's own
+    // preference order; the canonical rule is documented in ADR 0009.
+    // The epsilon is relative — ~8 ULP of |p[a]| (f32 at world scale) —
+    // because the reconstruction error grows with the coordinate magnitude:
+    // the DDA's t and the p recomputation each round to ~1 ULP of their
+    // operands, so a fixed epsilon that covers far-away voxels (p ~ 2000 →
+    // ULP ~ 2.4e-4) would swallow near-corner entries nearby (p ~ 10 →
+    // ULP ~ 1e-6). 8 ULP keeps the false-positive window on non-crossed
+    // axes a fraction of a thousandth of a cell.
+    vec3 hit_point = gl_ObjectRayOriginEXT + gl_ObjectRayDirectionEXT * gl_RayTmaxEXT;
+    int face = -1;
+    for (int a = 0; a < 3; ++a) {
+        // A parallel axis never crosses a boundary, so it can't be the face
+        // even if p[a] sits on one by coincidence (grazing an edge plane).
+        if (gl_ObjectRayDirectionEXT[a] == 0.0) {
+            continue;
+        }
+        float f = hit_point[a] - floor(hit_point[a]);
+        float eps = 8.0 * 1.1920929e-07 * max(abs(hit_point[a]), 1.0);
+        // Low-face (p = k, entered moving +a) and high-face (p = k + 1,
+        // entered moving -a) both give f ~ 0 up to float error; the sign of
+        // the direction orients the outward normal.
+        if (f < eps || f > 1.0 - eps) {
+            face = a;
+            break;
+        }
+    }
+    vec3 normal = -normalize(gl_ObjectRayDirectionEXT);
+    if (face >= 0) {
+        normal = vec3(0.0);
+        normal[face] = -sign(gl_ObjectRayDirectionEXT[face]);
+    }
+    incoming_payload.normal = normal;
 }

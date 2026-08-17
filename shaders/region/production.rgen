@@ -22,6 +22,12 @@ const uint MODE_VOXEL = 0u;
 const uint MODE_HULL = 1u;
 const uint MODE_RAY_LATENCY = 2u;
 const uint MODE_HULL_CROSSED = 3u;
+// Ticket 04: the normal heatmap — paints the payload's geometric surface
+// normal, -1..1 mapped to 0..1 per channel, so each voxel face axis shows
+// red (x) / green (y) / blue (z) with a bright + side and dark - side;
+// background paints gray (0.5). Debug builds only, like the other
+// diagnostic modes.
+const uint MODE_NORMAL = 4u;
 
 // The latency heatmap's log2 span: the clock delta is mapped log2(delta) /
 // this value onto the blue->red ramp, spanning 2^0 .. 2^20 ticks (~1 tick ..
@@ -54,12 +60,13 @@ void main() {
     payload.color = vec4(0.0);
     payload.t = -1.0;
     payload.hit_kind = 0u;
+    payload.normal = vec3(0.0);
 
     // The Render mode selects the hit group through the shader-binding-table
-    // record offset: Hull = 1, hull-crossed = 2; Voxel and Ray latency trace
-    // the DDA hit group (0) so the latency measures the real traversal. mode
-    // is a per-frame push-constant flag, so a TAB toggle never rebuilds the
-    // pipeline.
+    // record offset: Hull = 1, hull-crossed = 2; Voxel, Ray latency and the
+    // normal heatmap trace the DDA hit group (0) so the latency measures the
+    // real traversal. mode is a per-frame push-constant flag, so a TAB
+    // toggle never rebuilds the pipeline.
     uint sbt_offset = (mode == MODE_HULL) ? 1u : ((mode == MODE_HULL_CROSSED) ? 2u : 0u);
 
 #ifdef ATLAS_RT_RAY_LATENCY
@@ -96,7 +103,8 @@ void main() {
         // the table's emission column is visibly correct before ticket 05
         // traces real paths (05 replaces the stub with de-modulated
         // radiance, emission still riding inside it); specular is zero; the
-        // normal is the +Z octahedral placeholder and roughness 1.0; viewZ
+        // normal is the real entered-face normal (ticket 04), octahedrally
+        // encoded, with the Material's linear roughness (ticket 03); viewZ
         // is the real linear view-space depth; the motion vector is zero
         // (the prev-view-proj plumbing lands with the Denoise pass); albedo
         // and metalness are the real Material-table values (ticket 03).
@@ -111,21 +119,51 @@ void main() {
         // the payload. Miss reads nothing (zeros — black background).
         vec3 albedo = vec3(0.0);
         float metallic = 0.0;
+        float roughness = 1.0;
         vec3 emission = vec3(0.0);
         if (hit_t > 0.0) {
             vec4 albedo_metallic = material_table.albedo_metallic[payload.hit_kind];
             vec4 rough_emit = material_table.rough_emit[payload.hit_kind];
             albedo = albedo_metallic.rgb;
             metallic = albedo_metallic.a;
+            roughness = rough_emit.a;
             emission = rough_emit.rgb;
+        }
+
+        // Octahedral encoding of the primary hit's normal (ADR 0007):
+        // n/(|x|+|y|+|z|) folds onto the xy square, with the -z hemisphere
+        // wrapped by the standard reflection; .rg carries the [0,1]^2
+        // coordinates, .a the linear roughness. The normal is unit (±e_face
+        // or the camera-facing ray for the t_min embed), so the fold is
+        // never a divide-by-zero. Miss (background) keeps the +Z
+        // placeholder — the sky's viewZ is the denoiser's mask, not its
+        // normal.
+        vec2 normal_oct = vec2(0.5, 0.5);
+        if (hit_t > 0.0) {
+            vec3 n = normalize(payload.normal);
+            vec2 enc = n.xy / (abs(n.x) + abs(n.y) + abs(n.z));
+            if (n.z < 0.0) {
+                enc = (1.0 - abs(enc.yx)) * sign(enc);
+            }
+            normal_oct = enc * 0.5 + 0.5;
         }
 
         imageStore(vko_image2D_rgba16f(diff_radiance_image_id), pixel, vec4(albedo + emission, 0.0));
         imageStore(vko_image2D_rgba16f(spec_radiance_image_id), pixel, vec4(0.0));
-        imageStore(vko_image2D_rgba8(normal_roughness_image_id), pixel, vec4(0.5, 0.5, 0.0, 1.0));
+        imageStore(vko_image2D_rgba8(normal_roughness_image_id), pixel, vec4(normal_oct, 0.0, roughness));
         imageStore(vko_image2D_r32f(viewz_image_id), pixel, vec4(viewz));
         imageStore(vko_image2D_rgba16f(mv_image_id), pixel, vec4(0.0));
         imageStore(vko_image2D_rgba8(albedo_metal_image_id), pixel, vec4(albedo, metallic));
+        return;
+    }
+
+    if (mode == MODE_NORMAL) {
+        // Normal heatmap (ticket 04): the payload's geometric surface
+        // normal, -1..1 mapped to 0..1 per channel — voxel faces paint by
+        // their axis (x red, y green, z blue; + side bright, - side dark);
+        // background (no normal) paints gray. Debug builds only — mode is
+        // always Voxel in release.
+        imageStore(vko_image2D_rgba8(image_id), ivec2(gl_LaunchIDEXT.xy), vec4(payload.normal * 0.5 + 0.5, 1.0));
         return;
     }
 

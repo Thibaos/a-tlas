@@ -148,6 +148,13 @@ pub enum RenderMode {
     /// Debug builds only.
     #[cfg(debug_assertions)]
     HullCrossed = 3,
+    /// Each pixel is colored by its hit's geometric surface normal (ticket
+    /// 04, ADR 0009): -1..1 mapped to 0..1 per channel, so voxel faces paint
+    /// by their axis (x red, y green, z blue; + side bright, - side dark),
+    /// background gray. Traces the DDA hit group like Voxel (the normal
+    /// rides the payload); Debug builds only.
+    #[cfg(debug_assertions)]
+    Normal = 4,
 }
 
 /// The per-pixel hull-crossed count buffer (debug builds): one uint per ray
@@ -192,8 +199,9 @@ pub struct RegionRenderContext {
     pub ev: f32,
     /// The Render mode written into the push constants every frame: the
     /// production raygen's shader-binding-table record offset (0 = Voxel,
-    /// 1 = Hull). Always Voxel in release and in the validator; the app
-    /// toggles it on TAB in debug builds.
+    /// 1 = Hull; Voxel, Ray latency and the normal heatmap all trace the
+    /// DDA hit group 0). Always Voxel in release and in the validator; the
+    /// app toggles it on TAB in debug builds.
     pub mode: RenderMode,
 }
 

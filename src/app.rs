@@ -380,10 +380,10 @@ impl App {
     }
 
     /// TAB (debug builds) cycles the Render mode Voxel -> Hull -> Ray
-    /// latency -> hull-crossed. Reads the just-pressed edge from the shared
-    /// input layer; the mode lives in the render context and is written into
-    /// the push constants every frame, so toggling is a per-frame flag, never a
-    /// pipeline rebuild.
+    /// latency -> hull-crossed -> normal heatmap. Reads the just-pressed
+    /// edge from the shared input layer; the mode lives in the render
+    /// context and is written into the push constants every frame, so
+    /// toggling is a per-frame flag, never a pipeline rebuild.
     #[cfg(debug_assertions)]
     fn toggle_render_mode(&mut self) {
         if self
@@ -396,7 +396,8 @@ impl App {
                 RenderMode::Voxel => RenderMode::Hull,
                 RenderMode::Hull => RenderMode::RayLatency,
                 RenderMode::RayLatency => RenderMode::HullCrossed,
-                RenderMode::HullCrossed => RenderMode::Voxel,
+                RenderMode::HullCrossed => RenderMode::Normal,
+                RenderMode::Normal => RenderMode::Voxel,
             };
         }
     }

@@ -35,6 +35,7 @@ void main() {
     payload.color = vec4(0.0);
     payload.t = -1.0;
     payload.hit_kind = 0u;
+    payload.normal = vec3(0.0);
 
     // Voxel-only: the shader-binding-table record offset is hardcoded 0
     // (the DDA hit group) — the validator never toggles to Hull.
