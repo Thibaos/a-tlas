@@ -1,7 +1,7 @@
 //! Allocation: the free lists a Region's pool buffer and (AABB buffer +
 //! BLAS storage) pair are drawn from. Memory freed by a change cycle is not
 //! reusable until the rebuild that dropped its referencing TLAS instance
-//! executes — see `residency`.
+//! executes. See `residency`.
 
 use std::sync::Arc;
 
@@ -54,7 +54,7 @@ pub struct AllocStats {
 }
 
 /// Best-fit allocation: removes the smallest entry with capacity ≥ `needed`
-/// (pure — unit-tested). `None` means allocate fresh.
+/// (pure; unit-tested). `None` means allocate fresh.
 fn take_best_fit<T>(entries: &mut Vec<T>, needed: u64, capacity: impl Fn(&T) -> u64) -> Option<T> {
     let mut best: Option<(usize, u64)> = None;
     for (i, entry) in entries.iter().enumerate() {

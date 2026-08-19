@@ -54,7 +54,7 @@ pub fn create_host_readback(gpu: &GpuStack, bytes: u64) -> Id<Buffer> {
         .unwrap()
 }
 
-/// Decodes RGBA16F (R16G16B16A16_SFLOAT) bytes — 8 per pixel — to f32 RGBA.
+/// Decodes RGBA16F (R16G16B16A16_SFLOAT) bytes, 8 per pixel, to f32 RGBA.
 pub fn decode_rgba16f(bytes: &[u8]) -> Vec<glam::Vec4> {
     bytes
         .chunks_exact(8)
@@ -78,7 +78,7 @@ pub fn half_to_f32(h: u16) -> f32 {
     let magnitude = if exp == 0 {
         (mant as f32) * 2.0_f32.powi(-24)
     } else if exp == 31 {
-        // Inf/NaN — the radiance pair never contains them; map to +inf.
+        // Inf/NaN. The radiance pair never contains them; map to +inf.
         f32::INFINITY
     } else {
         ((mant as f32) + 1024.0) * 2.0_f32.powi(i32::from(exp) - 25)

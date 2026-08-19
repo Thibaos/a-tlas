@@ -12,7 +12,7 @@
 layout(location = 0) rayPayloadInEXT MainPassPayload incoming_payload;
 
 // Hull mode's closest hit: expand the 8-bit coordinate hash (the hit kind) to
-// an RGB color in-shader via a golden-ratio HSV ramp — no palette lookup (that
+// an RGB color in-shader via a golden-ratio HSV ramp. No palette lookup (that
 // is the DDA closest-hit's job, and no color buffer is needed here). The
 // golden-ratio conjugate spreads adjacent hash values far apart in hue, so
 // neighboring chunks stay distinct even though the hash is folded to 8 bits.
@@ -34,6 +34,6 @@ void main() {
     // so a payload inspection is well-defined).
     incoming_payload.hit_kind = gl_HitKindEXT;
     // No surface normal in Hull mode (the hull AABB face is not a voxel
-    // face; the paint path never reads it) — zeroed for hygiene.
+    // face; the paint path never reads it), zeroed for hygiene.
     incoming_payload.normal = vec3(0.0);
 }

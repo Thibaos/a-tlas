@@ -4,7 +4,7 @@
 //! trace and the next frame: pool upload → BLAS build → TLAS build (on
 //! residency transitions), so in-place rebuilds are race-free by ordering.
 //! [`RegionStore`](crate::render::region::residency::RegionStore) computes a
-//! CPU-side [`RebuildPlan`] (allocations, tables, packed instances — the
+//! CPU-side [`RebuildPlan`] (allocations, tables, packed instances. The
 //! worker keeps only the CPU-side drain/pack) and hands it to
 //! [`RebuildGraph`], which compiles one ordered graph per change cycle over
 //! exactly the buffers involved:
@@ -71,7 +71,7 @@ pub struct RegionUpload {
 
 /// One BLAS build. Every build is recorded as an in-place build into known
 /// storage: a become-resident/replacement BLAS gets its storage created by
-/// the plan phase (CPU) and the node builds into it — the AS object and its
+/// the plan phase (CPU) and the node builds into it. The AS object and its
 /// device address never move after creation.
 pub struct BlasBuild {
     pub region_index: IVec3,
@@ -97,7 +97,7 @@ pub struct TlasBuild {
 
 /// The CPU-side plan for one change cycle: what the ordered rebuild nodes
 /// will do. Built by the store's plan phase (CPU-only) and consumed by
-/// [`RebuildGraph`]. Plain data — no double buffer, no flip atomic.
+/// [`RebuildGraph`]. Plain data, no double buffer, no flip atomic.
 #[derive(Default)]
 pub struct RebuildPlan {
     pub uploads: Vec<RegionUpload>,
@@ -114,7 +114,7 @@ pub struct RebuildPlan {
 
 impl RebuildPlan {
     /// The plan does no GPU work at all (an idle change cycle: dirty regions
-    /// whose mirrors emptied before the cycle — the renderer costs zero, no
+    /// whose mirrors emptied before the cycle. The renderer costs zero, no
     /// rebuild graph is compiled or submitted).
     pub fn is_empty(&self) -> bool {
         self.uploads.is_empty()
@@ -171,9 +171,9 @@ pub enum RebuildLogEntry {
         pool_bytes: u64,
         aabbs: u32,
     },
-    /// The BLAS node rebuilt a Region's BLAS in place (`fresh: false` —
+    /// The BLAS node rebuilt a Region's BLAS in place (`fresh: false`, a
     /// content edit, device address stable, TLAS untouched) or built into
-    /// fresh storage (`fresh: true` — become-resident/replacement).
+    /// fresh storage (`fresh: true`, become-resident/replacement).
     BuildBlas {
         region_index: IVec3,
         aabb_count: u32,
@@ -322,15 +322,15 @@ impl Task for BuildBlasTask {
 }
 
 /// The third node: rebuild the stable TLAS **in place** over the packed
-/// instance prefix — only on residency transitions. Reads the upload node's
+/// instance prefix, only on residency transitions. Reads the upload node's
 /// host-written instance buffer (declared access), writes the TLAS storage.
 ///
 /// The node declares the instance buffer with
-/// `ACCELERATION_STRUCTURE_BUILD_ACCELERATION_STRUCTURE_WRITE` — the build
+/// `ACCELERATION_STRUCTURE_BUILD_ACCELERATION_STRUCTURE_WRITE`. The build
 /// *reads* it, but the declared write is the ordering proxy (inherited from
 /// the retired async TLAS worker): the render task declares
 /// `RAY_TRACING_SHADER_ACCELERATION_STRUCTURE_READ` on the same buffer, so
-/// the trace waits for this node's submission — the rebuild lands between
+/// the trace waits for this node's submission. The rebuild lands between
 /// the consuming trace and the next frame, and in-place rebuilds are
 /// race-free by ordering.
 struct BuildTlasTask {
@@ -436,7 +436,7 @@ fn build_post_barrier() -> MemoryBarrier<'static> {
 
 /// The per-cycle rebuild graph: upload → BLAS build → TLAS build (on
 /// residency), compiled once per change cycle over exactly the buffers
-/// involved, executed on the compute queue and waited before returning — so
+/// involved, executed on the compute queue and waited before returning. So
 /// the freed memory release in the store is safe (the dropping rebuild
 /// executed). An idle renderer never builds one (zero cost: no pending
 /// rebuilds, no wakeups).
@@ -551,7 +551,7 @@ impl RebuildGraph {
 
     /// Executes the ordered rebuild nodes and waits for the compute flight
     /// before returning (the rebuild sequence must complete before the
-    /// caller releases the pending frees — the dropping rebuild executed).
+    /// caller releases the pending frees. The dropping rebuild executed).
     pub fn execute(self, gpu: &GpuStack) {
         let resource_map = resource_map!(&self.executable).unwrap();
 
@@ -591,7 +591,7 @@ pub(crate) fn allocate_scratch(gpu: &GpuStack, size: DeviceSize) -> Arc<Buffer> 
 }
 
 /// The BLAS build sizes (AS storage + scratch) over `aabb_buffer` with
-/// `aabb_count` AABBs — the plan phase sizes the scratch and asserts the
+/// `aabb_count` AABBs. The plan phase sizes the scratch and asserts the
 /// build fits the Region's storage.
 pub(crate) fn blas_build_sizes(
     gpu: &GpuStack,
@@ -647,11 +647,11 @@ pub(crate) fn tlas_build_sizes(
 mod tests {
     use super::*;
 
-    /// The empty plan is plain data with no GPU work — the idle invariant's
+    /// The empty plan is plain data with no GPU work. The idle invariant's
     /// shape: no rebuild graph is compiled when nothing changed. (The new
     /// path carries no back-AS double buffer and no flip atomic: the plan
     /// has no AS array and no index state, and the store owns exactly one
-    /// stable TLAS — see [`RegionStore::tlas`].)
+    /// stable TLAS. See [`RegionStore::tlas`].)
     #[test]
     fn empty_plan_means_no_rebuild_work() {
         let plan = RebuildPlan::default();
@@ -660,7 +660,7 @@ mod tests {
     }
 
     /// The log derives from the plan in node order: uploads, table,
-    /// instances, BLAS builds, TLAS build — the counters the harness checks.
+    /// instances, BLAS builds, TLAS build. The counters the harness checks.
     /// Content edits (in-place BLAS, no TLAS) and transitions (instances +
     /// TLAS) are distinguishable by shape.
     #[test]

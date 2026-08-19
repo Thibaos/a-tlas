@@ -200,7 +200,7 @@ impl ValidateRunner {
         let shape = VoxelShape::GridCell;
 
         println!(
-            "[{:>15}] {} ({} voxels) — rendering…",
+            "[{:>15}] {} ({} voxels): rendering…",
             world.name, world.path, voxel_count
         );
 
@@ -387,7 +387,7 @@ impl ValidateRunner {
                 input.wait_until_idle();
 
                 // The seam: the change-path pack equals the direct pack of
-                // the edited world — the exact bytes the pipeline consumes.
+                // the edited world, the exact bytes the pipeline consumes.
                 let expected = pack_regions(&emit_snapshots(&world_data));
                 let actual = input.packed_regions();
                 assert_eq!(actual.len(), expected.len());
@@ -430,7 +430,7 @@ impl ValidateRunner {
 
                 // The rebuild logs/counters: a content edit rebuilds the
                 // Region's BLAS **in place** (device address stable → TLAS
-                // untouched — no `BuildTlas` entry); a residency transition
+                // untouched. No `BuildTlas` entry); a residency transition
                 // rebuilds the TLAS, adding/removing exactly one instance
                 // (the scripts transition one Region per step).
                 let log = &report.rebuild_log;
@@ -493,7 +493,7 @@ impl ValidateRunner {
         }
 
         // The residency world's scripted transitions: Region (1,0,0) leaves
-        // residency when emptied, and its re-population re-creates it — from
+        // residency when emptied, and its re-population re-creates it, from
         // the free lists, not fresh allocations (the ordering invariant's
         // probe: freed AS memory is reused only after the rebuild that
         // dropped the referencing instance executed). Gated on the world
@@ -559,7 +559,7 @@ impl ValidateRunner {
 
     /// Builds the compiled task graph over the store's stable buffers.
     /// The setup's swapchain/images/buffers are shared; the graph is built **once per
-    /// world** and every frame executes it — residency rebuilds rewrite the
+    /// world** and every frame executes it. Residency rebuilds rewrite the
     /// store's buffers in place, so the ids never move.
     fn build_validate_frame(
         &self,
@@ -617,7 +617,7 @@ impl ValidateRunner {
         // NOTE (vulkano-taskgraph, pinned eae054666): declaring the swapchain
         // image access here as `ImageLayoutType::Optimal` (which transitions
         // General -> TransferSrcOptimal between the nodes) makes the ray pass
-        // miss everything — the trace in the previous node reports no hits.
+        // miss everything. The trace in the previous node reports no hits.
         // Reading in General (no layout transition) is required; verified by
         // isolating the capture node's accesses. The copy command itself
         // accepts a General-layout source, so nothing is lost.
@@ -645,7 +645,7 @@ impl ValidateRunner {
 
         // The capture is ordered strictly after the ray pass (and before any
         // overlay node would run), so the copied bytes are the raw renderer
-        // output — "capture before the debug overlay draws".
+        // output, "capture before the debug overlay draws".
         task_graph.add_edge(rt_node_id, capture_node_id).unwrap();
 
         task_graph.add_host_buffer_access(setup.color_readback_buffer_id, HostAccessType::Read);
@@ -680,7 +680,7 @@ impl ValidateRunner {
             &path_raygen,
             None,
             // The production pipeline's miss shader returns the Procedural
-            // sky (ticket 06) — the shading half compares the real output.
+            // sky (ticket 06). The shading half compares the real output.
             true,
         );
         let path_instance_buffer_id = path_rt_task.instance_buffer_id();
@@ -695,7 +695,7 @@ impl ValidateRunner {
             AccessTypes::RAY_TRACING_SHADER_STORAGE_WRITE,
             ImageLayoutType::General,
         );
-        // The production raygen's six-buffer set (ADR 0007) — physical ids
+        // The production raygen's six-buffer set (ADR 0007). Physical ids
         // referenced directly (the validator never resizes, so the app's
         // virtual-id indirection is unnecessary).
         for image in [
@@ -908,7 +908,7 @@ impl ValidateRunner {
         }
 
         // The shading half (ticket 07): the CPU path-tracer diff over the
-        // same world state — N GPU frames (frame_seed 0..N-1) vs N
+        // same world state. N GPU frames (frame_seed 0..N-1) vs N
         // identical-seed CPU samples, per-pixel means with tolerance.
         let path = if self.opts.no_path_trace {
             None
@@ -948,7 +948,7 @@ impl ValidateRunner {
 
         // The CPU mirror (ticket 07): the same world, the same Material
         // table (ADR 0008), and the same Scene constants the GPU reads
-        // (default_scene — the packed values are data, mirrored verbatim).
+        // (default_scene. The packed values are data, mirrored verbatim).
         let materials = get_material_table(voxel_data);
         let packed = default_scene();
         let scene = path_tracer::Scene {
@@ -972,7 +972,7 @@ impl ValidateRunner {
         let mut albedo_sum = vec![glam::Vec3::ZERO; pixel_count];
         let mut hit_sum = vec![0u32; pixel_count];
         // The octahedral normal encodings (RGBA8) and the in-lobe hit
-        // distance (the diffuse alpha) — for the corner-touch excuse.
+        // distance (the diffuse alpha), for the corner-touch excuse.
         let mut hitdist_sum = vec![0.0f32; pixel_count];
 
         for f in 0..samples {
@@ -1116,7 +1116,7 @@ impl ValidateRunner {
     }
 }
 
-/// The de-modulation guard (the composite's re-modulation divisor) — the
+/// The de-modulation guard (the composite's re-modulation divisor). The
 /// display PNG re-modulates with the same max(albedo, eps) the trace pass
 /// divided by (ADR 0010).
 
@@ -1126,7 +1126,7 @@ impl ValidateRunner {
 
 /// One of the shading-half's six output images: the physical image + its
 /// bindless storage id. The validator never resizes, so the app's
-/// virtual-id indirection is unnecessary — the graph references the physical
+/// virtual-id indirection is unnecessary. The graph references the physical
 /// ids directly.
 struct PathTraceImage {
     physical_id: Id<Image>,

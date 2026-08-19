@@ -1,19 +1,19 @@
 //! Per-pixel comparison of the captured GPU frame against the reference
 //! tracer.
 //!
-//! A pixel mismatches when the 8-bit colors differ (exact — both sides use
+//! A pixel mismatches when the 8-bit colors differ (exact, both sides use
 //! the same palette) or when t differs beyond the relative tolerance
 //! `1e-3 * max(t, 1)`. Two classes of sub-voxel boundary effects are
 //! excused: mismatches that sit on the reference image's edge-silhouette (a
 //! 1-pixel-dilated color discontinuity), and mismatches where both sides
-//! committed the same color within `SUB_VOXEL_T_VOXELS` of each other — a
+//! committed the same color within `SUB_VOXEL_T_VOXELS` of each other. A
 //! ray grazing a voxel corner (the reference walks in world space, the
 //! renderer's DDA in Region-local space, so a corner-touch tie-break can
 //! legitimately pick the neighbor voxel while the rendered pixel is
 //! identical). The run passes when there are no mismatches outside those
 //! clusters and the clusters total ≤ 1% of pixels.
 
-/// `CompareConfig::default()` — 1e-3 relative t tolerance, 1% mismatch budget.
+/// `CompareConfig::default()`: 1e-3 relative t tolerance, 1% mismatch budget.
 #[derive(Clone, Copy, Debug)]
 pub struct CompareConfig {
     /// Relative t tolerance: `|t_gpu - t_ref| <= t_tolerance * max(t, 1)`.
@@ -181,7 +181,7 @@ pub fn compare(
             let t_match = (gpu.t - reference.t).abs()
                 <= config.t_tolerance * gpu.t.abs().max(reference.t.abs()).max(1.0);
             // The corner-touch excuse: identical rendered color, both sides
-            // within a voxel-ish t distance — the GPU's Region-local DDA and
+            // within a voxel-ish t distance. The GPU's Region-local DDA and
             // the world-space reference round a corner-grazing tie
             // differently, flipping the committed voxel with no visible
             // change.
@@ -291,7 +291,7 @@ mod tests {
         let rgba = flat_color([10, 20, 30, 255], 16);
         let reference_t = flat_t(10.0, 16);
         let mut gpu_t = flat_t(10.0, 16);
-        // 30% off — beyond the t tolerance AND beyond the corner-touch
+        // 30% off, beyond the t tolerance AND beyond the corner-touch
         // excuse bound (SUB_VOXEL_T_VOXELS), so it stays hard even though
         // the color matches.
         gpu_t[0] = 10.0 + 3.0;
@@ -331,7 +331,7 @@ mod tests {
 
     #[test]
     fn background_miss_matches() {
-        // Both sides: black, t = 0 — no mismatch.
+        // Both sides: black, t = 0, no mismatch.
         let rgba = flat_color([0, 0, 0, 255], 16);
         let t = flat_t(0.0, 16);
         let report = compare(&rgba, &t, &rgba, &t, 4, 4, CompareConfig::default());

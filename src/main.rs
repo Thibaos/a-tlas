@@ -5,7 +5,7 @@ use winit::event_loop::EventLoop;
 fn main() -> Result<(), impl Error> {
     let args: Vec<String> = std::env::args().collect();
 
-    // `atlas-rt validate [options]` — the offline correctness validator.
+    // `atlas-rt validate [options]`: the offline correctness validator.
     if args.get(1).map(String::as_str) == Some("validate") {
         return match atlas_rt::validate::run(&args[2..]) {
             Ok(()) => Ok(()),

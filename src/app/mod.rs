@@ -110,7 +110,7 @@ pub struct RenderContext {
     /// plus the physical images recreated on resize.
     trace_pass_images: TracePassImages,
     /// The per-frame world the graph executes with (camera, storage
-    /// images, the app's debug overlay fields — see
+    /// images, the app's debug overlay fields. See
     /// [`RegionRenderContext`]).
     region: RegionRenderContext,
 }
@@ -144,7 +144,7 @@ impl App {
         // The one-shot pre-loop build: every initial Region
         // becomes resident through the ordered rebuild graph (pool upload →
         // BLAS build → TLAS build). The startup batch's published dirty set
-        // is consumed here — the frame loop applies only post-startup
+        // is consumed here. The frame loop applies only post-startup
         // change cycles.
         let store = RegionStore::new(&gpu, &voxel_data, input.packed_regions());
         input.take_dirty_regions();
@@ -337,7 +337,7 @@ impl ApplicationHandler for App {
         // The trace pass's output images (ADR 0007): virtual graph resources
         // first (the nodes' accesses reference them below), physical images
         // + bindless ids attached right after (sized to the window and
-        // recreated on resize — the per-frame resource map binds the
+        // recreated on resize. The per-frame resource map binds the
         // virtual ids, so recreation needs no graph rebuild).
         let mut trace_pass_images = TracePassImages::add_virtual(&mut task_graph);
         let swapchain_state = self.gpu.resources.swapchain(swapchain_id);
@@ -561,12 +561,12 @@ impl ApplicationHandler for App {
                 proj_inverse: [[0.0; 4]; 4],
                 view_inverse: [[0.0; 4]; 4],
             },
-            // The analytic lights' constants (ticket 06): the defaults —
+            // The analytic lights' constants (ticket 06): the defaults,
             // tunable later (the Scene buffer is written every frame).
             scene: default_scene(),
             swapchain_storage_image_ids,
             // The production raygen never dereferences `t_image_id`
-            // (shaders/region/production.rgen) — it stays INVALID.
+            // (shaders/region/production.rgen). It stays INVALID.
             t_image_storage_id: StorageImageId::INVALID,
             // The trace pass's output set (ADR 0007): the storage ids the
             // production raygen writes in Voxel mode.
@@ -794,7 +794,7 @@ impl ApplicationHandler for App {
             self.close_requested = true;
         }
         // Manual exposure (ADR 0007): [ / ] step the composite's EV by half
-        // a stop per press, app-wide (not debug-gated — exposure is a
+        // a stop per press, app-wide (not debug-gated. Exposure is a
         // rendering control, not a diagnostic).
         if let Some(rcx) = &mut self.rcx {
             if self.player_input.just_pressed.contains(&InputKey::ExposureUp) {
@@ -886,7 +886,7 @@ impl TracePassImages {
 
     /// Replaces the physical images and bindless storage ids with the given
     /// freshly created ones (startup and resize), keeping the virtual ids.
-    /// The task graph is untouched — the per-frame resource map binds the
+    /// The task graph is untouched. The per-frame resource map binds the
     /// virtual ids to the new physical images.
     fn attach_physical(&mut self, physical: TracePassImages) {
         self.diff_radiance.physical_id = physical.diff_radiance.physical_id;
@@ -907,7 +907,7 @@ impl TracePassImages {
 /// Creates the trace pass's six physical output images (ADR 0007), sized to
 /// the window, and registers them in the bindless set. Called at startup
 /// and again on resize (the old images are destroyed first); the virtual
-/// ids in the returned struct are INVALID — they ride on the render
+/// ids in the returned struct are INVALID. They ride on the render
 /// context's [`TracePassImages`].
 pub(crate) fn create_trace_pass_images(
     resources: &Resources,

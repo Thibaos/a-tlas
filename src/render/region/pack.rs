@@ -3,12 +3,12 @@
 //!
 //! A Region is the renderer's grouping of Micro-chunks that share one
 //! acceleration-structure build: 32^3 Micro-chunks (256^3 voxels),
-//! origin-aligned over the grid (the renderer owns the grid — the world never
+//! origin-aligned over the grid (the renderer owns the grid; the world never
 //! computes ids). This module packs each Region's GPU pool CPU-side: a u32
 //! offset table (32768 slots, sentinel for empty Micro-chunks) followed by
 //! compact blocks (64-byte Occupancy mask + popcount-compacted u8 materials,
 //! 8-aligned). It also derives the trimmed hull AABBs in absolute
-//! Region-local coordinates — one per non-empty Micro-chunk — so the
+//! Region-local coordinates, one per non-empty Micro-chunk, so the
 //! intersection shader resolves micro_chunk = floor(hit/8) and
 //! cell = floor(hit) mod 8 with zero per-AABB metadata.
 
@@ -23,7 +23,7 @@ use crate::world::snapshot::MicroChunkSnapshot;
 /// The number of Micro-chunks per Region: 32^3 = 32768.
 pub const MICRO_CHUNKS_PER_REGION: usize = 32 * 32 * 32;
 
-/// The offset table's size in bytes (u32 × 32768 slots) — the pool starts
+/// The offset table's size in bytes (u32 × 32768 slots). The pool starts
 /// with the table, then the blocks.
 pub const OFFSET_TABLE_SIZE: usize = MICRO_CHUNKS_PER_REGION * 4;
 

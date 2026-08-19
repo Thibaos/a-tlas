@@ -24,8 +24,8 @@ pub fn write_png(path: &Path, rgba: &[u8], width: u32, height: u32) -> std::io::
     Ok(())
 }
 
-/// Builds the diff image: the reference frame with mismatch pixels overlaid —
-/// red for hard mismatches (real divergences), yellow for edge-silhouette
+/// Builds the diff image: the reference frame with mismatch pixels overlaid.
+/// Red for hard mismatches (real divergences), yellow for edge-silhouette
 /// mismatches (excused).
 pub fn build_diff_image(reference_rgba: &[u8], report: &CompareReport) -> Vec<u8> {
     let mut diff = reference_rgba.to_vec();
@@ -144,7 +144,7 @@ pub fn write_text_report(
 // The shading-half (CPU path-tracer diff) report artifacts (ticket 07)
 // ---------------------------------------------------------------------------
 
-/// The ACES filmic fit (Narkowicz 2015) — the composite node's tonemap
+/// The ACES filmic fit (Narkowicz 2015), the composite node's tonemap
 /// (shaders/region/composite.comp), mirrored for the display PNGs.
 fn aces_fit(x: glam::Vec3) -> glam::Vec3 {
     let (a, b, c, d, e) = (2.51f32, 0.03, 2.43, 0.59, 0.14);
@@ -152,7 +152,7 @@ fn aces_fit(x: glam::Vec3) -> glam::Vec3 {
 }
 
 /// Tone-maps linear radiance to an RGBA8 display (ACES + gamma, like the
-/// composite) — the path-traced frames are linear HDR, so the PNGs are
+/// composite). The path-traced frames are linear HDR, so the PNGs are
 /// display captures, not the compared quantity.
 pub fn tone_map_rgba(radiance: &[glam::Vec3]) -> Vec<u8> {
     let mut out = Vec::with_capacity(radiance.len() * 4);
@@ -169,7 +169,7 @@ pub fn tone_map_rgba(radiance: &[glam::Vec3]) -> Vec<u8> {
 }
 
 /// Builds the path diff image: the tone-mapped CPU display frame with
-/// mismatch pixels overlaid — red for hard mismatches (real divergences),
+/// mismatch pixels overlaid. Red for hard mismatches (real divergences),
 /// yellow for excused ones (silhouette/firefly).
 pub fn build_path_diff_image(
     cpu_display: &[glam::Vec3],

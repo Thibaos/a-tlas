@@ -12,7 +12,7 @@
 layout(location = 0) rayPayloadInEXT MainPassPayload incoming_payload;
 
 // Background (the miss shader's output): black, alpha 1, t = 0 (no-hit
-// sentinel) — mirrors the CPU reference tracer's BACKGROUND_COLOR.
+// sentinel), mirrors the CPU reference tracer's BACKGROUND_COLOR.
 void main() {
     incoming_payload.color = vec4(vec3(0.0), 1.0);
     incoming_payload.t = 0.0;

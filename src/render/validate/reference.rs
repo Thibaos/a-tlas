@@ -1,7 +1,7 @@
 //! The independent CPU reference tracer.
 //!
-//! A naive per-voxel ray tracer over the world's source of truth — the chunk
-//! HashMaps plus the palette — sharing only camera inputs and the palette with
+//! A naive per-voxel ray tracer over the world's source of truth, the chunk
+//! HashMaps plus the palette, sharing only camera inputs and the palette with
 //! the GPU path. It deliberately shares none of the renderer's machinery (no
 //! DDA through pools, no trimmed AABBs, no hitKind, no BLAS/TLAS): a
 //! divergence between the reference and the captured frame points at the
@@ -10,7 +10,7 @@
 //! Rays are reconstructed exactly like `shaders/rt/raygen_common.glsl`, and
 //! each voxel is tested as the same shape the renderer uses ([`VoxelShape`]).
 //! The validator now runs the destination path,
-//! whose in-shader DDA resolves grid cells — so the validator uses
+//! whose in-shader DDA resolves grid cells, so the validator uses
 //! [`VoxelShape::GridCell`]; [`VoxelShape::CenteredUnitCube`] remains only
 //! for the unit tests.
 //!
@@ -408,8 +408,8 @@ mod tests {
         let tracer = ReferenceTracer::new(&world, palette(), VoxelShape::CenteredUnitCube);
 
         // Build a camera whose (0,0) pixel ray is origin (-5,0,0), dir +X.
-        // proj_inverse = identity maps clip (0,0,-1,1) to eye (0,0,-1,1) —
-        // ndc for pixel (0,0) at 2x2 is (-0.5, -0.5), which won't give +X.
+        // proj_inverse = identity maps clip (0,0,-1,1) to eye (0,0,-1,1),
+        // and ndc for pixel (0,0) at 2x2 is (-0.5, -0.5), which won't give +X.
         // Instead construct the ray manually and only use CameraInputs::ray
         // for the reconstruction tests below.
         let (t, material) = tracer
@@ -508,7 +508,7 @@ mod tests {
 
     /// The center of a 2x2 frame maps to clip (0, 0): pixel centers land on
     /// ndc 0 at x = 0.5/2 → ndc -0.5? At 2x2 the pixel centers are at
-    /// (0.5, 0.5) and (1.5, 1.5), ndc -0.5 and 0.5 — there is no exact
+    /// (0.5, 0.5) and (1.5, 1.5), ndc -0.5 and 0.5. There is no exact
     /// center pixel; verify the far corner instead.
     #[test]
     fn camera_ray_reconstruction_corner() {

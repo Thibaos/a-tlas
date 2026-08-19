@@ -159,8 +159,8 @@ impl World {
     /// Iterates every occupied voxel as (global position, voxel).
     ///
     /// The validator's reference tracer reads the world side of the renderer
-    /// input contract through this iterator (plus `get_voxel` and the palette)
-    /// — it never touches renderer state.
+    /// input contract through this iterator (plus `get_voxel` and the palette).
+    /// It never touches renderer state.
     pub fn iter_voxels(&self) -> impl Iterator<Item = (IVec3, &u32)> + '_ {
         self.inner.iter().map(|(position, voxel)| (*position, voxel))
     }

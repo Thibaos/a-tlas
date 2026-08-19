@@ -1,20 +1,20 @@
 //! The renderer input contract: the world-facing
 //! enqueue-only API plus the CPU-side change machinery.
 //!
-//! The world hands the renderer **Micro-chunk snapshots** — {global coords,
-//! 64-byte Occupancy mask, u8 material indices} — and create, update, and
+//! The world hands the renderer **Micro-chunk snapshots**: {global coords,
+//! 64-byte Occupancy mask, u8 material indices}. Then create, update, and
 //! removal are the same message: an emptied Micro-chunk re-snapshots with a
 //! zero mask. Submitting never blocks on GPU: it inserts into a
 //! mutex-protected pending set (last-wins per Micro-chunk) and signals a
 //! worker thread via a condvar. The worker drains **everything pending per
 //! cycle**, applies the snapshots into per-Region CPU mirrors
-//! ([`RegionMirror`]) — deriving each Region id from the snapshot's global
-//! coords, never from the world — and publishes the dirty-Region set
+//! ([`RegionMirror`]). It derives each Region id from the snapshot's global
+//! coords, never from the world, and publishes the dirty-Region set
 //! ([`RendererInput::take_dirty_regions`]). The renderer repacks mirrors
 //! through [`RegionData`] (see `crate::render::region::pack`) and feeds the
 //! Region pipeline.
 //!
-//! Idle cost: with nothing pending, the worker blocks on the condvar — no
+//! Idle cost: with nothing pending, the worker blocks on the condvar. No
 //! polling, zero cost. Startup is one `submit_batch` (the world's initial
 //! snapshots) followed by a single drain cycle.
 
@@ -35,7 +35,7 @@ use crate::world::snapshot::MicroChunkSnapshot;
 
 /// One Region's CPU-side mirror: the authoritative per-Micro-chunk
 /// snapshot state, the source for wholesale pool re-packing. Empty
-/// Micro-chunks are never stored — a zero-mask snapshot removes the
+/// Micro-chunks are never stored. A zero-mask snapshot removes the
 /// Micro-chunk from the mirror, and an emptied mirror is dropped by
 /// [`apply_snapshots`].
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -63,7 +63,7 @@ impl RegionMirror {
         self.microchunks.get(&global_coords)
     }
 
-    /// Applies one snapshot — create, update, and removal are the same
+    /// Applies one snapshot. Create, update, and removal are the same
     /// message (removal = zero-mask re-snapshot). Returns whether the mirror
     /// actually changed (an identical re-snapshot is a no-op: idempotent).
     pub fn apply(&mut self, snapshot: MicroChunkSnapshot) -> bool {
@@ -93,7 +93,7 @@ impl RegionMirror {
 /// The shared change state behind [`ChangeQueue`] and [`RendererInput`].
 struct ChangeQueueInner {
     /// Snapshots enqueued but not yet drained, keyed by Micro-chunk origin:
-    /// repeated/out-of-order submissions coalesce — only the last one
+    /// repeated/out-of-order submissions coalesce. Only the last one
     /// survives (last-wins, idempotent).
     pending: Mutex<HashMap<IVec3, MicroChunkSnapshot>>,
     /// Wakes the worker when snapshots arrive (or on shutdown).
@@ -106,7 +106,7 @@ struct ChangeQueueInner {
     /// The dirty-Region set published by the drain cycles since the last
     /// [`RendererInput::take_dirty_regions`] (deduped by the worker).
     applied_regions: Mutex<Vec<IVec3>>,
-    /// The worker is blocked on `wake_worker` with nothing pending — the
+    /// The worker is blocked on `wake_worker` with nothing pending. The
     /// idle invariant (no polling, zero cost). Probe for tests.
     idle: AtomicBool,
     /// The worker is mid-cycle (drained, not yet published). Makes
@@ -131,7 +131,7 @@ impl ChangeQueueInner {
 }
 
 /// The world-facing, enqueue-only half of the input contract. Clone to share
-/// across threads; submitting never blocks on GPU — it inserts into the
+/// across threads; submitting never blocks on GPU. It inserts into the
 /// pending set (a short mutex hold at most) and signals the worker.
 #[derive(Clone)]
 pub struct ChangeQueue {
@@ -153,8 +153,8 @@ impl ChangeQueue {
     pub fn submit_microchunk(&self, snapshot: MicroChunkSnapshot) {
         // The world→renderer boundary: a Micro-chunk whose Region index falls
         // outside the v1 lattice (±2048/axis) cannot be represented (the
-        // 12-bit region-id budget). Reject it loudly and unconditionally —
-        // release mode must not silently alias and index past the fixed tables.
+        // 12-bit region-id budget). Reject loudly and unconditionally.
+        // Release mode must not silently alias and index past the fixed tables.
         //
         // The check runs *before* the `pending` lock is taken: a rejection
         // panics here on the caller thread holding no lock, so the queue's
@@ -179,7 +179,7 @@ impl ChangeQueue {
         // See [`ChangeQueue::submit_microchunk`]: the lattice boundary check
         // runs *before* taking the `pending` lock, so a rejection cannot
         // poison the queue's Mutex and kill the worker thread. The whole batch
-        // is validated up front — either every snapshot is in-lattice (then
+        // is validated up front: either every snapshot is in-lattice (then
         // all are inserted under one lock hold) or the batch is rejected
         // atomically, before any state changes.
         let validated: Vec<MicroChunkSnapshot> = snapshots
@@ -277,7 +277,7 @@ impl RendererInput {
     }
 
     /// The dirty-Region set since the last call: every Region whose mirror
-    /// changed (deduped, sorted). Empty between change cycles — the renderer
+    /// changed (deduped, sorted). Empty between change cycles. The renderer
     /// does no work when nothing changed. Consumed by the residency manager
     /// ([`crate::render::region::residency::RegionStore::apply`]); the validator
     /// rebuilds wholesale for now.
@@ -311,8 +311,7 @@ impl RendererInput {
         self.queue.inner.mirrors.lock().unwrap().len()
     }
 
-    /// True when the worker is blocked on the condvar with nothing pending —
-    /// the idle invariant (no polling, zero cost). Probe for tests.
+    /// True when the worker is blocked on the condvar with nothing pending. The idle invariant (no polling, zero cost). Probe for tests.
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn worker_idle(&self) -> bool {
         self.queue.inner.idle.load(Ordering::SeqCst)
@@ -372,7 +371,7 @@ fn worker_loop(inner: &Arc<ChangeQueueInner>) {
 }
 
 /// Applies a drained batch into the per-Region mirrors. The Region id is
-/// derived from each snapshot's global coords — the renderer owns the
+/// derived from each snapshot's global coords. The renderer owns the
 /// lattice; the world never computes or passes Region ids. Returns the dirty
 /// Region indices (deduped, sorted); Regions whose mirrors empty out are
 /// dropped.
@@ -508,7 +507,7 @@ mod tests {
         assert!(mirrors.is_empty());
     }
 
-    /// The renderer derives Region ids from global coords — including floor
+    /// The renderer derives Region ids from global coords, including floor
     /// division for negative coords; the world never passes them (the
     /// snapshot type has no Region field).
     #[test]
@@ -528,7 +527,7 @@ mod tests {
 
     /// The world→renderer boundary rejects a snapshot whose Region index falls
     /// outside the v1 lattice (the 12-bit region-id budget, ±2048/axis). An
-    /// over-lattice model must fail loudly here — release mode never aliases.
+    /// over-lattice model must fail loudly here. Release mode never aliases.
     #[test]
     #[should_panic(expected = "exceeds the renderer lattice")]
     fn submit_rejects_out_of_lattice_snapshot() {
@@ -544,7 +543,7 @@ mod tests {
         let input = RendererInput::new();
         input.submit_microchunk(snapshot(IVec3::new(2047, 2047, 2047), &[(0, 1)]));
         input.wait_until_idle();
-        // Region index 7 fits; the batch below would panic at 2048 — asserted
+        // Region index 7 fits; the batch below would panic at 2048, asserted
         // by the should_panic test, not duplicated here.
         assert_eq!(region_index_of(IVec3::new(2047, 0, 0)), IVec3::new(7, 0, 0));
         assert_eq!(region_index_of(IVec3::new(2048, 0, 0)), IVec3::new(8, 0, 0));
@@ -569,7 +568,7 @@ mod tests {
         assert!(rejected.join().is_err(), "out-of-lattice batch must panic");
 
         // The queue is still healthy: a valid submit drains and becomes a
-        // mirror — the worker did not die on a poisoned lock.
+        // mirror. The worker did not die on a poisoned lock.
         input.submit_microchunk(snapshot(IVec3::new(0, 0, 0), &[(0, 1)]));
         input.wait_until_idle();
         assert_eq!(input.region_count(), 1);
@@ -713,7 +712,7 @@ mod tests {
         input.wait_until_idle();
         assert_eq!(input.region_count(), 1);
 
-        // And back to sleep — the whole cycle is condvar-driven.
+        // And back to sleep. The whole cycle is condvar-driven.
         let idle_again = (0..2000).any(|_| {
             if input.worker_idle() {
                 true
@@ -747,7 +746,7 @@ mod tests {
         assert!(input.take_dirty_regions().is_empty());
 
         // A second cycle for an already-dirty Region dedupes against the
-        // previous take (the applied set is per-take, so it reappears — but
+        // previous take (the applied set is per-take, so it reappears, but
         // within one cycle it appears once).
         input.submit_microchunk(snapshot(IVec3::new(0, 0, 0), &[(1, 4)]));
         input.wait_until_idle();

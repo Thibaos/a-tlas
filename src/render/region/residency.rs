@@ -1,15 +1,15 @@
 //! Multi-region residency: the full static lattice.
 //!
 //! The renderer owns the lattice: Region = 256^3 voxels,
-//! origin-aligned, v1 extent ±2048/axis → 16^3 = 4096 Regions — exactly the
+//! origin-aligned, v1 extent ±2048/axis → 16^3 = 4096 Regions, exactly the
 //! 12-bit region-id budget. [`RegionStore`] is the GPU half of that lattice:
 //! per-Region voxel pools and trimmed-AABB BLASes exist across the lattice;
 //! a Region becomes **Resident** on its first non-empty Micro-chunk (a pool
 //! buffer + a procedural AABB BLAS, allocated from free lists) and leaves
 //! residency on its last (memory returned to the free lists; the CPU mirror
 //! is freed with the Region by the input contract). The TLAS holds one
-//! instance per Resident region — lattice-static transform, custom index =
-//! region id, mask 0xFF — added on residency, removed on region-empty, and
+//! instance per Resident region. Lattice-static transform, custom index =
+//! region id, mask 0xFF, added on residency, removed on region-empty, and
 //! rebuilt **in place** so the bindless acceleration-structure id never
 //! moves.
 
@@ -63,7 +63,7 @@ struct ResidentRegion {
     aabb_capacity: u32,
     /// The Region's procedural AABB BLAS. Its device address is stable while
     /// the Region is resident (content edits rebuild it in place; a capacity
-    /// growth replaces it — the TLAS instance then moves, which is the only
+    /// growth replaces it. The TLAS instance then moves, which is the only
     /// non-transition TLAS rebuild).
     blas: Arc<AccelerationStructure>,
     /// The BLAS storage size (free-list reuse unit).
@@ -80,11 +80,11 @@ pub struct ApplyReport {
     /// Resident regions whose content changed (BLAS rebuilt in place).
     pub dirty: Vec<IVec3>,
     /// Resident regions whose pack outgrew their BLAS capacity (the BLAS was
-    /// replaced and the instance address moved — a documented non-transition
+    /// replaced and the instance address moved, a documented non-transition
     /// TLAS rebuild, see [`RegionStore::rebuild`]).
     pub blas_replaced: Vec<IVec3>,
     /// The TLAS was rebuilt this cycle (iff any residency transition or BLAS
-    /// replacement happened — instance data is static otherwise).
+    /// replacement happened. Instance data is static otherwise).
     pub tlas_rebuilt: bool,
     /// The ordered rebuild log: what the ordered
     /// rebuild nodes did this cycle, in node order (upload → BLAS → TLAS).
@@ -93,7 +93,7 @@ pub struct ApplyReport {
     /// [`RebuildLogEntry::RewriteInstances`] + [`RebuildLogEntry::BuildTlas`].
     pub rebuild_log: Vec<RebuildLogEntry>,
     /// The resident-instance count before this cycle (the TLAS instance set
-    /// size — the harness's ±1 transition probe).
+    /// size, the harness's ±1 transition probe).
     pub instance_count_before: usize,
     /// The resident-instance count after this cycle.
     pub instance_count: usize,
@@ -107,7 +107,7 @@ pub struct RegionStore {
     /// The Scene buffer (ticket 06): the analytic lights' constants (Sun
     /// direction/illuminance, sky knots, disk), updated every frame from
     /// the render context (tunable). The capture pipeline never reads it
-    /// (its miss shader stays black) — the byte-exact validator is
+    /// (its miss shader stays black). The byte-exact validator is
     /// unchanged.
     pub scene_buffer_id: Id<Buffer>,
     pub region_table_storage_id: StorageBufferId,
@@ -115,9 +115,9 @@ pub struct RegionStore {
     pub scene_storage_id: StorageBufferId,
     pub palette_storage_id: StorageBufferId,
     /// The bindless Material table (ADR 0008): one entry per palette index
-    /// (albedo+metallic / emission+roughness), uploaded once at startup — the
+    /// (albedo+metallic / emission+roughness), uploaded once at startup. The
     /// GPU twin of `world::material::get_material_table`'s mirror. Read by the
-    /// DDA closest-hit (surface color — albedo == palette, so the byte-exact
+    /// DDA closest-hit (surface color; albedo == palette, so the byte-exact
     /// capture path is unchanged) and the production raygen in Voxel mode.
     pub material_table_storage_id: StorageBufferId,
     pub acceleration_structure_id: AccelerationStructureId,
@@ -133,12 +133,12 @@ pub struct RegionStore {
     /// (translation by the Region origin), custom index = id, mask 0xFF.
     /// Only `acceleration_structure_reference` ever changes (residency).
     instances: Vec<AccelerationStructureInstance>,
-    /// The packed resident ids, sorted — the TLAS build's primitive set.
+    /// The packed resident ids, sorted. The TLAS build's primitive set.
     /// Changes only on residency transitions.
     resident_ids: Vec<u32>,
     pub instance_buffer_id: Id<Buffer>,
     /// The stable TLAS, rebuilt in place on transitions (storage sized for
-    /// the full lattice — the bindless id never moves).
+    /// the full lattice. The bindless id never moves).
     tlas: Arc<AccelerationStructure>,
     tlas_storage_size: u64,
     /// The TLAS has been built at least once (the empty-world corner: a
@@ -162,8 +162,8 @@ pub struct RegionStore {
 }
 
 impl RegionStore {
-    /// Builds the static lattice over the world's initial snapshot batch —
-    /// the one-shot pre-loop build (user story 25): every initial Region
+    /// Builds the static lattice over the world's initial snapshot batch.
+    /// The one-shot pre-loop build (user story 25): every initial Region
     /// becomes resident through the same rebuild path as change cycles.
     pub fn new(gpu: &GpuStack, voxel_data: &DotVoxData, initial: Vec<RegionData>) -> Self {
         // --- static buffers ---------------------------------------------
@@ -183,8 +183,8 @@ impl RegionStore {
             )
             .unwrap();
 
-        // The Scene buffer (ticket 06): the analytic lights' constants —
-        // the Sun (direction + illuminance), the Procedural sky's μ-gradient
+        // The Scene buffer (ticket 06): the analytic lights' constants.
+        // The Sun (direction + illuminance), the Procedural sky's μ-gradient
         // knots, and the disk. Written with the defaults at creation and
         // updated every frame from the render context (tunable).
         let scene_buffer_id = gpu
@@ -220,8 +220,8 @@ impl RegionStore {
             .unwrap();
 
         // The Material table (ADR 0008): one entry per palette index, packed
-        // as two vec4[256] columns — albedo.rgb+metallic and
-        // emission.rgb+roughness — uploaded once at startup from the CPU
+        // as two vec4[256] columns, albedo.rgb+metallic and
+        // emission.rgb+roughness, uploaded once at startup from the CPU
         // mirror (`world::material::get_material_table`, the single source of
         // truth). Beside the Palette, bindless like it.
         let material_table_buffer_id = gpu
@@ -308,7 +308,7 @@ impl RegionStore {
 
         // --- palette + material table content (one-shot) -----------------
         // Both are world-static (the world is static per the effort scope),
-        // uploaded once and never rewritten — the palette from the .vox
+        // uploaded once and never rewritten. The palette from the .vox
         // palette, the material table as the packed twin of the CPU mirror.
         let palette = get_palette(voxel_data).map(|color| [color.x, color.y, color.z, 1.0]);
         let material_table = get_material_table(voxel_data);
@@ -472,7 +472,7 @@ impl RegionStore {
         }
 
         // The region -> AABB-buffer table is written once, after the initial
-        // residency — the world is static, so the AABB-buffer device addresses
+        // residency. The world is static, so the AABB-buffer device addresses
         // never change after startup (a live edit path that replaces a BLAS
         // would have to move this write into the rebuild graph).
         store.write_aabb_table(gpu, aabb_table_buffer_id);
@@ -545,7 +545,7 @@ impl RegionStore {
         &self.resident_ids
     }
 
-    /// The resident BLASes — lifetime anchors for the render task (the TLAS
+    /// The resident BLASes, lifetime anchors for the render task (the TLAS
     /// instances reference the BLASes by device address only).
     pub fn blases(&self) -> Vec<Arc<AccelerationStructure>> {
         self.regions
@@ -559,7 +559,7 @@ impl RegionStore {
         self.region_table_buffer_id
     }
 
-    /// The stable TLAS — rebuilt **in place** on residency transitions; the
+    /// The stable TLAS, rebuilt **in place** on residency transitions; the
     /// bindless acceleration-structure id never moves. Exactly one (the new
     /// path has no back-AS double buffer and no flip atomic, so a
     /// double-buffered design would need an array of ASes and an index, which
@@ -572,8 +572,8 @@ impl RegionStore {
     /// CPU-side decision (residency transitions, in-place BLAS rebuilds for
     /// content edits, the TLAS rebuild on transitions, allocations from the
     /// free lists), then the **ordered rebuild nodes** ([`RebuildGraph`])
-    /// record and execute the GPU half — pool upload → BLAS build → TLAS
-    /// build — between the consuming trace and the next frame. The pending
+    /// record and execute the GPU half: pool upload → BLAS build → TLAS
+    /// build, between the consuming trace and the next frame. The pending
     /// frees whose dropping rebuild executed are released after the graph
     /// completes.
     fn rebuild(&mut self, gpu: &GpuStack, packs: Vec<(IVec3, Option<RegionData>)>) -> ApplyReport {
@@ -596,15 +596,15 @@ impl RegionStore {
             let was_resident = self.regions[id].is_some();
             match (was_resident, pack) {
                 // (false, None): a dirty region whose mirror emptied before
-                // this cycle — nothing to do (an empty plan means no rebuild
-                // graph is compiled or submitted — the idle renderer costs
+                // this cycle. Nothing to do (an empty plan means no rebuild
+                // graph is compiled or submitted. The idle renderer costs
                 // zero, no pending rebuilds, no wakeups).
                 (false, None) => {}
 
                 // Become resident: allocate from the free lists, upload the
                 // pool + AABBs, build the BLAS into its storage, and add the
                 // instance. The storage is created here (CPU) and the node
-                // builds into it in place — the AS object and its device
+                // builds into it in place. The AS object and its device
                 // address never move after creation.
                 (false, Some(pack)) => {
                     let pool = allocate_pool(
@@ -674,7 +674,7 @@ impl RegionStore {
 
                 // Leave residency: drop the instance, zero the table entry,
                 // and return the memory to the pending frees (reusable only
-                // after the dropping rebuild executes). No upload — the
+                // after the dropping rebuild executes). No upload. The
                 // instance removal rides the instances rewrite + TLAS build.
                 (true, None) => {
                     let region = self.regions[id].take().unwrap();
@@ -697,7 +697,7 @@ impl RegionStore {
 
                 // Content edit: re-upload the pool and rebuild the BLAS in
                 // place (device address stable → TLAS untouched). A pack that
-                // outgrows its allocations replaces them — the old ones join
+                // outgrows its allocations replaces them. The old ones join
                 // the pending frees, and a BLAS replacement moves the
                 // instance address (the only non-transition TLAS rebuild).
                 (true, Some(pack)) => {
@@ -754,8 +754,8 @@ impl RegionStore {
                     }
 
                     // The upload node copies the new content at record time;
-                    // the BLAS node rebuilds after it (the ordered edge) —
-                    // the build reads the AABB buffer, so it must follow the
+                    // the BLAS node rebuilds after it (the ordered edge).
+                    // The build reads the AABB buffer, so it must follow the
                     // upload.
                     let (pool_id, aabb_id) = {
                         let region = self.regions[id].as_ref().unwrap();
@@ -802,7 +802,7 @@ impl RegionStore {
                         }
                         None => {
                             // In-place: the BLAS object and its device
-                            // address stay — the TLAS instance is untouched.
+                            // address stay. The TLAS instance is untouched.
                             let (blas, blas_storage_size) = {
                                 let region = self.regions[id].as_ref().unwrap();
                                 (region.blas.clone(), region.blas_storage_size)
@@ -862,7 +862,7 @@ impl RegionStore {
 
         if plan.is_empty() {
             // Nothing changed (every dirty region emptied before the cycle):
-            // no rebuild graph, no GPU work — the idle renderer costs zero
+            // no rebuild graph, no GPU work. The idle renderer costs zero
             // (no pending rebuilds, no wakeups).
             report.instance_count = self.resident_ids.len();
             return report;
@@ -928,7 +928,7 @@ impl RegionStore {
 
 /// Resolves the storage a BLAS build records into: the free-list-reused AS,
 /// or a fresh storage sized exactly for `aabb_count` (created here, built
-/// into **in place** by the BLAS node — the AS object and its device address
+/// into **in place** by the BLAS node. The AS object and its device address
 /// never move after creation).
 fn resolve_blas_storage(
     gpu: &GpuStack,
@@ -978,9 +978,9 @@ fn plan_blas_build(
 }
 
 /// Packs the resident ids' instance slots into the TLAS build-input prefix
-/// (sorted by id — the order [`RegionStore::resident_ids`] keeps); the
+/// (sorted by id, the order [`RegionStore::resident_ids`] keeps); the
 /// never-hit dummy instance when nothing is resident, so the TLAS build
-/// stays legal (pure — unit-tested).
+/// stays legal (pure; unit-tested).
 fn packed_prefix(
     instances: &[AccelerationStructureInstance],
     resident_ids: &[u32],
@@ -998,7 +998,7 @@ fn packed_prefix(
 
 /// The lattice-static instance data: one slot per Region id, transform =
 /// translation by the Region origin, custom index = id, mask 0xFF. Only the
-/// BLAS address is filled in on residency (pure — unit-tested).
+/// BLAS address is filled in on residency (pure; unit-tested).
 fn static_instances() -> Vec<AccelerationStructureInstance> {
     let mut out = vec![AccelerationStructureInstance::default(); REGION_COUNT];
     for x in -8..8 {
@@ -1023,7 +1023,7 @@ fn static_instances() -> Vec<AccelerationStructureInstance> {
     out
 }
 
-/// A never-hit procedural BLAS (one AABB ~1e9 away — beyond the ray t range
+/// A never-hit procedural BLAS (one AABB ~1e9 away, beyond the ray t range
 /// RAY_T_MAX = 10000): keeps the TLAS build legal when nothing is resident.
 fn create_dummy_blas(gpu: &GpuStack) -> Arc<AccelerationStructure> {
     let aabb = AabbPositions {
@@ -1106,7 +1106,7 @@ mod tests {
     }
 
     /// The packed instance prefix is the resident ids' instance slots in
-    /// sorted order — exactly the TLAS build input — and the never-hit dummy
+    /// sorted order, exactly the TLAS build input, and the never-hit dummy
     /// when nothing is resident (the empty-world corner stays legal).
     #[test]
     fn packed_prefix_rewrites_resident_instances() {

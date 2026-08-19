@@ -12,11 +12,11 @@
 
 layout(location = 0) rayPayloadInEXT MainPassPayload incoming_payload;
 
-// The production miss shader (ticket 06): the Procedural sky's radiance —
-// the gradient evaluated at the ray's world direction (the disk is the
+// The production miss shader (ticket 06): the Procedural sky's radiance.
+// The gradient evaluated at the ray's world direction (the disk is the
 // camera's direct view, added by the raygen's primary-miss branch, so the
 // transport's BSDF-miss samples and the env NEE see the gradient only).
-// t = 0 (no-hit sentinel), hit_kind = 0, normal = 0 — the payload contract
+// t = 0 (no-hit sentinel), hit_kind = 0, normal = 0. The payload contract
 // the raygen reads.
 void main() {
     incoming_payload.color = vec4(sky_radiance(gl_WorldRayDirectionEXT), 1.0);

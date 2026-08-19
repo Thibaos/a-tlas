@@ -22,7 +22,7 @@ layout(location = 0) rayPayloadEXT MainPassPayload payload;
 //
 // Deliberately NOT TerminateOnFirstHit (see production.rgen): the flag
 // terminates at the first hit found in traversal order, which is not the
-// closest in general — the DDA commits the nearest occupied cell within one
+// closest in general. The DDA commits the nearest occupied cell within one
 // Region, but the hardware never compares across Regions before
 // terminating. The reference tracer is closest-hit; the flags must match.
 void main() {
@@ -38,7 +38,7 @@ void main() {
     payload.normal = vec3(0.0);
 
     // Voxel-only: the shader-binding-table record offset is hardcoded 0
-    // (the DDA hit group) — the validator never toggles to Hull.
+    // (the DDA hit group). The validator never toggles to Hull.
     traceRayEXT(vko_accelerationStructureEXT(acceleration_structure_id), ray_flags, 0xFFu, 0u, 0u, 0u, origin, RAY_T_MIN, direction, RAY_T_MAX, 0);
 
     imageStore(vko_image2D_rgba8(image_id), ivec2(gl_LaunchIDEXT.xy), payload.color);

@@ -20,7 +20,7 @@ VKO_DECLARE_STORAGE_BUFFER(palette, Palette{
 
 // The Material table (ticket 03, ADR 0008): one entry per palette index
 // (the MATL chunk's material id == the palette index), packed as two vec4
-// columns — albedo.rgb + metallic, and emission.rgb + roughness — the GPU
+// columns, albedo.rgb + metallic, and emission.rgb + roughness, the GPU
 // twin of src/world/voxel.rs's Material mirror (uploaded once at startup;
 // the albedo column equals the Palette by construction, so the byte-exact
 // capture path is unchanged). Indexed by the 8-bit hitKind in closest-hit;
@@ -30,7 +30,7 @@ VKO_DECLARE_STORAGE_BUFFER(material_table, MaterialTable{
     vec4[256] rough_emit;
 })
 
-// The Scene buffer (ticket 06): the analytic lights' constants — the Sun
+// The Scene buffer (ticket 06): the analytic lights' constants. The Sun
 // (delta: world direction + illuminance) and the Procedural sky (the
 // μ-gradient knots + the disk). Read by the production sky miss shader and
 // the production raygen's Voxel mode (NEE); the capture stages declare the

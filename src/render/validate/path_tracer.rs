@@ -6,21 +6,21 @@
 //! sampling, the same Sun/Procedural-sky pdfs and MIS weights, the same
 //! Russian-roulette decisions, and the same Material table (the CPU mirror,
 //! `get_material_table`, ADR 0008). A divergence between the mirror and the
-//! captured GPU frame points at the GPU shader — never at an assumption both
+//! captured GPU frame points at the GPU shader, never at an assumption both
 //! sides share (the Reference tracer's ethos, ADR 0003).
 //!
 //! Geometry is deliberately *not* mirrored: the mirror traces the world's own
 //! sparse storage (like the Reference tracer) with an independent world-space
 //! DDA, sharing only the committed voxel's identity with the GPU path. The DDA
 //! mirrors the GPU's stepping arithmetic (division + accumulation, Amanatides-
-//! Woo with the x,y,z tie-break — the GPU's own preference order) so the
+//! Woo with the x,y,z tie-break, the GPU's own preference order) so the
 //! committed t and the entering face agree at the f32 level; the face reports
 //! the mirror's own step axis with the same tie-break (ADR 0009).
 //!
 //! The mirror produces the trace pass's output contract (ADR 0007): the
 //! de-modulated diffuse radiance and the raw specular radiance per sample.
 //! The validator compares the per-pixel **mean** over N samples (identical
-//! seeds — frame_seed 0..N-1) against the GPU's captured radiance pair, with
+//! seeds, frame_seed 0..N-1) against the GPU's captured radiance pair, with
 //! a relative tolerance that absorbs the GPU's RGBA16F storage quantization
 //! and the residual f32 transcendental differences (cos/sin/pow may differ
 //! by an ULP between GPU and CPU libm).
@@ -33,7 +33,7 @@ use crate::{
 };
 
 // ---------------------------------------------------------------------------
-// Mirror constants — every constant below is part of the CPU mirror's contract
+// Mirror constants. Every constant below is part of the CPU mirror's contract
 // (ticket 07): the mirror reproduces the GLSL arithmetic exactly, so the
 // constants are named here once, not repeated in the mirror. They mirror
 // shaders/region/production.rgen and sky.glsl verbatim.
@@ -59,7 +59,7 @@ const ALPHA_MIN: f32 = 1e-4;
 /// Cos-term guard in the G1/pdf denominators (grazing NaN guard).
 const COS_EPS: f32 = 1e-6;
 
-/// The GLSL `const float PI = 3.14159265358979` — parsed to the nearest f32,
+/// The GLSL `const float PI = 3.14159265358979`, parsed to the nearest f32,
 /// which is `std::f32::consts::PI`.
 const PI: f32 = std::f32::consts::PI;
 const TWO_PI: f32 = 6.2831855; // the nearest f32 to the GLSL literal 6.28318530717959
@@ -96,7 +96,7 @@ struct MacroGrid {
     /// Macro-cell counts per axis.
     dims: [u32; 3],
     /// Packed macro-cell occupancy bits (bit i = macro cell i contains at
-    /// least one voxel — the skip's emptiness test).
+    /// least one voxel, the skip's emptiness test).
     occupied_bits: Vec<u64>,
     /// The per-cell bitmap: 32³ bits (512 u64s) per macro cell.
     cells: Vec<u64>,
@@ -162,7 +162,7 @@ impl MacroGrid {
 
     /// Is `cell` occupied? Cells outside the occupied bbox are empty (the
     /// world's sparse storage holds no voxels beyond its own bounds). The
-    /// bitmap is exact — it is built from the same storage — so a set bit
+    /// bitmap is exact, built from the same storage, so a set bit
     /// implies `try_get_voxel` is `Some` for an unchanged world.
     fn cell_occupied(&self, cell: IVec3) -> bool {
         let rel = cell - self.min;
@@ -186,7 +186,7 @@ impl MacroGrid {
 }
 
 // ---------------------------------------------------------------------------
-// Stateless path RNG (PCG-XSH-RR, O'Neill 2014) — the byte-identical mirror of
+// Stateless path RNG (PCG-XSH-RR, O'Neill 2014), the byte-identical mirror of
 // the GLSL hash. u32 ops wrap mod 2^32 identically in GLSL and Rust (the
 // wrapping_* methods); the float conversion (high 24 bits × 2^-24) is exact in
 // both. Draw order is exactly the call order in `sample` below.
@@ -205,7 +205,7 @@ fn rand_unit(seed: u32, index: u32) -> f32 {
 }
 
 // ---------------------------------------------------------------------------
-// The Scene constants (the packed Scene buffer's data, mirrored verbatim —
+// The Scene constants (the packed Scene buffer's data, mirrored verbatim.
 // `default_scene()` in src/region/render.rs).
 // ---------------------------------------------------------------------------
 
@@ -214,11 +214,11 @@ pub struct Scene {
     /// The Sun's world direction (unit).
     pub sun_dir: Vec3,
     /// The Procedural sky's μ-gradient knots: ground (μ = -1), horizon (0),
-    /// zenith (1) — all strictly positive.
+    /// zenith (1), all strictly positive.
     pub sky_knots: [f32; 3],
     /// The Sun's illuminance `E_sun` (lux).
     pub e_sun: f32,
-    /// cos(θ_disk) — the Sun disk's angular radius (the disk is the camera's
+    /// cos(θ_disk), the Sun disk's angular radius (the disk is the camera's
     /// direct view only).
     pub cos_disk: f32,
     /// The disk's radiance `L_disk = E_sun / Ω_disk`.
@@ -233,10 +233,10 @@ pub struct PathTracer<'a> {
     world: &'a World,
     materials: MaterialTable,
     scene: Scene,
-    /// The empty-space skip grid (built once per tracer construction — i.e.
+    /// The empty-space skip grid (built once per tracer construction, i.e.
     /// once per validated frame).
     macro_grid: MacroGrid,
-    /// The occupied voxel bounds, cached — `voxel_bounds()` scans the whole
+    /// The occupied voxel bounds, cached. `voxel_bounds()` scans the whole
     /// world, and the DDA needs it on every ray.
     bounds: Option<(IVec3, IVec3)>,
 }
@@ -250,11 +250,11 @@ pub struct PathHit {
     pub material: u32,
     /// The geometric normal: the entered face's outward normal, or
     /// -normalize(dir) when no face was crossed (the camera-in-voxel t_min
-    /// commit — the GPU's no-face-found fallback).
+    /// commit, the GPU's no-face-found fallback).
     pub normal: Vec3,
 }
 
-/// One sample's radiance output — the trace pass's contract (ADR 0007):
+/// One sample's radiance output, the trace pass's contract (ADR 0007):
 /// de-modulated diffuse + raw specular.
 #[derive(Clone, Copy, Debug)]
 pub struct PathSample {
@@ -265,7 +265,7 @@ pub struct PathSample {
     pub specular: Vec3,
     /// The in-lobe 1st-bounce hit distance (0 on primary miss).
     pub hit_t: f32,
-    /// The primary albedo (the de-modulation divisor; 0 on primary miss) —
+    /// The primary albedo (the de-modulation divisor; 0 on primary miss),
     /// carried for the display re-modulation.
     pub albedo: Vec3,
 }
@@ -285,7 +285,7 @@ impl<'a> PathTracer<'a> {
 
     /// The mirror's own world-space DDA (Amanatides-Woo over the world's
     /// sparse storage, with the GPU's stepping arithmetic: division and
-    /// accumulation, tie-break x, y, z — the GPU's own preference order).
+    /// accumulation, tie-break x, y, z, the GPU's own preference order).
     /// Returns the committed voxel with the crossing t and the entered face.
     fn trace_ray(&self, origin: Vec3, direction: Vec3) -> Option<PathHit> {
         let (min, max) = self.bounds?;
@@ -293,7 +293,7 @@ impl<'a> PathTracer<'a> {
         let region_max = max.as_vec3() + Vec3::ONE;
 
         // Slab test over the occupied region (division, like the GPU's
-        // aabb_slab — not the Reference tracer's reciprocal form).
+        // aabb_slab, not the Reference tracer's reciprocal form).
         let mut t0 = T_MIN;
         let mut t1 = T_MAX;
         for a in 0..3 {
@@ -348,7 +348,7 @@ impl<'a> PathTracer<'a> {
         }
 
         // The committed entry t; the face is the axis of the step that
-        // entered the committed cell (`None` for the start cell — no face
+        // entered the committed cell (`None` for the start cell, no face
         // crossed: the camera-in-voxel fallback).
         let mut t_entry = t0;
         let mut face: Option<usize> = None;
@@ -374,7 +374,7 @@ impl<'a> PathTracer<'a> {
                 }
             }
 
-            // Step to the next cell boundary: ties break x, y, z — the GPU's
+            // Step to the next cell boundary: ties break x, y, z, the GPU's
             // own preference order (the mirror's "same tie-break", ADR 0009).
             let axis = if t_next.x <= t_next.y && t_next.x <= t_next.z {
                 0
@@ -399,7 +399,7 @@ impl<'a> PathTracer<'a> {
             // repeat until a non-empty macro cell (or the region exit). The
             // crossed axis advances one macro cell (its entered cell index is
             // derived exactly from the new macro cell, never from the drifted
-            // boundary estimate — a leap cannot overshoot); the other axes'
+            // boundary estimate. A leap cannot overshoot); the other axes'
             // cells come from the position at the exit, so mid-leap boundary
             // crossings on those axes cannot desync the cell index.
             let mut m_cell = self.macro_grid.clamp_macro_cell(cell);
@@ -431,7 +431,7 @@ impl<'a> PathTracer<'a> {
                     }
                     // The macro step must stay in the grid. The far face of
                     // the last macro cell lies at/behind the region face, so
-                    // an out-of-grid step is the region exit — the division-
+                    // an out-of-grid step is the region exit. The division-
                     // form boundary t can sit one ULP below t1 (the prelude
                     // slab uses the reciprocal form), so the `>= t1` guard
                     // alone cannot catch this.
@@ -444,8 +444,8 @@ impl<'a> PathTracer<'a> {
                     m_cell[m_axis] = next_m;
                     m_t_next[m_axis] = m_exit + m_delta[m_axis];
                     // The entered fine cell: the crossed axis is the new
-                    // macro cell's first (step>0) or last (step<0) cell —
-                    // exact; the other axes follow the position at the exit.
+                    // macro cell's first (step>0) or last (step<0) cell.
+                    // Exact; the other axes follow the position at the exit.
                     let mut next_cell = (origin + direction * m_exit).floor().as_ivec3();
                     next_cell[m_axis] = if step[m_axis] > 0 {
                         self.macro_grid.min[m_axis] + m_cell[m_axis] as i32 * MACRO_SIZE as i32
@@ -484,12 +484,12 @@ impl<'a> PathTracer<'a> {
 
     /// One path sample for pixel (x, y) at `frame_seed`, mirroring the
     /// production raygen's Voxel branch statement by statement (the draw
-    /// sequence is the CPU mirror's contract — see the map's notes and the
+    /// sequence is the CPU mirror's contract. See the map's notes and the
     /// ticket-06 resolution).
     pub fn sample(&self, camera: &CameraInputs, x: u32, y: u32, frame_seed: u32) -> PathSample {
         let (origin, direction) = camera.ray(x, y);
 
-        // The per-pixel seed: hash(pixel_id, frame_seed) — pixel_id is
+        // The per-pixel seed: hash(pixel_id, frame_seed). Pixel_id is
         // y·launch_width + x (the raygen's gl_LaunchIDEXT math).
         let seed = pcg_hash(frame_seed.wrapping_mul(PHI32) ^ (y * camera.width + x));
         let mut draw = 0u32;
@@ -540,7 +540,7 @@ impl<'a> PathTracer<'a> {
             let mut last_spec_pick = false;
             // The payload the loop reads: the primary hit at depth 0, the
             // previous Bounce's trace result at depth > 0 (the GLSL's
-            // payload struct — the mirror carries it in locals).
+            // payload struct. The mirror carries it in locals).
             let mut payload: Option<PathHit> = primary;
             let mut payload_t = hit_t;
 
@@ -549,7 +549,7 @@ impl<'a> PathTracer<'a> {
                     match payload {
                         None => {
                             // The Bounce missed: the Procedural sky's
-                            // radiance (the miss shader's output — the
+                            // radiance (the miss shader's output, the
                             // gradient only), MIS-weighted against the sky
                             // NEE: the throughput's terminal factor used the
                             // picked lobe's conditional pdf (p_cond) with
@@ -588,16 +588,16 @@ impl<'a> PathTracer<'a> {
                             roughness = mat.roughness;
                             normal = hit.normal.normalize();
                             // This hit's Emission, throughput-weighted (the
-                            // only way Emissive voxels light the scene — no
+                            // only way Emissive voxels light the scene. No
                             // emissive NEE, map lock).
                             path += throughput * Vec3::from_array(mat.emission);
                         }
                     }
                 }
 
-                // NEE: one light picked per bounce — the Sun (delta, MIS
+                // NEE: one light picked per bounce. The Sun (delta, MIS
                 // weight 1) or the Procedural sky (env, balance-heuristic
-                // MIS). Draw order: light pick, then — sky only — the env's
+                // MIS). Draw order: light pick, then, sky only, the env's
                 // (φ, μ) draws; the shadow trace consumes none.
                 let hit_point = ro + rd * payload_t;
                 let mut nee_rad = Vec3::ZERO;
@@ -739,7 +739,7 @@ impl<'a> PathTracer<'a> {
                 // Trace the Bounce: origin nudged off the face along the
                 // normal (the DDA also skips [0, T_MIN)). hit_point was
                 // computed before the NEE (the shadow trace clobbers the
-                // payload — the mirror's Option is re-traced fresh).
+                // payload. The mirror's Option is re-traced fresh).
                 ro = hit_point + normal * BOUNCE_OFFSET;
                 rd = wi;
                 payload = self.trace_ray(ro, rd);
@@ -755,7 +755,7 @@ impl<'a> PathTracer<'a> {
                 radiance += path / lobe_p;
             }
         } else {
-            // Primary miss: the Procedural sky's radiance, raw — no surface,
+            // Primary miss: the Procedural sky's radiance, raw. No surface,
             // no de-modulation, no lobe split. The disk is the camera's
             // direct view only.
             radiance = self.sky_radiance_with_disk(direction);
@@ -779,7 +779,7 @@ impl<'a> PathTracer<'a> {
 }
 
 // ---------------------------------------------------------------------------
-// The shading mirror — the GLSL ports. Every function below reproduces the
+// The shading mirror, the GLSL ports. Every function below reproduces the
 // corresponding function in shaders/region/production.rgen and sky.glsl with
 // the same arithmetic and the same rounding form.
 // ---------------------------------------------------------------------------
@@ -793,7 +793,7 @@ fn make_frame(n: Vec3) -> (Vec3, Vec3) {
     (t_axis, b_axis)
 }
 
-/// The GLSL `mix(x, y, a)` — the spec form x·(1−a) + y·a.
+/// The GLSL `mix(x, y, a)`, the spec form x·(1−a) + y·a.
 fn mix_vec(a: Vec3, b: Vec3, t: f32) -> Vec3 {
     a * (1.0 - t) + b * t
 }
@@ -878,7 +878,7 @@ fn specular_weight(l_local: Vec3, v_local: Vec3, h: Vec3, f0: Vec3, alpha: f32, 
 }
 
 /// The specular lobe's f_s·(n·l) at the light direction: D·G2·F/(4·(n·v)).
-/// The NEE estimator's integrand factor — NOT the sampled-lobe weight (those
+/// The NEE estimator's integrand factor, NOT the sampled-lobe weight (those
 /// round differently; both are mirrored separately, ADR 0011).
 fn specular_nl(l_local: Vec3, v_local: Vec3, h: Vec3, f0: Vec3, alpha: f32) -> Vec3 {
     let n_dot_l = l_local.z.max(0.0);
@@ -892,7 +892,7 @@ fn specular_nl(l_local: Vec3, v_local: Vec3, h: Vec3, f0: Vec3, alpha: f32) -> V
 }
 
 /// The full BRDF's f·(n·l) at the light direction (Lambert diffuse +
-/// Cook-Torrance specular) — the NEE's integrand factor at deeper Bounces.
+/// Cook-Torrance specular), the NEE's integrand factor at deeper Bounces.
 fn brdf_nl(
     l_local: Vec3,
     v_local: Vec3,
@@ -907,7 +907,7 @@ fn brdf_nl(
 }
 
 /// The BSDF technique's output density at the light direction (the bounce
-/// sampler's unconditional pdf — the mixture over the lobe pick):
+/// sampler's unconditional pdf, the mixture over the lobe pick):
 /// LOBE_P·p_vndf + (1-LOBE_P)·p_cos at the primary hit's bounce, 0.5·(p_vndf
 /// + p_cos) deeper.
 fn bsdf_mixture_pdf(l_local: Vec3, v_local: Vec3, alpha: f32, depth: usize) -> f32 {
@@ -923,12 +923,12 @@ fn bsdf_mixture_pdf(l_local: Vec3, v_local: Vec3, alpha: f32, depth: usize) -> f
 
 // ---------------------------------------------------------------------------
 // The Procedural sky mirror (shaders/region/sky.glsl). Only clamp/lerp/mul/
-// div/sqrt — all bit-reproducible in f32.
+// div/sqrt, all bit-reproducible in f32.
 // ---------------------------------------------------------------------------
 
 impl PathTracer<'_> {
     /// The gradient radiance at μ ∈ [-1, 1] (piecewise-linear between the
-    /// knots; clamped for safety — the mirror reproduces the clamp).
+    /// knots; clamped for safety. The mirror reproduces the clamp).
     fn sky_gradient(&self, mu: f32) -> f32 {
         let k = self.scene.sky_knots;
         let t = mu.clamp(-1.0, 1.0);
@@ -997,7 +997,7 @@ impl PathTracer<'_> {
     }
 
     /// The sky light technique's direction pdf: the env sampler's output
-    /// density with the light pick folded in — p_light(ω) = SKY_PICK_P ·
+    /// density with the light pick folded in. p_light(ω) = SKY_PICK_P ·
     /// L(μ)/(2π·Z).
     fn sky_light_pdf(&self, dir: Vec3) -> f32 {
         SKY_PICK_P * self.sky_mu_pdf(dir.y) * (1.0 / TWO_PI)
@@ -1006,7 +1006,7 @@ impl PathTracer<'_> {
 
 // ---------------------------------------------------------------------------
 // The full-frame render: per-pixel means over N samples with identical seeds
-// (frame_seed 0..N-1) — the CPU side of the tolerance diff.
+// (frame_seed 0..N-1), the CPU side of the tolerance diff.
 // ---------------------------------------------------------------------------
 
 /// The CPU side's per-pixel aggregates: the means the diff compares, plus the
@@ -1021,15 +1021,15 @@ pub struct PathRender {
     /// Per-pixel mean raw specular radiance.
     pub specular: Vec<Vec3>,
     /// Per-pixel mean display radiance (re-modulated: diffuse·max(albedo,eps)
-    /// + specular; raw sky on primary-miss samples) — for the PNG only.
+    /// + specular; raw sky on primary-miss samples), for the PNG only.
     pub display: Vec<Vec3>,
     /// Per-pixel number of samples whose primary ray hit a surface (the sky
-    /// samples are the rest) — for the report's sky mask.
+    /// samples are the rest), for the report's sky mask.
     pub hit_count: Vec<u32>,
-    /// Per-pixel mean in-lobe 1st-bounce hit distance (0 for sky) — for the
+    /// Per-pixel mean in-lobe 1st-bounce hit distance (0 for sky), for the
     /// corner-touch t-gap excuse.
     pub hit_ts: Vec<f32>,
-    /// Per-pixel mean primary albedo (0 for sky) — for the corner-touch
+    /// Per-pixel mean primary albedo (0 for sky), for the corner-touch
     /// material-boundary signal (the committed voxel's material).
     pub albedos: Vec<Vec3>,
 }
@@ -1201,7 +1201,7 @@ mod tests {
     }
 
     /// The RNG draw sequence is deterministic (a pure function of seed and
-    /// index — no mutable per-path state).
+    /// index, no mutable per-path state).
     #[test]
     fn rng_draws_are_deterministic() {
         for seed in [0u32, 1, 0x1234_5678] {
@@ -1239,7 +1239,7 @@ mod tests {
         }
 
         // The empirical mean of the sampled μs converges to the analytic
-        // E[μ] = ∫ μ·L(μ) dμ / Z = 2(k₂−k₀)/(3(k₀+2k₁+k₂)) — the sample
+        // E[μ] = ∫ μ·L(μ) dμ / Z = 2(k₂−k₀)/(3(k₀+2k₁+k₂)). The sample
         // distribution is the marginal pdf (the inversion round-trips).
         let expected_mean = 2.0 * (k[2] - k[0]) / (3.0 * (k[0] + 2.0 * k[1] + k[2]));
         let mut mu_sum = 0.0f64;
@@ -1269,7 +1269,7 @@ mod tests {
     }
 
     /// A ray from inside the voxel commits at t_min with the camera-facing
-    /// fallback normal (no face crossed — the GPU's t_min commit, ADR 0009).
+    /// fallback normal (no face crossed, the GPU's t_min commit, ADR 0009).
     #[test]
     fn trace_inside_voxel_commits_at_t_min() {
         let world = single_voxel_world();
@@ -1299,7 +1299,7 @@ mod tests {
         assert_eq!(a.specular, b.specular);
     }
 
-    /// The pre-acceleration march — the mirror's own world-space DDA without
+    /// The pre-acceleration march, the mirror's own world-space DDA without
     /// the macro-grid skip. The accelerated march must agree with it exactly
     /// (same voxel and face; t within the ULP-level leap drift).
     fn naive_trace(world: &World, origin: Vec3, direction: Vec3) -> Option<PathHit> {
@@ -1391,7 +1391,7 @@ mod tests {
     }
 
     /// A world spanning many macro cells: a hollow 120³ shell (the interior
-    /// is empty — the skip must leap across it) plus a sparse diagonal band.
+    /// is empty, the skip must leap across it) plus a sparse diagonal band.
     fn wide_sparse_world() -> World {
         let mut world = World::default();
         // The shell: three voxel-thick walls of a 120³ box at z = 8..112.

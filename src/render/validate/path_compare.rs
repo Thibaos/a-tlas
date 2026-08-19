@@ -16,7 +16,7 @@
 //!   pixels sit on the mean radiance image's silhouette, so a 1-pixel-dilated
 //!   edge mask over the mirror's display image AND the GPU's compared
 //!   channels excuses them (the GPU channels catch the knife-edge specular
-//!   spikes a NEE shadow flip leaves at a grazing silhouette — a GPU-side
+//!   spikes a NEE shadow flip leaves at a grazing silhouette, a GPU-side
 //!   discontinuity the locally-smooth CPU mean cannot reproduce).
 //! - **Firefly**: a 1-spp path that hits a small bright Emissive voxel is a
 //!   legitimately huge radiance at one pixel; with identical seeds both sides
@@ -34,15 +34,15 @@ use glam::Vec3;
 
 /// The corner-touch material disagreement threshold: the committed voxels'
 /// material differs by more than this (adjacent cells at a material
-/// boundary share the entry t — the t-gap signal is blind there and the
+/// boundary share the entry t. The t-gap signal is blind there and the
 /// RGBA16F-quantized hit distance drowns it at large t, but the albedo is
 /// exact at every distance). The RGBA8 storage granularity is ~0.004.
 const CORNER_TOUCH_ENC_EPS: f32 = 0.05;
 
 /// The octahedral normal encoding (production.rgen, ADR 0007):
 /// `n.xy / (|x|+|y|+|z|)`, with the -z hemisphere wrapped by the standard
-/// reflection, mapped to [0, 1]^2. Unit normals only (zero encodes garbage —
-/// the caller guards on the hit test). Kept for the diff-image diagnostics.
+/// reflection, mapped to [0, 1]^2. Unit normals only (zero encodes garbage.
+/// The caller guards on the hit test). Kept for the diff-image diagnostics.
 pub fn encode_octahedral(n: Vec3) -> glam::Vec2 {
     let sum = n.x.abs() + n.y.abs() + n.z.abs();
     let mut enc = glam::Vec2::new(n.x / sum, n.y / sum);
@@ -70,7 +70,7 @@ pub enum ExcuseKind {
     CornerTouch,
 }
 
-/// `PathCompareConfig::default()` — 10% relative tolerance, 0.08 absolute
+/// `PathCompareConfig::default()`: 10% relative tolerance, 0.08 absolute
 /// floor, 5% mismatch budget. The tolerance absorbs the GPU's RGBA16F
 /// storage quantization (~5e-4 relative per sample) and the residual f32
 /// transcendental differences between GPU and CPU libm (~ULP-level). The
@@ -138,8 +138,8 @@ pub struct PathCompareReport {
     /// Per-pixel max relative error across the six channels (for the report's
     /// error stats).
     pub relative_error: Vec<f32>,
-    /// The per-pixel sky fraction on the GPU side (mean hit distance > 0) —
-    /// reported, not compared (the geometry half validates t).
+    /// The per-pixel sky fraction on the GPU side (mean hit distance > 0).
+    /// Reported, not compared (the geometry half validates t).
     pub gpu_hit_fraction: Vec<f32>,
 }
 
@@ -218,7 +218,7 @@ pub fn compare_path(
     assert_eq!(cpu_albedo.len(), pixel_count);
 
     // Edge silhouette mask: a pixel is an edge pixel when its primary hit
-    // status (hit vs miss) differs from a 4-neighbor's — the surface
+    // status (hit vs miss) differs from a 4-neighbor's. The surface
     // outline. The GPU's captured hit status is the ground truth (the
     // geometry half validates the hit positions); the mirror's world-space
     // DDA can legitimately commit a different voxel at the outline (the
@@ -297,7 +297,7 @@ pub fn compare_path(
             // Excused when hugging the silhouette, when both sides' mean
             // display radiance is a firefly, or when the pixel is a
             // corner-touch: both sides committed a surface at the same
-            // distance (|Δt| ≤ 2 voxels — the byte-exact compare's
+            // distance (|Δt| ≤ 2 voxels, the byte-exact compare's
             // SUB_VOXEL_T_VOXELS class) but with different faces (the
             // octahedral encodings disagree): the mirror's world-space DDA
             // and the GPU's Region-local DDA legitimately commit adjacent
@@ -360,10 +360,10 @@ mod tests {
     }
 
     /// The auxiliary arguments with benign defaults: the corner-touch excuse
-    /// must not fire — the t's agree and the normal encodings agree (the
+    /// must not fire. The t's agree and the normal encodings agree (the
     /// +Z pole encodes to (0.5, 0.5), the GPU's sky placeholder).
     /// The auxiliary arguments with benign defaults: the corner-touch excuse
-    /// must not fire — the t's agree (same cell) and the albedos agree (same
+    /// must not fire. The t's agree (same cell) and the albedos agree (same
     /// material).
     fn benign_aux(pixels: usize) -> (Vec<f32>, Vec<Vec3>, Vec<f32>, Vec<Vec3>) {
         (
@@ -420,7 +420,7 @@ mod tests {
     }
 
     /// A divergence beyond the tolerance in a flat region is hard (a real
-    /// shading difference — a whole region shifts, so no pixel is a local
+    /// shading difference. A whole region shifts, so no pixel is a local
     /// outlier).
     #[test]
     fn radiance_divergence_is_hard() {
@@ -477,7 +477,7 @@ mod tests {
     }
 
     /// A corner-touch: both sides committed a surface at the same point but
-    /// with different committed cells — the t gaps differ beyond the noise
+    /// with different committed cells. The t gaps differ beyond the noise
     /// floor (the mirror's DDA and the GPU's commit adjacent cells at a
     /// corner). Excused; a same-cell divergence (t agrees) stays hard.
     #[test]
@@ -490,7 +490,7 @@ mod tests {
         let spec = flat(Vec3::ZERO, pixels);
         let disp = flat(Vec3::new(0.5, 0.0, 0.0), pixels);
         // A 100% radiance divergence at one pixel, with the committed cells
-        // at a material boundary (the albedos differ — the mirror committed
+        // at a material boundary (the albedos differ. The mirror committed
         // the neighbor material).
         let mut gpu_d_bad = gpu_d.clone();
         gpu_d_bad[0] = Vec3::new(0.0, 0.0, 1.0);
@@ -522,7 +522,7 @@ mod tests {
         assert!(report.passes());
     }
 
-    /// A same-cell divergence (the t's agree to the noise floor — a shading
+    /// A same-cell divergence (the t's agree to the noise floor. A shading
     /// difference, not a geometry one) stays hard.
     #[test]
     fn same_cell_divergence_is_hard() {
@@ -534,11 +534,11 @@ mod tests {
         let spec = flat(Vec3::ZERO, pixels);
         let disp = flat(Vec3::new(0.5, 0.0, 0.0), pixels);
         let mut gpu_d_bad = gpu_d.clone();
-        // The last row diverges (a real shading change — no local outliers).
+        // The last row diverges (a real shading change, no local outliers).
         for x in 0..w as usize {
             gpu_d_bad[(h as usize - 1) * w as usize + x] = Vec3::new(0.0, 0.0, 1.0);
         }
-        // The t's agree (same cell, ULP noise) — the divergence is shading.
+        // The t's agree (same cell, ULP noise). The divergence is shading.
         let gpu_t = vec![10.0; pixels];
         let cpu_t = vec![10.0; pixels];
         let albedo = flat(Vec3::new(0.4, 0.4, 0.4), pixels);
@@ -565,7 +565,7 @@ mod tests {
     }
 
     /// A same-t flip at a material boundary (adjacent cells share the entry
-    /// t — the albedo differs) is the corner-touch class too.
+    /// t. The albedo differs) is the corner-touch class too.
     #[test]
     fn material_boundary_flip_is_excused() {
         let (w, h) = (16u32, 16u32);
@@ -606,7 +606,7 @@ mod tests {
         assert!(report.passes());
     }
 
-    /// A bright pixel on BOTH sides (a firefly both sides see — identical
+    /// A bright pixel on BOTH sides (a firefly both sides see, identical
     /// seeds) is excused: the mean comparison is least meaningful exactly
     /// where a 1-spp firefly dominates.
     #[test]

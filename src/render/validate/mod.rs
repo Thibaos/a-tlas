@@ -1,7 +1,7 @@
 //! The correctness validator: renders each test world through the real
 //! renderer, captures the raw frame before any overlay, traces the same
 //! frame with the independent CPU reference tracer, and reports per-pixel
-//! {color, t} mismatches — plus the shading-half diff (the CPU path-tracer
+//! {color, t} mismatches, plus the shading-half diff (the CPU path-tracer
 //! mirror vs the captured GPU radiance pair).
 
 use std::path::{Path, PathBuf};

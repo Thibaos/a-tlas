@@ -25,18 +25,18 @@ const uint HULL_COUNT_MAX_PIXELS = 3840u * 2160u;
 // hits one, this shader reads that AABB back by primitive id (the same read
 // the debug Hull mode does in hull.rint), recovers the Micro-chunk, slab-tests
 // the trimmed hull, and marches the 8^3 lattice within it (Amanatides-Woo,
-// tie-break x, y, z — the same order as the CPU reference tracer in
+// tie-break x, y, z, the same order as the CPU reference tracer in
 // src/validate/reference.rs). The march is bounded to the one chunk (<= 8
 // cells per axis), not the whole Region: the hardware BVH already skipped the
 // empty space between the Region box and this hull, so the DDA no longer
 // re-walks it cell by cell.
 //
 // Occupancy: the 512-bit Occupancy mask defines existence (the mask, not a
-// sentinel material — palette index 0 is a real color). The material rides
+// sentinel material. Palette index 0 is a real color). The material rides
 // the 8-bit hitKind, so closest-hit stays a palette lookup.
 //
 // Ray ranges: gl_RayTminEXT is the ray's constant t_min and gl_RayTmaxEXT the
-// current t_max — NOT the primitive entry/exit (the intersection shader
+// current t_max, NOT the primitive entry/exit (the intersection shader
 // computes its own hit). The ray lives in object space = Region-local space
 // (the instance transform is a translation). A camera inside the hull starts
 // at its own cell (t clamped to t_min), so an in-voxel camera commits the
@@ -65,13 +65,13 @@ uint voxel_index(ivec3 cell_in_microchunk) {
         + 64u * uint(cell_in_microchunk.z);
 }
 
-// Micro-chunk index within a Region: (mc.z * 32 + mc.y) * 32 + mc.x — the
+// Micro-chunk index within a Region: (mc.z * 32 + mc.y) * 32 + mc.x. The
 // offset table's slot order (must match src/region/pack.rs).
 uint microchunk_index(ivec3 mc) {
     return MC_STRIDE_Z * uint(mc.z) + MC_STRIDE_Y * uint(mc.y) + uint(mc.x);
 }
 
-// The number of set Occupancy-mask bits below `idx` — the material byte
+// The number of set Occupancy-mask bits below `idx`, the material byte
 // offset within the block (materials are popcount-compacted, u8, in bit
 // order, after the 64-byte mask).
 uint material_rank(RegionPool pool, uint block_offset, uint idx) {
@@ -210,7 +210,7 @@ void main() {
         // Chunk-local cell, by exact subtraction from the fixed chunk origin.
         // The march is bounded to the hull, but the entry point can land a
         // hair outside [min, max) from slab floating point, so guard the cell
-        // against the chunk and skip out-of-chunk cells — the step advances
+        // against the chunk and skip out-of-chunk cells. The step advances
         // them past, exactly as the old Region march guarded against the
         // Region box. (cell & 7 would misread an adjacent-chunk cell here.)
         ivec3 c = cell - chunk_origin;

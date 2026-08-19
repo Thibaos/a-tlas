@@ -12,7 +12,7 @@
 //! cursor capture toggles on the right-button press edge (held state in
 //! [`Input::buttons_down`]); close and the render-mode toggle read
 //! [`Input::just_pressed`]. The winit-to-semantic mapping
-//! ([map_key] / [map_button]) lives here at the app boundary — nothing else
+//! ([map_key] / [map_button]) lives here at the app boundary. Nothing else
 //! imports winit input types.
 
 use std::collections::HashSet;
@@ -41,9 +41,9 @@ pub enum InputKey {
     Down,
     /// Toggle the Render mode (Tab)
     ToggleRenderMode,
-    /// Raise the composite's manual exposure (]) — +0.5 EV per press.
+    /// Raise the composite's manual exposure (])): +0.5 EV per press.
     ExposureUp,
-    /// Lower the composite's manual exposure ([) — -0.5 EV per press.
+    /// Lower the composite's manual exposure ([)): -0.5 EV per press.
     ExposureDown,
     /// Request the app to close (Escape).
     Close,
@@ -63,16 +63,16 @@ pub enum InputButton {
 /// drained at the end of each frame by [Input::end_frame].
 #[derive(Default)]
 pub struct Input {
-    /// Keys held down this frame — movement polls this (continuous).
+    /// Keys held down this frame. Movement polls this (continuous).
     pub down: HashSet<InputKey>,
-    /// Keys pressed this frame (an edge) — close/toggle read this;
+    /// Keys pressed this frame (an edge). Close/toggle read this;
     /// drained by [Input::end_frame].
     pub just_pressed: HashSet<InputKey>,
-    /// This-frame wheel delta (+ = up) — movement reads this for speed.
+    /// This-frame wheel delta (+ = up). Movement reads this for speed.
     pub scroll_delta: f32,
-    /// This-frame mouse-motion delta — look reads this.
+    /// This-frame mouse-motion delta. Look reads this.
     pub mouse_motion: (f64, f64),
-    /// Mouse buttons held down this frame — cursor capture toggles on the
+    /// Mouse buttons held down this frame. Cursor capture toggles on the
     /// right-button press edge (Right).
     pub buttons_down: HashSet<InputButton>,
 }

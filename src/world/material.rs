@@ -7,7 +7,7 @@ use super::format::get_palette;
 pub const DEFAULT_ROUGHNESS: f32 = 0.3;
 
 /// The emission radiance scale: a fully emissive voxel (`_emit` 1.0) with
-/// white albedo contributes `EMISSION_SCALE` linear radiance — bright enough
+/// white albedo contributes `EMISSION_SCALE` linear radiance, bright enough
 /// to read clearly through the ACES tonemap (and, later, to act as a real
 /// path-hit light source). Tunable; the firefly-clamp policy stays in the
 /// effort's fog (the map's "Firefly control" item).
@@ -16,14 +16,14 @@ pub const EMISSION_SCALE: f32 = 10.0;
 /// The per-palette-index surface properties (CONTEXT.md: **Material**):
 /// albedo (the Palette color), metallic, roughness, and emission (linear RGB
 /// radiance). Loaded from the .vox MATL chunk; one Material per Palette
-/// index (256 max). This is the CPU mirror — the single source of truth
+/// index (256 max). This is the CPU mirror, the single source of truth
 /// whose packed twin the GPU reads (uploaded once at startup by
 /// `RegionStore`, read by the DDA closest-hit and the production raygen) and
 /// the table the validator's reference tracer shades with.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Material {
     /// The Palette color for this index (linear RGB; == `get_palette`'s
-    /// entry by construction — the byte-exact capture path depends on it).
+    /// entry by construction. The byte-exact capture path depends on it).
     pub albedo: [f32; 3],
     /// `_metal`, clamped to [0, 1]; 0 = dielectric.
     pub metallic: f32,
@@ -56,7 +56,7 @@ pub type MaterialTable = [Material; 256];
 /// palette index starts at the [`Material::default_for`] defaults, then the
 /// MATL chunk's entries override the properties they name. VOX property
 /// ranges are 0–1; out-of-range values clamp. `_type` is informational in
-/// v1 — all types keep the PBR triad (the map rules `glass` out of scope,
+/// v1. All types keep the PBR triad (the map rules `glass` out of scope,
 /// treated as opaque). Malformed material ids (≥ 256) are skipped, not
 /// fatal: a bad MATL entry must not take down the loader.
 pub fn get_material_table(data: &dot_vox::DotVoxData) -> MaterialTable {

@@ -14,7 +14,7 @@
 //
 // Unlike the DDA there is no occupancy read and no voxel resolution. The
 // hardware has already tested the AABB (that is why this shader ran), but it
-// does NOT compute the hit t for procedural AABBs — the shader must slab-test
+// does NOT compute the hit t for procedural AABBs. The shader must slab-test
 // the box and report the true entry distance, otherwise occlusion is
 // unpredictable (a constant t would break closest-hit selection). The hull is
 // read by primitive id (the bounding box index within the Region's single
@@ -117,6 +117,6 @@ void main() {
     hash = hash_mix(hash ^ (uint(mc.z) << 10u));
 
     // The hit kind is 8 bits in this codebase's convention (the DDA rides the
-    // 8-bit material there) — fold the hash to that width.
+    // 8-bit material there), fold the hash to that width.
     reportIntersectionEXT(t_entry, hash & 0xFFu);
 }

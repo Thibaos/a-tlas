@@ -1,4 +1,4 @@
-//! Origin-aligned grid math and the renderer lattice — the single source of
+//! Origin-aligned grid math and the renderer lattice, the single source of
 //! truth for the floor-division and lattice-bounds logic the renderer and the
 //! world share. The renderer owns the grid: its extent is the 12-bit
 //! region-id budget, and the world stays region-agnostic by
@@ -14,7 +14,7 @@
 
 use glam::IVec3;
 
-/// The Micro-chunk's edge length in voxels (8^3 = 512 voxels) — the render
+/// The Micro-chunk's edge length in voxels (8^3 = 512 voxels), the render
 /// unit.
 pub const MICRO_CHUNK_EDGE: i32 = 8;
 
@@ -22,7 +22,7 @@ pub const MICRO_CHUNK_EDGE: i32 = 8;
 /// Micro-chunks).
 pub const REGION_EDGE: i32 = 256;
 
-/// The Region lattice's half-extent in Region indices — the root of the
+/// The Region lattice's half-extent in Region indices, the root of the
 /// lattice extent. The 12-bit region-id budget is 4 bits per axis
 /// → 16 Regions per axis → half-extent 8, so Region indices lie in [-8, 8).
 pub const REGION_HALF_EXTENT: i32 = 8;

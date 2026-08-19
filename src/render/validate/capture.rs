@@ -1,7 +1,7 @@
 //! The capture task: copies the raw ray-pass output into host-readable
 //! buffers before anything else (the debug overlay, when present, runs after
 //! this node on the same image). This is the seam that satisfies "capture
-//! happens before the debug overlay draws" — the validation graph orders
+//! happens before the debug overlay draws." The validation graph orders
 //! Render → Capture and never lets an overlay touch the copied bytes.
 
 use vulkano::{
@@ -103,7 +103,7 @@ impl Task for CaptureTask {
 /// pass's radiance pair (diffuse + specular RGBA16F) and the albedo+metalness
 /// aux (RGBA8) into host-readable buffers after each path-traced frame, so
 /// the validator can accumulate the per-pixel means the CPU mirror is diffed
-/// against. The geometry half's [`CaptureTask`] is unchanged — the byte-exact
+/// against. The geometry half's [`CaptureTask`] is unchanged. The byte-exact
 /// {color, t} comparison keeps the capture raygen's output.
 pub struct PathCaptureTask {
     diff_image_id: Id<Image>,

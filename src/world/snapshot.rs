@@ -1,8 +1,8 @@
 //! Micro-chunk snapshots and the minimal emitter.
 //!
 //! The input contract: the world hands the renderer Micro-chunk
-//! snapshots — {global coords, 64-byte Occupancy mask, u8 material indices} —
-//! one message for create, update, and removal (an emptied Micro-chunk
+//! snapshots: {global coords, 64-byte Occupancy mask, u8 material indices}.
+//! One message for create, update, and removal (an emptied Micro-chunk
 //! re-snapshots with a zero mask). `crate::render::region::feed`
 //! implements the contract (enqueue-only `submit_microchunk` / `submit_batch`,
 //! worker drain into per-Region mirrors); this module keeps the snapshot
@@ -25,7 +25,7 @@ use crate::world::World;
 /// within the Micro-chunk; the materials array follows the same increasing
 /// bit order and has exactly `popcount(mask)` entries. The bit order is the
 /// contract with the DDA in shaders/region/intersect.rint and the packer in
-/// `crate::render::region::pack` — no sentinel material exists (palette index 0 is a
+/// `crate::render::region::pack`. No sentinel material exists (palette index 0 is a
 /// real color); the mask defines which voxels exist.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MicroChunkSnapshot {
@@ -52,7 +52,7 @@ impl MicroChunkSnapshot {
 /// the world's own voxel storage (the world side of the input contract).
 ///
 /// This is the minimal emitter: deterministic (snapshots sorted by global
-/// coords), covering every occupied voxel — interior included, since the
+/// coords), covering every occupied voxel, interior included, since the
 /// Occupancy mask (not surface-ness) defines existence.
 pub fn emit_snapshots(world: &World) -> Vec<MicroChunkSnapshot> {
     // Voxel → (micro-chunk origin, (bit index, material)).

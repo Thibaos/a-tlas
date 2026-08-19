@@ -11,7 +11,7 @@
 //! also exercises the real world loader (open_file + World::new).
 //!
 //! Authoring convention (verified by the unit tests below): a scene-less .vox
-//! model voxel (x, y, z) lands at world (x, z, y) — the loader's direct
+//! model voxel (x, y, z) lands at world (x, z, y), the loader's direct
 //! mapping. Voxel coordinates are u8 in the .vox format, so positions beyond
 //! 255 (the Region boundary) are authored through scene-graph transforms,
 //! whose translation lands at world (t.x, t.z, t.y + 1) for an unrotated
@@ -30,7 +30,7 @@ use glam::IVec3;
 
 pub const TEST_WORLDS_DIR: &str = "assets/test";
 
-/// A fixed camera for a test world — part of the validator's camera inputs,
+/// A fixed camera for a test world, part of the validator's camera inputs,
 /// shared verbatim by the GPU ray pass and the reference tracer.
 #[derive(Clone, Copy, Debug)]
 pub struct Camera {
@@ -95,17 +95,17 @@ pub fn test_suite() -> Vec<WorldSpec> {
     vec![
         // The depth-sorting regression (validation gap): nuke.vox from the
         // app's default camera pitched to the clamp (-π/2 + 0.01 = looking
-        // straight down) — a large dense multi-Region world viewed along a
+        // straight down), a large dense multi-Region world viewed along a
         // near-vertical axis. The former `TerminateOnFirstHit` traversal
         // committed the first hit found in BVH order, which is not the
         // closest: stacked Regions along the ray let a farther surface win
-        // stably (~2400 hard mismatches before the fix — see
+        // stably (~2400 hard mismatches before the fix. See
         // shaders/region/production.rgen). The reference tracer is
         // closest-hit, so this world guards the ray flags.
         WorldSpec {
             name: "nuke-down".to_string(),
             path: "assets/nuke.vox".to_string(),
-            description: "nuke.vox, the app's default camera looking straight down (pitch clamped at -pi/2 + 0.01) — dense multi-Region depth-sorting regression".to_string(),
+            description: "nuke.vox, the app's default camera looking straight down (pitch clamped at -pi/2 + 0.01), dense multi-Region depth-sorting regression".to_string(),
             camera: Some(Camera {
                 eye: [-16.0, 620.0, -16.0],
                 target: [-16.0, 619.0, -16.01],
@@ -127,7 +127,7 @@ pub fn test_suite() -> Vec<WorldSpec> {
         WorldSpec {
             name: "palette-zero".to_string(),
             path: "assets/test/palette-zero.vox".to_string(),
-            description: "voxels with material index 0 — palette index 0 is a real color, and the 8-bit hitKind must carry it (no sentinel material)".to_string(),
+            description: "voxels with material index 0. Palette index 0 is a real color, and the 8-bit hitKind must carry it (no sentinel material)".to_string(),
             camera: Some(Camera {
                 eye: [-6.0, 2.0, 6.0],
                 target: [0.0, 0.0, 0.0],
@@ -149,7 +149,7 @@ pub fn test_suite() -> Vec<WorldSpec> {
         WorldSpec {
             name: "solid-cube".to_string(),
             path: "assets/test/solid-cube.vox".to_string(),
-            description: "a solid 12x12x12 cube with the camera inside — interior voxels (no exposed face) render through the DDA, not a hollow shell; every ray commits the enclosing voxel at t_min".to_string(),
+            description: "a solid 12x12x12 cube with the camera inside. Interior voxels (no exposed face) render through the DDA, not a hollow shell; every ray commits the enclosing voxel at t_min".to_string(),
             camera: Some(Camera {
                 eye: [6.5, 6.5, 6.5],
                 target: [7.0, 6.5, 6.5],
@@ -182,7 +182,7 @@ pub fn test_suite() -> Vec<WorldSpec> {
         WorldSpec {
             name: "camera-in-voxel".to_string(),
             path: "assets/test/camera-in-voxel.vox".to_string(),
-            description: "camera inside a solid voxel — the DDA commits the enclosing voxel at t_min (the old triangle-per-voxel driver reported the AABB exit t; the DDA path fixes it)".to_string(),
+            description: "camera inside a solid voxel. The DDA commits the enclosing voxel at t_min (the old triangle-per-voxel driver reported the AABB exit t; the DDA path fixes it)".to_string(),
             camera: Some(Camera {
                 eye: [0.2, 0.2, 0.2],
                 target: [1.0, 0.2, 0.2],
@@ -221,7 +221,7 @@ pub fn test_suite() -> Vec<WorldSpec> {
         WorldSpec {
             name: "multi-region".to_string(),
             path: "assets/test/multi-region.vox".to_string(),
-            description: "a 3x3 cluster per Region along +x (Regions (-1,0,0)..(3,0,0)) — negative and multi-Region occupancy through the full lattice".to_string(),
+            description: "a 3x3 cluster per Region along +x (Regions (-1,0,0)..(3,0,0)). Negative and multi-Region occupancy through the full lattice".to_string(),
             camera: Some(Camera {
                 eye: [-160.0, 25.0, 60.0],
                 target: [380.0, 0.0, 15.0],
@@ -232,7 +232,7 @@ pub fn test_suite() -> Vec<WorldSpec> {
         WorldSpec {
             name: "materials".to_string(),
             path: "assets/test/materials.vox".to_string(),
-            description: "a strip of voxels with known MATL-chunk Material properties (defaults, metallic, roughness, emissive) — the Material table (ADR 0008): its albedo column must equal the palette for the byte-exact capture path, so this world doubles as the invariant guard (GPU reads the table, the CPU reference reads the palette — any divergence fails the diff)".to_string(),
+            description: "a strip of voxels with known MATL-chunk Material properties (defaults, metallic, roughness, emissive). The Material table (ADR 0008): its albedo column must equal the palette for the byte-exact capture path, so this world doubles as the invariant guard (GPU reads the table, the CPU reference reads the palette. Any divergence fails the diff)".to_string(),
             camera: Some(Camera {
                 eye: [-8.0, 2.0, 8.0],
                 target: [4.0, 0.0, 0.0],
@@ -243,7 +243,7 @@ pub fn test_suite() -> Vec<WorldSpec> {
         WorldSpec {
             name: "residency".to_string(),
             path: "assets/test/residency.vox".to_string(),
-            description: "a 2x2x2 cube per Region along +x (Regions (0,0,0)..(2,0,0)); after the first frame Region (1,0,0) is emptied through the contract (left residency), then re-populated (became resident again) — both frames must match the reference".to_string(),
+            description: "a 2x2x2 cube per Region along +x (Regions (0,0,0)..(2,0,0)); after the first frame Region (1,0,0) is emptied through the contract (left residency), then re-populated (became resident again). Both frames must match the reference".to_string(),
             camera: Some(Camera {
                 eye: [-90.0, 25.0, 45.0],
                 target: [256.0, 1.0, 1.0],
@@ -276,7 +276,7 @@ pub fn smoke_world() -> WorldSpec {
     WorldSpec {
         name: "custom".to_string(),
         path: "assets/custom.vox".to_string(),
-        description: "custom.vox — the smoke world (camera frames the world's bounding box)"
+        description: "custom.vox, the smoke world (camera frames the world's bounding box)"
             .to_string(),
         camera: None,
         edit: None,
@@ -360,7 +360,7 @@ pub(crate) fn scene_less_world(voxels: &[(IVec3, u8)]) -> DotVoxData {
 
 /// A scene-graph .vox world: one 1-voxel model per (world position, material),
 /// each placed through an unrotated transform node. An unrotated 1-voxel model
-/// with frame translation t lands at world (t.x, t.z, t.y + 1) — verified by
+/// with frame translation t lands at world (t.x, t.z, t.y + 1), verified by
 /// `scene_graph_placement` below. Used to reach positions beyond u8 (the
 /// Region boundary at x = 256).
 fn transformed_world(voxels: &[(IVec3, u8)]) -> DotVoxData {
@@ -428,7 +428,7 @@ fn single_world() -> DotVoxData {
 }
 
 /// Voxels whose material index is 0: palette index 0 is a real color (the
-/// Occupancy mask — not a sentinel material — defines existence), and the
+/// Occupancy mask, not a sentinel material, defines existence), and the
 /// 8-bit hitKind must carry it through the intersection shader.
 fn palette_zero_world() -> DotVoxData {
     scene_less_world(&[(IVec3::new(0, 0, 0), 0), (IVec3::new(3, 0, 0), 0)])
@@ -524,7 +524,7 @@ fn multi_region_world() -> DotVoxData {
 
 /// A 2x2x2 cube per Region along +x: Regions (0,0,0), (1,0,0), (2,0,0). The
 /// validator empties Region (1,0,0)'s Micro-chunk (256,0,0) after the first
-/// frame — its last voxel leaves residency — and re-populates it after the
+/// frame. Its last voxel leaves residency, and re-populates it after the
 /// second (re-created: BLAS + pool buffer, ideally reused from the free
 /// lists). Each frame must match the reference over the world at that point.
 fn residency_world() -> DotVoxData {
@@ -541,18 +541,18 @@ fn residency_world() -> DotVoxData {
     transformed_world(&voxels)
 }
 
-/// A strip of voxels with known MATL-chunk Material properties — the
+/// A strip of voxels with known MATL-chunk Material properties. The
 /// Material-table world (ADR 0008). Materials 1..=8 along +x:
 ///
-/// - 1: no MATL entry — the table's defaults (diffuse, metallic 0,
+/// - 1: no MATL entry, the table's defaults (diffuse, metallic 0,
 ///   roughness 0.3, emission 0).
-/// - 2: `_type: diffuse` — defaults (the type is informational in v1).
+/// - 2: `_type: diffuse`, defaults (the type is informational in v1).
 /// - 3: `_metal 0.5`, `_rough 0.2`.
 /// - 4: `_metal 1.0`, `_rough 0.1` (full metal, low roughness).
 /// - 5: `_rough 0.9` (rough dielectric).
 /// - 6: `_type: _emit`, `_emit 1.0` (full emissive → albedo × EMISSION_SCALE).
 /// - 7: `_type: _emit`, `_emit 0.25` (dim emissive).
-/// - 8: `_emit 0.5` with no `_type` — the properties drive, not the type.
+/// - 8: `_emit 0.5` with no `_type`, the properties drive, not the type.
 ///
 /// The albedo column of the resulting table equals the palette by
 /// construction, so this world passes through the byte-exact capture
@@ -663,7 +663,7 @@ mod tests {
 
     /// The materials world's MATL chunk survives the .vox write/read round
     /// trip, and the CPU mirror (`get_material_table`) yields exactly the
-    /// authored properties — the table decision's mapping (ADR 0008).
+    /// authored properties, the table decision's mapping (ADR 0008).
     #[test]
     fn materials_world_material_table_round_trips() {
         use crate::world::material::{EMISSION_SCALE, get_material_table};
@@ -677,12 +677,12 @@ mod tests {
         let data = open_file(path.to_str().unwrap());
         let table = get_material_table(&data);
 
-        // 1: no MATL entry — defaults.
+        // 1: no MATL entry, defaults.
         assert_eq!(table[1].metallic, 0.0);
         assert_eq!(table[1].roughness, 0.3);
         assert_eq!(table[1].emission, [0.0; 3]);
 
-        // 2: `_type: diffuse` — still defaults (type is informational).
+        // 2: `_type: diffuse`, still defaults (type is informational).
         assert_eq!(table[2].metallic, 0.0);
         assert_eq!(table[2].roughness, 0.3);
 
@@ -712,7 +712,7 @@ mod tests {
         assert_eq!(table[6].roughness, 0.3);
     }
 
-    /// An out-of-lattice voxel (beyond ±2048) panics at load — the world
+    /// An out-of-lattice voxel (beyond ±2048) panics at load. The world
     /// boundary, not the renderer seam.
     #[test]
     #[should_panic(expected = "outside the ±2048 lattice")]

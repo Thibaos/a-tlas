@@ -56,7 +56,7 @@ VKO_DECLARE_STORAGE_BUFFER(hull_count, HullCountBuffer {
 // push-constant range.
 layout(push_constant) uniform RegionPushConstants {
     StorageImageId image_id;
-    // Validation only: the ray pass additionally writes payload.t to this
+    // Validation only: the ray pass also writes payload.t to this
     // image for the validator's per-pixel {color, t} comparison. The
     // production raygen passes INVALID and never dereferences it.
     StorageImageId t_image_id;
@@ -73,7 +73,7 @@ layout(push_constant) uniform RegionPushConstants {
     // The Scene buffer (ticket 06): the analytic lights' constants (sun
     // direction/illuminance, sky knots, disk). Read by the production sky
     // miss shader and the production raygen's Voxel mode; the capture
-    // stages never dereference it (INVALID would do — the store's id is
+    // stages never dereference it (INVALID would do. The store's id is
     // pushed uniformly).
     StorageBufferId scene_buffer_id;
     StorageBufferId region_table_buffer_id;
@@ -81,11 +81,11 @@ layout(push_constant) uniform RegionPushConstants {
     // Hull intersection shader's lookup, parallel to `region_table`).
     StorageBufferId aabb_table_buffer_id;
     // The per-pixel hull-crossed count buffer (bindless); INVALID when not in
-    // the hull-crossed debug mode — the intersection shader's PER_PIXEL_COUNTER
+    // the hull-crossed debug mode. The intersection shader's PER_PIXEL_COUNTER
     // gate folds the atomicAdd away in the default/validator pipelines.
     StorageBufferId hull_count_buffer_id;
-    // Render mode: 0 = Voxel, 1 = Hull, 2 = Ray latency, 3 = hull-crossed —
-    // what the raygen paints. The raygen maps it to a hit-group record offset
+    // Render mode: 0 = Voxel, 1 = Hull, 2 = Ray latency, 3 = hull-crossed.
+    // What the raygen paints. The raygen maps it to a hit-group record offset
     // (Ray latency traces hit-region 0, the DDA, and only changes the paint).
     // Always present; always 0 in release (Voxel is the only mode).
     uint mode;

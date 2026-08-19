@@ -1,6 +1,6 @@
 //! The shared GPU stack: instance, device, queues, allocator, and the
 //! taskgraph resources/flights. Constructed once per event loop by the app
-//! and by the validator — both render through the same stack, so the
+//! and by the validator. Both render through the same stack, so the
 //! device/queue/extension surface the validator validates is the app's.
 //! The foundation every GPU layer builds on (core: no dependencies).
 

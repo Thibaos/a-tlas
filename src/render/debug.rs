@@ -23,7 +23,7 @@ pub mod heatmap {
 
 /// Builds the hull-crossed heatmap compute pipeline: reads the per-pixel count
 /// buffer (bindless) and paints the swapchain storage image (debug builds
-/// only — the hull-crossed mode has no surface in release).
+/// only; the hull-crossed mode has no surface in release).
 pub fn create_heatmap_pipeline(gpu: &GpuStack) -> Arc<ComputePipeline> {
     let shader = unsafe {
         heatmap::load(&gpu.device)
