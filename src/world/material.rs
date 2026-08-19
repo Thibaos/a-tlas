@@ -1,26 +1,7 @@
-pub fn open_file(path: &str) -> dot_vox::DotVoxData {
-    let vox_data = dot_vox::load(path).unwrap();
+//! Materials: the per-palette-index surface properties and the CPU Material
+//! table (ADR 0008). Loaded from the .vox MATL chunk (see `format`).
 
-    #[cfg(debug_assertions)]
-    assert!(vox_data.palette.len() <= 256);
-
-    vox_data
-}
-
-pub fn get_palette(data: &dot_vox::DotVoxData) -> [glam::Vec4; 256] {
-    let mut array = [glam::Vec4::ZERO; 256];
-
-    for (i, color) in data.palette.iter().enumerate() {
-        array[i] = glam::Vec4::new(
-            f32::from(color.r) / 255.0,
-            f32::from(color.g) / 255.0,
-            f32::from(color.b) / 255.0,
-            f32::from(color.a) / 255.0,
-        );
-    }
-
-    array
-}
+use super::format::get_palette;
 
 /// The default roughness for a palette index with no MATL `_rough` property.
 pub const DEFAULT_ROUGHNESS: f32 = 0.3;
@@ -38,7 +19,7 @@ pub const EMISSION_SCALE: f32 = 10.0;
 /// index (256 max). This is the CPU mirror — the single source of truth
 /// whose packed twin the GPU reads (uploaded once at startup by
 /// `RegionStore`, read by the DDA closest-hit and the production raygen) and
-/// the table the validator's reference tracer will shade with (ticket 07).
+/// the table the validator's reference tracer shades with.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Material {
     /// The Palette color for this index (linear RGB; == `get_palette`'s
@@ -191,8 +172,8 @@ mod tests {
         assert_eq!(table[7].emission, [0.0; 3]);
     }
 
-    /// The emission mapping (map defaults, decided in ticket 03): linear RGB
-    /// radiance = `_emit` × albedo × EMISSION_SCALE.
+    /// The emission mapping: linear RGB radiance = `_emit` × albedo ×
+    /// EMISSION_SCALE.
     #[test]
     fn emission_is_emit_times_albedo_times_scale() {
         let data = data_with(vec![

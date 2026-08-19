@@ -2,12 +2,15 @@
 //! frame, a diff image, and a text report identifying differing pixels.
 
 use std::{
+    fs,
     fs::File,
     io::{BufWriter, Write},
     path::Path,
 };
 
-use crate::validate::compare::CompareReport;
+use super::compare::CompareReport;
+use super::runner::PassSpec;
+use super::test_worlds::Camera;
 
 /// Writes an 8-bit RGBA image as a PNG.
 pub fn write_png(path: &Path, rgba: &[u8], width: u32, height: u32) -> std::io::Result<()> {
@@ -170,7 +173,7 @@ pub fn tone_map_rgba(radiance: &[glam::Vec3]) -> Vec<u8> {
 /// yellow for excused ones (silhouette/firefly).
 pub fn build_path_diff_image(
     cpu_display: &[glam::Vec3],
-    report: &crate::validate::path_compare::PathCompareReport,
+    report: &super::path_compare::PathCompareReport,
 ) -> Vec<u8> {
     let mut diff = tone_map_rgba(cpu_display);
     let width = report.width as usize;
@@ -204,7 +207,7 @@ pub fn write_path_report(
     width: u32,
     height: u32,
     cpu_seconds: f64,
-    report: &crate::validate::path_compare::PathCompareReport,
+    report: &super::path_compare::PathCompareReport,
 ) -> std::io::Result<()> {
     let mut out = String::new();
 
@@ -312,4 +315,68 @@ pub fn write_path_report(
     let mut file = File::create(path)?;
     file.write_all(out.as_bytes())?;
     Ok(())
+}
+
+pub const ALBEDO_EPS: f32 = 1e-3;
+
+/// Writes the report artifacts (PNGs + text) for one frame. `label` suffixes
+/// the artifact names ("" for the first/only frame, "-after-edit" for the
+/// edit-at-the-seam second frame).
+#[allow(clippy::too_many_arguments)]
+pub fn write_report(
+    out_dir: &Path,
+    pass: &PassSpec,
+    width: u32,
+    height: u32,
+    reference_seconds: f64,
+    gpu_rgba: &[u8],
+    reference_rgba: &[u8],
+    report: &CompareReport,
+    label: &str,
+) -> std::io::Result<()> {
+    fs::create_dir_all(out_dir)?;
+
+    write_png(
+        &out_dir.join(format!("gpu{label}.png")),
+        gpu_rgba,
+        width,
+        height,
+    )?;
+    write_png(
+        &out_dir.join(format!("reference{label}.png")),
+        reference_rgba,
+        width,
+        height,
+    )?;
+
+    let diff = build_diff_image(reference_rgba, report);
+    write_png(
+        &out_dir.join(format!("diff{label}.png")),
+        &diff,
+        width,
+        height,
+    )?;
+
+    let camera_description = pass
+        .camera
+        .map(camera_description)
+        .unwrap_or_else(|| "framed world bounding box".to_string());
+
+    write_text_report(
+        &out_dir.join(format!("report{label}.txt")),
+        &pass.name,
+        &pass.path,
+        &camera_description,
+        width,
+        height,
+        reference_seconds,
+        report,
+    )
+}
+
+pub fn camera_description(camera: Camera) -> String {
+    format!(
+        "eye {:?} target {:?} up {:?}",
+        camera.eye, camera.target, camera.up
+    )
 }

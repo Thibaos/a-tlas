@@ -3,7 +3,7 @@
 //! Rebuilds execute as **ordered taskgraph nodes** between the consuming
 //! trace and the next frame: pool upload → BLAS build → TLAS build (on
 //! residency transitions), so in-place rebuilds are race-free by ordering.
-//! [`RegionStore`](crate::region::residency::RegionStore) computes a
+//! [`RegionStore`](crate::render::region::residency::RegionStore) computes a
 //! CPU-side [`RebuildPlan`] (allocations, tables, packed instances — the
 //! worker keeps only the CPU-side drain/pack) and hands it to
 //! [`RebuildGraph`], which compiles one ordered graph per change cycle over
@@ -54,9 +54,11 @@ use vulkano_taskgraph::{
 };
 
 use crate::{
-    app::GpuStack,
-    region::{pack::REGION_COUNT, render::capture_raygen, residency::RegionStore},
-    rt::acceleration_structure,
+    core::gpu::GpuStack,
+    render::{
+        accel,
+        region::{pack::REGION_COUNT, residency::RegionStore, task::capture_raygen},
+    },
 };
 
 /// One Region's GPU upload: the pool bytes and the trimmed AABBs the upload
@@ -328,7 +330,7 @@ impl Task for BuildBlasTask {
             let mut build_geometry_info = AccelerationStructureBuildGeometryInfo {
                 ty: AccelerationStructureType::BottomLevel,
                 mode: BuildAccelerationStructureMode::Build,
-                flags: acceleration_structure::build_flags(AccelerationStructureType::BottomLevel),
+                flags: accel::build_flags(AccelerationStructureType::BottomLevel),
                 geometries: &geometries,
                 ..AccelerationStructureBuildGeometryInfo::new()
             };
@@ -424,7 +426,7 @@ impl Task for BuildTlasTask {
         let mut build_geometry_info = AccelerationStructureBuildGeometryInfo {
             ty: AccelerationStructureType::TopLevel,
             mode: BuildAccelerationStructureMode::Build,
-            flags: acceleration_structure::build_flags(AccelerationStructureType::TopLevel),
+            flags: accel::build_flags(AccelerationStructureType::TopLevel),
             geometries: &geometries,
             ..AccelerationStructureBuildGeometryInfo::new()
         };
@@ -771,7 +773,7 @@ pub(crate) fn blas_build_sizes(
     aabb_count: u32,
 ) -> vulkano::acceleration_structure::AccelerationStructureBuildSizesInfo {
     let geometries = aabb_geometries(aabb_buffer);
-    acceleration_structure::acceleration_structure_build_sizes(
+    accel::acceleration_structure_build_sizes(
         &gpu.device,
         &geometries,
         AccelerationStructureType::BottomLevel,
@@ -807,7 +809,7 @@ pub(crate) fn tlas_build_sizes(
     let geometries = vec![AccelerationStructureGeometry::new(
         AccelerationStructureGeometryData::Instances(instances_data),
     )];
-    acceleration_structure::acceleration_structure_build_sizes(
+    accel::acceleration_structure_build_sizes(
         &gpu.device,
         &geometries,
         AccelerationStructureType::TopLevel,

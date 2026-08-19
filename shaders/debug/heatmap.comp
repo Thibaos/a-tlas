@@ -4,7 +4,7 @@
 #extension GL_EXT_GOOGLE_include_directive : enable
 
 #include <vulkano.glsl>
-#include "../rt/heat_ramp.glsl"
+#include "../common/heat_ramp.glsl"
 
 layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 

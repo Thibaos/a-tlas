@@ -1,3 +1,9 @@
+//! The composite node: the taskgraph's last pass before present, exposing
+//! the trace pass's radiance to the swapchain with manual EV exposure and
+//! the ACES tonemap. Part of the path-tracing output contract (ADR 0007);
+//! from ticket 08 the composite consumes the Denoise pass's output instead
+//! of the noisy radiance directly.
+
 use core::slice;
 use std::sync::Arc;
 use vulkano::{
@@ -7,65 +13,61 @@ use vulkano::{
 use vulkano_taskgraph::{
     Id, Task, TaskContext, TaskResult,
     command_buffer::RecordingCommandBuffer,
-    descriptor_set::StorageBufferId,
 };
 
-use crate::{app::App, region::render::RenderMode};
+use crate::{core::gpu::GpuStack, render::region::task::RenderMode};
 
-pub mod heatmap {
+pub mod composite {
     vulkano_shaders::shader! {
         root_path_env: "CARGO_MANIFEST_DIR",
         ty: "compute",
-        path: "shaders/debug/heatmap.comp",
+        path: "shaders/composite.comp",
         vulkan_version: "1.3"
     }
 }
 
-/// Builds the hull-crossed heatmap compute pipeline: reads the per-pixel count
-/// buffer (bindless) and paints the swapchain storage image (debug builds
-/// only — the hull-crossed mode has no surface in release).
-pub fn create_heatmap_pipeline(app: &App) -> Arc<ComputePipeline> {
+/// Builds the composite compute pipeline: reads the radiance source and
+/// paints the swapchain storage image (exposure + ACES tonemap + gamma).
+pub fn create_composite_pipeline(gpu: &GpuStack) -> Arc<ComputePipeline> {
     let shader = unsafe {
-        heatmap::load(&app.gpu.device)
+        composite::load(&gpu.device)
             .unwrap()
             .entry_point("main")
             .unwrap()
     };
     let stage = PipelineShaderStageCreateInfo::new(&shader);
-    let bcx = app.gpu.resources.bindless_context().unwrap();
+    let bcx = gpu.resources.bindless_context().unwrap();
     let layout = bcx
         .pipeline_layout_from_stages(slice::from_ref(&stage))
         .unwrap();
     ComputePipeline::new(
-        &app.gpu.device,
+        &gpu.device,
         None,
         &ComputePipelineCreateInfo::new(stage, &layout),
     )
     .unwrap()
 }
 
-/// The hull-crossed heatmap overlay node: a full-screen compute pass that reads
-/// the per-pixel count buffer and repaints the swapchain image. It runs only
-/// when the Render mode is [`RenderMode::HullCrossed`]; otherwise it is a no-op
-/// and leaves the ray pass's output untouched.
-pub struct DrawHeatmapTask {
+/// The composite node: a full-screen compute pass exposing the trace pass's
+/// radiance to the swapchain. It runs only when the Render mode is Voxel
+/// (the path-tracing mode); the debug modes paint the swapchain directly
+/// from the raygen, so the composite no-ops for them.
+pub struct CompositeTask {
     pub swapchain_id: Id<Swapchain>,
-    pub hull_count_storage_id: StorageBufferId,
     pub pipeline: Option<Arc<ComputePipeline>>,
 }
 
-impl DrawHeatmapTask {
-    pub fn new(swapchain_id: Id<Swapchain>, hull_count_storage_id: StorageBufferId) -> Self {
+impl CompositeTask {
+    pub fn new(swapchain_id: Id<Swapchain>) -> Self {
         Self {
             swapchain_id,
-            hull_count_storage_id,
             pipeline: None,
         }
     }
 }
 
-impl Task for DrawHeatmapTask {
-    type World = crate::region::render::RegionRenderContext;
+impl Task for CompositeTask {
+    type World = crate::render::region::task::RegionRenderContext;
 
     unsafe fn execute(
         &self,
@@ -73,7 +75,7 @@ impl Task for DrawHeatmapTask {
         tcx: &mut TaskContext<'_>,
         rcx: &Self::World,
     ) -> TaskResult {
-        if rcx.mode != RenderMode::HullCrossed {
+        if rcx.mode != RenderMode::Voxel {
             return Ok(());
         }
 
@@ -88,9 +90,13 @@ impl Task for DrawHeatmapTask {
             cbf.push_constants(
                 pipeline.layout(),
                 0,
-                &heatmap::PushConstants {
+                &composite::PushConstants {
                     image_id: rcx.swapchain_storage_image_ids[image_index as usize],
-                    hull_count_buffer_id: self.hull_count_storage_id,
+                    radiance_id: rcx.diff_radiance_image_id,
+                    spec_radiance_id: rcx.spec_radiance_image_id,
+                    albedo_metal_id: rcx.albedo_metal_image_id,
+                    ev: rcx.ev,
+                    mode: rcx.mode as u32,
                     width: extent[0],
                     height: extent[1],
                 },

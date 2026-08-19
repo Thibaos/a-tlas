@@ -28,8 +28,8 @@
 use glam::{IVec3, Vec3};
 
 use crate::{
-    validate::reference::{CameraInputs, T_MAX, T_MIN},
-    world::{voxel::MaterialTable, world::World},
+    render::validate::reference::{CameraInputs, T_MAX, T_MIN},
+    world::{material::MaterialTable, World},
 };
 
 // ---------------------------------------------------------------------------
@@ -368,7 +368,7 @@ impl<'a> PathTracer<'a> {
                     };
                     return Some(PathHit {
                         t: t_entry,
-                        material: voxel.material_index(),
+                        material: *voxel,
                         normal,
                     });
                 }
@@ -1138,8 +1138,8 @@ pub fn render_path(
 mod tests {
     use super::*;
     use crate::{
-        validate::reference::{T_MAX, T_MIN},
-        world::{voxel::Material, world::World},
+        render::validate::reference::{T_MAX, T_MIN},
+        world::{material::Material, World},
     };
 
     fn default_scene() -> Scene {
@@ -1368,7 +1368,7 @@ mod tests {
                 };
                 return Some(PathHit {
                     t: t_entry,
-                    material: voxel.material_index(),
+                    material: *voxel,
                     normal,
                 });
             }

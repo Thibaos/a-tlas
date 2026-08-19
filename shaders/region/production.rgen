@@ -8,11 +8,11 @@
 #extension GL_EXT_shader_realtime_clock : require
 #endif
 
-#include "../rt/common.glsl"
+#include "../common/common.glsl"
 #include "header.glsl"
 #include "common.glsl"
-#include "../rt/raygen_common.glsl"
-#include "../rt/heat_ramp.glsl"
+#include "../common/raygen_common.glsl"
+#include "../common/heat_ramp.glsl"
 #include "sky.glsl"
 
 layout(location = 0) rayPayloadEXT MainPassPayload payload;

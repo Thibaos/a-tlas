@@ -6,7 +6,7 @@ use std::{
 
 use glam::{Mat4, Quat, Vec3, vec3};
 
-use crate::input::{Input, InputKey};
+use crate::app::input::{Input, InputKey};
 
 pub struct PlayerController {
     pub speed: f32,

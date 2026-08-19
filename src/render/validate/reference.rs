@@ -22,7 +22,7 @@
 
 use glam::{IVec3, Mat4, Vec2, Vec3, Vec4};
 
-use crate::world::world::World;
+use crate::world::World;
 
 /// Ray t-range: matches the region ray pass (shaders/region/common.glsl
 /// RAY_T_MIN / RAY_T_MAX).
@@ -223,7 +223,7 @@ impl<'a> ReferenceTracer<'a> {
         match self.shape {
             VoxelShape::GridCell => {
                 if let Some(voxel) = self.world.try_get_voxel(&cell) {
-                    let material = voxel.material_index();
+                    let material = *voxel;
                     self.test_voxel(origin, inv, cell, material, best_t, best_material);
                 }
             }
@@ -236,7 +236,7 @@ impl<'a> ReferenceTracer<'a> {
                         for dz in 0..2 {
                             let p = cell + IVec3::new(dx, dy, dz);
                             if let Some(voxel) = self.world.try_get_voxel(&p) {
-                                let material = voxel.material_index();
+                                let material = *voxel;
                                 self.test_voxel(origin, inv, p, material, best_t, best_material);
                             }
                         }
@@ -374,7 +374,7 @@ mod tests {
     use glam::{Mat4, Vec3};
 
     use super::*;
-    use crate::world::world::World;
+    use crate::world::World;
 
     /// A minimal world: a single voxel at (0, 0, 0) with material 1.
     fn single_voxel_world() -> World {

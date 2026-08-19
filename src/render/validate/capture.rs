@@ -19,7 +19,7 @@ use vulkano_taskgraph::{
     resource::ImageLayoutType,
 };
 
-use crate::region::render::RegionRenderContext;
+use crate::render::region::task::RegionRenderContext;
 
 pub struct CaptureTask {
     swapchain_id: Id<Swapchain>,

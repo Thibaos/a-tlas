@@ -3,19 +3,19 @@
 //! The input contract: the world hands the renderer Micro-chunk
 //! snapshots — {global coords, 64-byte Occupancy mask, u8 material indices} —
 //! one message for create, update, and removal (an emptied Micro-chunk
-//! re-snapshots with a zero mask). `crate::region::input`
+//! re-snapshots with a zero mask). `crate::render::region::feed`
 //! implements the contract (enqueue-only `submit_microchunk` / `submit_batch`,
 //! worker drain into per-Region mirrors); this module keeps the snapshot
 //! shape (the contract) and the minimal emitter, which the world side uses
-//! to voice its initial state as one `submit_batch` (the harness and tests
-//! do exactly that).
+//! to voice its initial state as one `submit_batch` (the validator and
+//! tests do exactly that).
 
 use std::collections::HashMap;
 
 use glam::IVec3;
 
-use crate::grid::{MICRO_CHUNK_EDGE, grid_origin};
-use crate::world::world::World;
+use crate::core::grid::{MICRO_CHUNK_EDGE, grid_origin};
+use crate::world::World;
 
 /// One Micro-chunk's occupancy: global coords (origin, a multiple of 8), the
 /// 512-bit Occupancy mask, and the u8 material indices of the occupied
@@ -25,7 +25,7 @@ use crate::world::world::World;
 /// within the Micro-chunk; the materials array follows the same increasing
 /// bit order and has exactly `popcount(mask)` entries. The bit order is the
 /// contract with the DDA in shaders/region/intersect.rint and the packer in
-/// `crate::region::pack` — no sentinel material exists (palette index 0 is a
+/// `crate::render::region::pack` — no sentinel material exists (palette index 0 is a
 /// real color); the mask defines which voxels exist.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MicroChunkSnapshot {
@@ -68,7 +68,7 @@ pub fn emit_snapshots(world: &World) -> Vec<MicroChunkSnapshot> {
         per_microchunk
             .entry(origin)
             .or_default()
-            .push((idx, voxel.material_index() as u8));
+            .push((idx, *voxel as u8));
     }
 
     let mut snapshots: Vec<MicroChunkSnapshot> = per_microchunk
@@ -103,7 +103,7 @@ pub fn emit_snapshots(world: &World) -> Vec<MicroChunkSnapshot> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::world::world::World;
+    use crate::world::World;
 
     /// Bit idx = x + 8*y + 64*z must round-trip through the mask bytes.
     #[test]

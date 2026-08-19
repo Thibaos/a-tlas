@@ -1,9 +1,7 @@
 use dot_vox::{DotVoxData, Rotation, SceneNode, Voxel};
 use glam::{IVec3, Mat4, UVec3, Vec3A, Vec3Swizzles};
 
-use crate::world::HostVoxel;
-
-use super::world::{BoundsPolicy, World};
+use super::{BoundsPolicy, World};
 
 pub struct SceneGraphTraverser<'a> {
     pub world: &'a mut World,
@@ -23,7 +21,7 @@ impl SceneGraphTraverser<'_> {
             for voxel in self.scene.models.iter().flat_map(|model| &model.voxels) {
                 if self.world.insert(
                     IVec3::new(voxel.x as i32, voxel.z as i32, voxel.y as i32),
-                    HostVoxel::new(voxel.i as u32),
+                    voxel.i as u32,
                     self.policy,
                 ) {
                     clipped += 1;

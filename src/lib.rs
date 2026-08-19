@@ -1,14 +1,8 @@
 pub mod app;
-mod composite;
-#[cfg(debug_assertions)]
-mod debug;
-mod grid;
-mod input;
-mod measure;
-mod physics;
-mod player;
-mod region;
-mod rt;
-mod schedule;
-pub mod validate;
+mod core;
+mod render;
 mod world;
+
+/// The offline correctness validator (`atlas-rt validate`), re-exported at
+/// the crate root.
+pub use render::validate;

@@ -1,89 +1,32 @@
-//! GPU measurement.
-//!
-//! The measurement closes the effort: correctness is proven
-//! at the frame seam, and performance is measured against the 16 ms gate.
-//! Per-stage GPU timestamps ([`QueryType::Timestamp`]) attribute the frame's
-//! GPU time:
-//!
-//! - **trace_rays** — the ray pass's GPU time, bracketed around the
-//!   `trace_rays` call in the render task (slots 2/3);
-//! - **flight** — the frame's whole GPU interval on the graphics queue,
-//!   bracketed around the render node's execution (slots 0/1 — the first
-//!   and last commands of the production path's frame work; the app-only
-//!   debug overlay, when present, draws after and is excluded);
-//! - **as rebuild** — the ordered rebuild nodes' GPU time (upload + BLAS +
-//!   TLAS), fed in from [`NodeTimings`](crate::region::rebuild::NodeTimings)
-//!   when a change cycle ran (0 otherwise).
-//!
-//! The [`Measurement`] accumulates one [`FrameSample`] per completed frame
-//! into a rolling ~60-frame window; the FPS log prints min/avg/p95 per
-//! stage. The **16 ms gate** is the GPU timestamp sum (`trace + rebuild`);
-//! the wall-clock frame interval is reported beside it — a wall-clock above
-//! 16 ms with a small GPU sum points at CPU/present-bound, a different fix
-//! than traversal.
+//! Host-side frame statistics: the measurement accumulator that owns the
+//! timestamp pool and the march-and-miss counter (the GPU contract lives in
+//! `render::measure`), and the rolling window of per-frame samples.
 //!
 //! The measurement runs **on demand**: only the app attaches a timestamp
 //! pool (`atlas-rt --measure`); the validator never constructs a
-//! [`Measurement`], so the harness's captured frames are bit-identical
-//! (no extra commands are recorded in the capture path).
+//! [`Measurement`], so its captured frames are bit-identical (no extra
+//! commands are recorded in the capture path).
 
 use std::sync::Arc;
 
 use vulkano::{
-    buffer::{Buffer, BufferCreateInfo, BufferUsage, Subbuffer},
-    memory::allocator::{AllocationCreateInfo, DeviceLayout, MemoryTypeFilter},
+    buffer::Subbuffer,
     query::{QueryPool, QueryPoolCreateInfo, QueryResultFlags, QueryType},
 };
-use vulkano_taskgraph::{descriptor_set::StorageBufferId, Id};
 
-use crate::{app::GpuStack, region::rebuild::NodeTimings};
+use crate::{
+    core::gpu::GpuStack,
+    render::{
+        measure::{
+            COUNTER_BYTES, CounterBuffer, CounterWords, FLIGHT_BEGIN_SLOT, FLIGHT_END_SLOT,
+            TIMESTAMP_SLOT_COUNT, TRACE_BEGIN_SLOT, TRACE_END_SLOT,
+        },
+        region::rebuild::NodeTimings,
+    },
+};
 
-/// The measurement window: min/avg/p95 over ~60 completed frames (the
-/// spec's ~60-frame readback).
+/// The measurement window: min/avg/p95 over ~60 completed frames.
 pub const MEASURE_WINDOW: usize = 60;
-
-/// The march-and-miss counter buffer: three uint words the DDA intersection
-/// shader increments by atomicAdd (word 0 = hull-crossed, word 1 =
-/// march-and-miss, word 2 = empty-and). Host-visible so the app reads it back
-/// each frame after the flight idle; the render task resets it with a fill
-/// each frame.
-#[derive(Clone, Copy)]
-pub struct CounterBuffer {
-    /// The buffer id the render task fills (reset) and the app reads back.
-    pub buffer_id: Id<Buffer>,
-    /// The bindless id pushed into the shader's push constants.
-    pub storage_id: StorageBufferId,
-}
-
-/// The three counter words the DDA shader writes, in buffer order (word 0 =
-/// hull-crossed, word 1 = march-and-miss, word 2 = empty-and). `repr(C)` keeps
-/// its size exactly the shader Counter block's byte size.
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-struct CounterWords {
-    hull_crossed: u32,
-    march_and_miss: u32,
-    empty_and: u32,
-}
-
-/// The counter buffer's byte size — derived from the word struct so a future
-/// fourth word cannot silently desync it from the shader Counter block.
-const COUNTER_BYTES: u64 = std::mem::size_of::<CounterWords>() as u64;
-
-// The query-pool slot layout (shared with the render task, which records
-// the writes; [`Measurement`] owns the pool and reads them back).
-/// The flight begin timestamp: the first command of the render node.
-pub const FLIGHT_BEGIN_SLOT: u32 = 0;
-/// The flight end timestamp: the last command of the render node (after
-/// `trace_rays` — the app-only debug overlay, when present, draws after and
-/// is excluded from "flight").
-pub const FLIGHT_END_SLOT: u32 = 1;
-/// The trace begin timestamp: immediately before `trace_rays`.
-pub const TRACE_BEGIN_SLOT: u32 = 2;
-/// The trace end timestamp: immediately after `trace_rays`.
-pub const TRACE_END_SLOT: u32 = 3;
-/// The pool's query count (two begin/end pairs).
-pub const TIMESTAMP_SLOT_COUNT: u32 = 4;
 
 /// One completed frame's measured GPU stages (nanoseconds).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -110,10 +53,9 @@ pub struct FrameSample {
 }
 
 impl FrameSample {
-    /// The 16 ms gate: the GPU timestamp sum (`trace_rays` + AS rebuilds).
-    /// The write-out is inside `trace_ns` (the ray pass writes the
-    /// swapchain storage image itself), so the sum is the renderer's whole
-    /// per-frame GPU budget.
+    /// The renderer's whole per-frame GPU budget: the timestamp sum
+    /// (`trace_rays` + AS rebuilds). The write-out is inside `trace_ns` (the
+    /// ray pass writes the swapchain storage image itself).
     pub fn gate_ns(&self) -> u64 {
         self.trace_ns.saturating_add(self.rebuild_ns)
     }
@@ -200,16 +142,18 @@ impl Measurement {
             let buffer_id = gpu
                 .resources
                 .create_buffer(
-                    &BufferCreateInfo {
-                        usage: BufferUsage::STORAGE_BUFFER | BufferUsage::TRANSFER_DST,
+                    &vulkano::buffer::BufferCreateInfo {
+                        usage: vulkano::buffer::BufferUsage::STORAGE_BUFFER
+                            | vulkano::buffer::BufferUsage::TRANSFER_DST,
                         ..Default::default()
                     },
-                    &AllocationCreateInfo {
-                        memory_type_filter: MemoryTypeFilter::PREFER_HOST
-                            | MemoryTypeFilter::HOST_RANDOM_ACCESS,
+                    &vulkano::memory::allocator::AllocationCreateInfo {
+                        memory_type_filter: vulkano::memory::allocator::MemoryTypeFilter::PREFER_HOST
+                            | vulkano::memory::allocator::MemoryTypeFilter::HOST_RANDOM_ACCESS,
                         ..Default::default()
                     },
-                    DeviceLayout::new_unsized::<[u8]>(COUNTER_BYTES).unwrap(),
+                    vulkano::memory::allocator::DeviceLayout::new_unsized::<[u8]>(COUNTER_BYTES)
+                        .unwrap(),
                 )
                 .unwrap();
             let storage_id = gpu
@@ -250,9 +194,9 @@ impl Measurement {
         self.pool.is_some()
     }
 
-    /// The change cycle's rebuild time,
-    /// attributed to the frame being assembled. A rebuild spike lands in
-    /// the AS-rebuild line, not in trace_rays.
+    /// The change cycle's rebuild time, attributed to the frame being
+    /// assembled. A rebuild spike lands in the AS-rebuild line, not in
+    /// trace_rays.
     pub fn record_rebuild(&mut self, timings: &NodeTimings) {
         if !timings.supported {
             return;
@@ -302,8 +246,8 @@ impl Measurement {
     }
 
     /// Prints the per-stage min/avg/p95 over the window into the FPS log,
-    /// with the 16 ms gate as
-    /// the GPU timestamp sum and the wall-clock beside it.
+    /// with the GPU timestamp sum (trace + as rebuild) and the wall-clock
+    /// beside it.
     pub fn print_log(&self) {
         let n = self.window.len();
         if n == 0 {
@@ -369,7 +313,7 @@ impl Measurement {
             stage(StageStats::from_samples(&flight))
         );
         println!(
-            "  gate (trace + as rebuild) {} ms | wall {} ms — 16 ms budget",
+            "  gate (trace + as rebuild) {} ms | wall {} ms",
             stage(StageStats::from_samples(&gate)),
             stage(StageStats::from_samples(&wall)),
         );

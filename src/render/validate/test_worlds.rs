@@ -590,7 +590,7 @@ fn materials_world() -> DotVoxData {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::world::{voxel::open_file, world::World};
+    use crate::world::{format::open_file, World};
 
     /// Writes a world to a unique temp file (tests run in parallel), loads it
     /// through the real loader, and returns the world.
@@ -628,7 +628,7 @@ mod tests {
         let world = load(transformed_world(&[(IVec3::new(256, 0, 0), 6)]));
         let voxel = world.get_voxel(&IVec3::new(256, 0, 0));
         assert!(voxel.is_some(), "expected voxel at (256, 0, 0)");
-        assert_eq!(voxel.unwrap().material_index(), 6);
+        assert_eq!(voxel.unwrap(), &6);
     }
 
     #[test]
@@ -666,7 +666,7 @@ mod tests {
     /// authored properties — the table decision's mapping (ADR 0008).
     #[test]
     fn materials_world_material_table_round_trips() {
-        use crate::world::voxel::{EMISSION_SCALE, get_material_table};
+        use crate::world::material::{EMISSION_SCALE, get_material_table};
 
         let dir = std::env::temp_dir().join("atlas-rt-test-worlds");
         let paths = generate_all(&dir).unwrap();

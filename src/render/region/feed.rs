@@ -11,8 +11,8 @@
 //! ([`RegionMirror`]) — deriving each Region id from the snapshot's global
 //! coords, never from the world — and publishes the dirty-Region set
 //! ([`RendererInput::take_dirty_regions`]). The renderer repacks mirrors
-//! through [`RegionData`] (see `crate::region::pack`) and feeds the Region
-//! pipeline.
+//! through [`RegionData`] (see `crate::render::region::pack`) and feeds the
+//! Region pipeline.
 //!
 //! Idle cost: with nothing pending, the worker blocks on the condvar — no
 //! polling, zero cost. Startup is one `submit_batch` (the world's initial
@@ -29,12 +29,9 @@ use std::{
 
 use glam::IVec3;
 
-use super::{
-    pack::{RegionData, pack_region},
-    snapshot::MicroChunkSnapshot,
-};
-
-use crate::grid::{assert_region_index_in_lattice, region_index_of};
+use super::pack::{RegionData, pack_region};
+use crate::core::grid::{assert_region_index_in_lattice, region_index_of};
+use crate::world::snapshot::MicroChunkSnapshot;
 
 /// One Region's CPU-side mirror: the authoritative per-Micro-chunk
 /// snapshot state, the source for wholesale pool re-packing. Empty
@@ -282,7 +279,7 @@ impl RendererInput {
     /// The dirty-Region set since the last call: every Region whose mirror
     /// changed (deduped, sorted). Empty between change cycles — the renderer
     /// does no work when nothing changed. Consumed by the residency manager
-    /// ([`crate::region::residency::RegionStore::apply`]); the harness
+    /// ([`crate::render::region::residency::RegionStore::apply`]); the validator
     /// rebuilds wholesale for now.
     pub fn take_dirty_regions(&self) -> Vec<IVec3> {
         let mut dirty = std::mem::take(&mut *self.queue.inner.applied_regions.lock().unwrap());
@@ -402,10 +399,10 @@ pub fn apply_snapshots(
 mod tests {
     use super::*;
     use crate::{
-        grid::{MICRO_CHUNK_EDGE, region_index_of},
-        region::pack::pack_regions,
-        region::snapshot::emit_snapshots,
-        world::world::World,
+        core::grid::{MICRO_CHUNK_EDGE, region_index_of},
+        render::region::pack::pack_regions,
+        world::snapshot::emit_snapshots,
+        world::World,
     };
 
     /// Builds a snapshot for one Micro-chunk from (bit index, material) cells.

@@ -30,19 +30,25 @@ use vulkano_taskgraph::{
 };
 
 use crate::{
-    app::GpuStack,
-    grid::{REGION_EDGE, region_id},
-    region::{
-        input::RendererInput,
-        pack::{REGION_COUNT, RegionData},
-        rebuild::{
-            BlasBuild, NodeTimings, RebuildGraph, RebuildLogEntry, RebuildPlan, RegionUpload,
-            TlasBuild, allocate_scratch, blas_build_sizes, tlas_build_sizes,
+    core::gpu::GpuStack,
+    core::grid::{REGION_EDGE, region_id},
+    render::{
+        accel,
+        region::{
+            alloc::{
+                AllocStats, BlasAllocation, FreedBlas, FreedPool, FreeLists, PendingFrees,
+                allocate_blas, allocate_pool,
+            },
+            feed::RendererInput,
+            pack::{REGION_COUNT, RegionData},
+            rebuild::{
+                BlasBuild, NodeTimings, RebuildGraph, RebuildLogEntry, RebuildPlan, RegionUpload,
+                TlasBuild, allocate_scratch, blas_build_sizes, tlas_build_sizes,
+            },
+            task::capture_raygen,
         },
-        render::capture_raygen,
     },
-    rt::acceleration_structure,
-    world::voxel::{get_material_table, get_palette},
+    world::{format::get_palette, material::get_material_table},
 };
 
 /// One resident Region's GPU resources plus its allocation capacities.
@@ -62,45 +68,6 @@ struct ResidentRegion {
     blas: Arc<AccelerationStructure>,
     /// The BLAS storage size (free-list reuse unit).
     blas_storage_size: u64,
-}
-
-/// A freed pool buffer awaiting reuse (capacity = allocation size).
-struct FreedPool {
-    buffer_id: Id<Buffer>,
-    capacity: u64,
-}
-
-/// A freed (AABB buffer + BLAS storage) pair awaiting reuse.
-struct FreedBlas {
-    aabb_buffer_id: Id<Buffer>,
-    aabb_capacity: u32,
-    blas: Arc<AccelerationStructure>,
-    blas_storage_size: u64,
-}
-
-/// The reusable free lists: memory whose referencing TLAS instance was
-/// dropped by an executed rebuild.
-#[derive(Default)]
-struct FreeLists {
-    pools: Vec<FreedPool>,
-    blas: Vec<FreedBlas>,
-}
-
-/// Memory freed by the current change cycle, not yet reusable: the rebuild
-/// that dropped the referencing instance must execute.
-#[derive(Default)]
-struct PendingFrees {
-    pools: Vec<FreedPool>,
-    blas: Vec<FreedBlas>,
-}
-
-/// Allocation probes (harness/tests): fresh allocations vs free-list reuse.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct AllocStats {
-    pub pool_allocations: u64,
-    pub pool_reuses: u64,
-    pub blas_allocations: u64,
-    pub blas_reuses: u64,
 }
 
 /// The outcome of one change cycle ([`RegionStore::apply`]).
@@ -134,35 +101,6 @@ pub struct ApplyReport {
     pub instance_count: usize,
 }
 
-/// Best-fit allocation: removes the smallest entry with capacity ≥ `needed`
-/// (pure — unit-tested). `None` means allocate fresh.
-fn take_best_fit<T>(entries: &mut Vec<T>, needed: u64, capacity: impl Fn(&T) -> u64) -> Option<T> {
-    let mut best: Option<(usize, u64)> = None;
-    for (i, entry) in entries.iter().enumerate() {
-        let cap = capacity(entry);
-        if cap >= needed && best.is_none_or(|(_, c)| cap < c) {
-            best = Some((i, cap));
-        }
-    }
-    best.map(|(i, _)| entries.swap_remove(i))
-}
-
-/// The pool allocation for one Region (fresh or free-list reused).
-struct PoolAllocation {
-    buffer_id: Id<Buffer>,
-    capacity: u64,
-}
-
-/// The BLAS allocation for one Region: the AABB build-input buffer plus,
-/// when reused, the existing AS storage to build into.
-struct BlasAllocation {
-    aabb_buffer_id: Id<Buffer>,
-    aabb_capacity: u32,
-    /// `Some((as, storage_size))` when reused from the free list (build in
-    /// place); `None` when fresh (create storage + build).
-    as_storage: Option<(Arc<AccelerationStructure>, u64)>,
-}
-
 /// The full static lattice's GPU side: 4096 Region slots (12-bit id), the
 /// free lists, the instance set and the stable TLAS.
 pub struct RegionStore {
@@ -180,7 +118,7 @@ pub struct RegionStore {
     pub palette_storage_id: StorageBufferId,
     /// The bindless Material table (ADR 0008): one entry per palette index
     /// (albedo+metallic / emission+roughness), uploaded once at startup — the
-    /// GPU twin of `world::voxel::get_material_table`'s mirror. Read by the
+    /// GPU twin of `world::material::get_material_table`'s mirror. Read by the
     /// DDA closest-hit (surface color — albedo == palette, so the byte-exact
     /// capture path is unchanged) and the production raygen in Voxel mode.
     pub material_table_storage_id: StorageBufferId,
@@ -286,7 +224,7 @@ impl RegionStore {
         // The Material table (ADR 0008): one entry per palette index, packed
         // as two vec4[256] columns — albedo.rgb+metallic and
         // emission.rgb+roughness — uploaded once at startup from the CPU
-        // mirror (`world::voxel::get_material_table`, the single source of
+        // mirror (`world::material::get_material_table`, the single source of
         // truth). Beside the Palette, bindless like it.
         let material_table_buffer_id = gpu
             .resources
@@ -361,7 +299,7 @@ impl RegionStore {
         let instance_subbuffer =
             Subbuffer::new(gpu.resources.buffer(instance_buffer_id).buffer().clone())
                 .cast_aligned::<AccelerationStructureInstance>();
-        let (tlas, tlas_storage_size) = acceleration_structure::create_tlas_storage(
+        let (tlas, tlas_storage_size) = accel::create_tlas_storage(
             &instance_subbuffer,
             REGION_COUNT as u32,
             gpu.memory_allocator.clone(),
@@ -398,7 +336,7 @@ impl RegionStore {
                             rough_emit,
                         };
                     *tcx.write_buffer::<capture_raygen::Scene>(scene_buffer_id, ..) =
-                        crate::region::render::default_scene();
+                        crate::render::region::task::default_scene();
                     Ok(())
                 },
                 [
@@ -671,8 +609,18 @@ impl RegionStore {
                 // builds into it in place — the AS object and its device
                 // address never move after creation.
                 (false, Some(pack)) => {
-                    let pool = self.allocate_pool(gpu, pack.blocks.len() as u64);
-                    let blas_alloc = self.allocate_blas(gpu, pack.aabbs.len() as u32);
+                    let pool = allocate_pool(
+                        gpu,
+                        &mut self.free,
+                        &mut self.alloc_stats,
+                        pack.blocks.len() as u64,
+                    );
+                    let blas_alloc = allocate_blas(
+                        gpu,
+                        &mut self.free,
+                        &mut self.alloc_stats,
+                        pack.aabbs.len() as u32,
+                    );
 
                     let aabb_count = pack.aabbs.len() as u32;
                     let aabb_buffer = Subbuffer::new(
@@ -760,10 +708,17 @@ impl RegionStore {
                     let blas_grows =
                         self.regions[id].as_ref().unwrap().aabb_capacity < pack.aabbs.len() as u32;
 
-                    let new_pool =
-                        pool_grows.then(|| self.allocate_pool(gpu, pack.blocks.len() as u64));
-                    let new_blas =
-                        blas_grows.then(|| self.allocate_blas(gpu, pack.aabbs.len() as u32));
+                    let new_pool = pool_grows.then(|| {
+                        allocate_pool(
+                            gpu,
+                            &mut self.free,
+                            &mut self.alloc_stats,
+                            pack.blocks.len() as u64,
+                        )
+                    });
+                    let new_blas = blas_grows.then(|| {
+                        allocate_blas(gpu, &mut self.free, &mut self.alloc_stats, pack.aabbs.len() as u32)
+                    });
                     let mut blas_replacement: Option<BlasAllocation> = None;
 
                     if let Some(pool) = new_pool {
@@ -942,79 +897,6 @@ impl RegionStore {
         packed_prefix(&self.instances, &self.resident_ids, self.dummy_instance())
     }
 
-    /// Allocates a pool buffer (best-fit from the free lists, else fresh).
-    fn allocate_pool(&mut self, gpu: &GpuStack, needed: u64) -> PoolAllocation {
-        if let Some(freed) = take_best_fit(&mut self.free.pools, needed, |f| f.capacity) {
-            self.alloc_stats.pool_reuses += 1;
-            PoolAllocation {
-                buffer_id: freed.buffer_id,
-                capacity: freed.capacity,
-            }
-        } else {
-            let buffer_id = gpu
-                .resources
-                .create_buffer(
-                    &BufferCreateInfo {
-                        usage: BufferUsage::SHADER_DEVICE_ADDRESS | BufferUsage::STORAGE_BUFFER,
-                        ..Default::default()
-                    },
-                    &AllocationCreateInfo {
-                        memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
-                            | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
-                        ..Default::default()
-                    },
-                    DeviceLayout::new_unsized::<[u8]>(needed).unwrap(),
-                )
-                .unwrap();
-            self.alloc_stats.pool_allocations += 1;
-            PoolAllocation {
-                buffer_id,
-                capacity: needed,
-            }
-        }
-    }
-
-    /// Allocates a (AABB buffer, BLAS storage) pair (best-fit reuse first).
-    fn allocate_blas(&mut self, gpu: &GpuStack, aabb_count: u32) -> BlasAllocation {
-        if let Some(freed) = take_best_fit(&mut self.free.blas, aabb_count as u64, |f| {
-            f.aabb_capacity as u64
-        }) {
-            self.alloc_stats.blas_reuses += 1;
-            BlasAllocation {
-                aabb_buffer_id: freed.aabb_buffer_id,
-                aabb_capacity: freed.aabb_capacity,
-                as_storage: Some((freed.blas, freed.blas_storage_size)),
-            }
-        } else {
-            let aabb_buffer_id = gpu
-                .resources
-                .create_buffer(
-                    &BufferCreateInfo {
-                        // STORAGE_BUFFER lets the debug Hull shader read the
-                        // trimmed hulls back as a buffer_reference; the DDA
-                        // path (AS build input + device address) is unchanged.
-                        usage: BufferUsage::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY
-                            | BufferUsage::SHADER_DEVICE_ADDRESS
-                            | BufferUsage::STORAGE_BUFFER,
-                        ..Default::default()
-                    },
-                    &AllocationCreateInfo {
-                        memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
-                            | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
-                        ..Default::default()
-                    },
-                    DeviceLayout::new_unsized::<[AabbPositions]>(aabb_count as u64).unwrap(),
-                )
-                .unwrap();
-            self.alloc_stats.blas_allocations += 1;
-            BlasAllocation {
-                aabb_buffer_id,
-                aabb_capacity: aabb_count,
-                as_storage: None,
-            }
-        }
-    }
-
     /// The never-hit dummy instance (mask 0 → culled by the hardware).
     fn dummy_instance(&self) -> AccelerationStructureInstance {
         AccelerationStructureInstance {
@@ -1059,7 +941,7 @@ fn resolve_blas_storage(
 ) -> (Arc<AccelerationStructure>, u64) {
     match &alloc.as_storage {
         Some((blas, storage_size)) => (blas.clone(), *storage_size),
-        None => acceleration_structure::create_blas_aabbs_storage(
+        None => accel::create_blas_aabbs_storage(
             aabb_buffer,
             aabb_count,
             gpu.memory_allocator.clone(),
@@ -1167,7 +1049,7 @@ fn create_dummy_blas(gpu: &GpuStack) -> Arc<AccelerationStructure> {
     )
     .expect("dummy AABB buffer creation failed");
 
-    acceleration_structure::build_blas_aabbs_fresh(
+    accel::build_blas_aabbs_fresh(
         buffer,
         1,
         gpu.memory_allocator.clone(),
@@ -1182,60 +1064,6 @@ fn create_dummy_blas(gpu: &GpuStack) -> Arc<AccelerationStructure> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// The free list hands out the smallest entry that fits (best-fit), and
-    /// never an entry too small.
-    #[test]
-    fn free_list_best_fit() {
-        let invalid = Id::INVALID;
-        let mut pools = vec![
-            FreedPool {
-                buffer_id: invalid,
-                capacity: 100,
-            },
-            FreedPool {
-                buffer_id: invalid,
-                capacity: 8,
-            },
-            FreedPool {
-                buffer_id: invalid,
-                capacity: 200,
-            },
-        ];
-
-        let taken = take_best_fit(&mut pools, 64, |f| f.capacity).unwrap();
-        assert_eq!(taken.capacity, 100, "smallest fitting entry wins");
-        assert_eq!(pools.len(), 2);
-
-        // Nothing big enough: None, the list is untouched.
-        assert!(take_best_fit(&mut pools, 500, |f| f.capacity).is_none());
-        assert_eq!(pools.len(), 2);
-
-        // An exact fit is preferred over a larger one.
-        let taken = take_best_fit(&mut pools, 8, |f| f.capacity).unwrap();
-        assert_eq!(taken.capacity, 8);
-    }
-
-    /// Pending frees are not reusable until released (the ordering invariant
-    /// at the list level: allocation only sees the released lists).
-    #[test]
-    fn pending_frees_release_into_reusable_lists() {
-        let mut pending = PendingFrees::default();
-        pending.pools.push(FreedPool {
-            buffer_id: Id::INVALID,
-            capacity: 64,
-        });
-
-        // Not yet released: allocation cannot see it.
-        let mut free = FreeLists::default();
-        assert!(take_best_fit(&mut free.pools, 64, |f| f.capacity).is_none());
-
-        // Release (after the dropping rebuild executed) → reusable.
-        free.pools.append(&mut pending.pools);
-        let taken = take_best_fit(&mut free.pools, 64, |f| f.capacity).unwrap();
-        assert_eq!(taken.capacity, 64);
-        assert!(pending.pools.is_empty());
-    }
 
     /// Every Region id in the full ±2048/axis lattice (16^3 = 4096 Regions)
     /// fits the 12-bit budget and is unique.

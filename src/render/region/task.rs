@@ -9,7 +9,7 @@
 //!
 //! All per-Region GPU state — voxel pools, procedural AABB BLASes, the
 //! lattice-static instance set and the stable TLAS — lives in
-//! [`RegionStore`](crate::region::residency::RegionStore). The render task
+//! [`RegionStore`](crate::render::region::residency::RegionStore). The render task
 //! only holds the ids the push constants and the task graph need; the store
 //! keeps the buffers alive across rebuilds.
 
@@ -37,12 +37,14 @@ use vulkano_taskgraph::{
 };
 
 use crate::{
-    app::GpuStack,
-    measure::{
-        CounterBuffer, FLIGHT_BEGIN_SLOT, FLIGHT_END_SLOT, TIMESTAMP_SLOT_COUNT, TRACE_BEGIN_SLOT,
-        TRACE_END_SLOT,
+    core::gpu::GpuStack,
+    render::{
+        measure::{
+            CounterBuffer, FLIGHT_BEGIN_SLOT, FLIGHT_END_SLOT, TIMESTAMP_SLOT_COUNT,
+            TRACE_BEGIN_SLOT, TRACE_END_SLOT,
+        },
+        region::residency::RegionStore,
     },
-    region::residency::RegionStore,
 };
 
 pub(crate) mod capture_raygen {
@@ -266,7 +268,7 @@ pub struct RegionRenderTask {
     /// frame's GPU time is attributed per stage — the pool is reset at the
     /// top of the frame, then flight begin / trace begin-end / flight end
     /// timestamps are written around the node and the `trace_rays` call
-    /// (slot layout in [`crate::measure`]). `None` (the validator's path)
+    /// (slot layout in [`crate::render::measure`]). `None` (the validator's path)
     /// records nothing — the harness's captured frames are bit-identical.
     timestamps: Option<Arc<QueryPool>>,
     /// The march-and-miss counter buffer (reset with a fill + pushed each

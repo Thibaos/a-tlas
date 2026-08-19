@@ -17,8 +17,8 @@ use std::collections::HashMap;
 use glam::IVec3;
 use vulkano::acceleration_structure::AabbPositions;
 
-use super::snapshot::MicroChunkSnapshot;
-use crate::grid::{MICRO_CHUNK_EDGE, REGION_EDGE, region_id, region_index_of};
+use crate::core::grid::{MICRO_CHUNK_EDGE, REGION_EDGE, region_id, region_index_of};
+use crate::world::snapshot::MicroChunkSnapshot;
 
 /// The number of Micro-chunks per Region: 32^3 = 32768.
 pub const MICRO_CHUNKS_PER_REGION: usize = 32 * 32 * 32;
@@ -46,7 +46,7 @@ pub struct RegionData {
     /// The typed mirror of the table serialized at the start of [`blocks`]
     /// (the pool layout). Production reads `blocks`; tests assert on the
     /// typed table, and the input contract's change path packs
-    /// through it via [`RegionMirror::pack`](crate::region::input::RegionMirror).
+    /// through it via [`RegionMirror::pack`](crate::render::region::feed::RegionMirror).
     #[cfg_attr(not(test), allow(dead_code))]
     pub offset_table: Vec<u32>,
     /// The pool bytes: the offset table followed by 8-aligned compact blocks
@@ -92,7 +92,7 @@ pub fn pack_regions(snapshots: &[MicroChunkSnapshot]) -> Vec<RegionData> {
 /// Packs one Region's snapshots into a pool + trimmed hulls. A snapshot's
 /// global coords must fall inside this Region (its micro-chunk origin is
 /// within the Region's extent). Exposed for the input contract's
-/// [`RegionMirror::pack`](crate::region::input::RegionMirror).
+/// [`RegionMirror::pack`](crate::render::region::feed::RegionMirror).
 pub(crate) fn pack_region(region_index: IVec3, snapshots: &[&MicroChunkSnapshot]) -> RegionData {
     let region_origin = region_index * REGION_EDGE;
 
@@ -179,9 +179,9 @@ fn occupied_cell_bounds(mask: &[u8; 64]) -> (IVec3, IVec3) {
 mod tests {
     use super::*;
     use crate::{
-        grid::{MICRO_CHUNK_EDGE, region_index_of},
-        region::snapshot::emit_snapshots,
-        world::world::World,
+        core::grid::{MICRO_CHUNK_EDGE, region_index_of},
+        world::snapshot::emit_snapshots,
+        world::World,
     };
 
     /// A world with voxels in two Regions (x = 255 in Region 0, x = 256 in
