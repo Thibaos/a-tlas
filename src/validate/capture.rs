@@ -98,3 +98,85 @@ impl Task for CaptureTask {
         Ok(())
     }
 }
+
+/// The shading-half capture task (ticket 07): copies the production ray
+/// pass's radiance pair (diffuse + specular RGBA16F) and the albedo+metalness
+/// aux (RGBA8) into host-readable buffers after each path-traced frame, so
+/// the validator can accumulate the per-pixel means the CPU mirror is diffed
+/// against. The geometry half's [`CaptureTask`] is unchanged — the byte-exact
+/// {color, t} comparison keeps the capture raygen's output.
+pub struct PathCaptureTask {
+    diff_image_id: Id<Image>,
+    spec_image_id: Id<Image>,
+    albedo_image_id: Id<Image>,
+    pub diff_readback_buffer_id: Id<Buffer>,
+    pub spec_readback_buffer_id: Id<Buffer>,
+    pub albedo_readback_buffer_id: Id<Buffer>,
+    width: u32,
+    height: u32,
+}
+
+impl PathCaptureTask {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        diff_image_id: Id<Image>,
+        spec_image_id: Id<Image>,
+        albedo_image_id: Id<Image>,
+        diff_readback_buffer_id: Id<Buffer>,
+        spec_readback_buffer_id: Id<Buffer>,
+        albedo_readback_buffer_id: Id<Buffer>,
+        width: u32,
+        height: u32,
+    ) -> Self {
+        Self {
+            diff_image_id,
+            spec_image_id,
+            albedo_image_id,
+            diff_readback_buffer_id,
+            spec_readback_buffer_id,
+            albedo_readback_buffer_id,
+            width,
+            height,
+        }
+    }
+}
+
+impl Task for PathCaptureTask {
+    type World = RegionRenderContext;
+
+    unsafe fn execute(
+        &self,
+        cbf: &mut RecordingCommandBuffer<'_>,
+        _tcx: &mut TaskContext<'_>,
+        _rcx: &Self::World,
+    ) -> TaskResult {
+        let region = TgBufferImageCopy {
+            image_subresource: ImageSubresourceLayers {
+                aspects: ImageAspects::COLOR,
+                mip_level: 0,
+                base_array_layer: 0,
+                layer_count: Some(1),
+            },
+            image_extent: [self.width, self.height, 1],
+            ..Default::default()
+        };
+
+        for (src, dst) in [
+            (self.diff_image_id, self.diff_readback_buffer_id),
+            (self.spec_image_id, self.spec_readback_buffer_id),
+            (self.albedo_image_id, self.albedo_readback_buffer_id),
+        ] {
+            unsafe {
+                cbf.copy_image_to_buffer(&TgCopyInfo {
+                    src_image: src,
+                    src_image_layout: ImageLayoutType::General,
+                    dst_buffer: dst,
+                    regions: std::slice::from_ref(&region),
+                    ..Default::default()
+                })
+            };
+        }
+
+        Ok(())
+    }
+}

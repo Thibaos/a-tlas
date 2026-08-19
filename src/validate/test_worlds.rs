@@ -22,7 +22,10 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use dot_vox::{Color, Dict, DotVoxData, Frame, Material as VoxMaterial, Model, SceneNode, ShapeModel, Size, Voxel};
+use dot_vox::{
+    Color, Dict, DotVoxData, Frame, Material as VoxMaterial, Model, SceneNode, ShapeModel, Size,
+    Voxel,
+};
 use glam::IVec3;
 
 pub const TEST_WORLDS_DIR: &str = "assets/test";
@@ -30,7 +33,7 @@ pub const TEST_WORLDS_DIR: &str = "assets/test";
 /// A fixed camera for a test world — part of the validator's camera inputs,
 /// shared verbatim by the GPU ray pass and the reference tracer.
 #[derive(Clone, Copy, Debug)]
-pub struct CameraSpec {
+pub struct Camera {
     pub eye: [f32; 3],
     pub target: [f32; 3],
     pub up: [f32; 3],
@@ -38,7 +41,7 @@ pub struct CameraSpec {
 
 /// A `None` camera means "frame the world's bounding box" (used by the smoke
 /// world).
-pub type WorldCamera = Option<CameraSpec>;
+pub type WorldCamera = Option<Camera>;
 
 pub struct WorldSpec {
     pub name: String,
@@ -103,7 +106,7 @@ pub fn test_suite() -> Vec<WorldSpec> {
             name: "nuke-down".to_string(),
             path: "assets/nuke.vox".to_string(),
             description: "nuke.vox, the app's default camera looking straight down (pitch clamped at -pi/2 + 0.01) — dense multi-Region depth-sorting regression".to_string(),
-            camera: Some(CameraSpec {
+            camera: Some(Camera {
                 eye: [-16.0, 620.0, -16.0],
                 target: [-16.0, 619.0, -16.01],
                 up: [0.0, 0.01, -1.0],
@@ -114,7 +117,7 @@ pub fn test_suite() -> Vec<WorldSpec> {
             name: "single".to_string(),
             path: "assets/test/single.vox".to_string(),
             description: "a single voxel at the origin (known-good minimal case)".to_string(),
-            camera: Some(CameraSpec {
+            camera: Some(Camera {
                 eye: [-6.0, 2.0, 6.0],
                 target: [0.0, 0.0, 0.0],
                 up: [0.0, 1.0, 0.0],
@@ -125,7 +128,7 @@ pub fn test_suite() -> Vec<WorldSpec> {
             name: "palette-zero".to_string(),
             path: "assets/test/palette-zero.vox".to_string(),
             description: "voxels with material index 0 — palette index 0 is a real color, and the 8-bit hitKind must carry it (no sentinel material)".to_string(),
-            camera: Some(CameraSpec {
+            camera: Some(Camera {
                 eye: [-6.0, 2.0, 6.0],
                 target: [0.0, 0.0, 0.0],
                 up: [0.0, 1.0, 0.0],
@@ -136,7 +139,7 @@ pub fn test_suite() -> Vec<WorldSpec> {
             name: "hollow-box".to_string(),
             path: "assets/test/hollow-box.vox".to_string(),
             description: "a hollow 12x12x12 box, empty interior (known-good case)".to_string(),
-            camera: Some(CameraSpec {
+            camera: Some(Camera {
                 eye: [-16.0, 5.0, 16.0],
                 target: [5.5, 5.5, 5.5],
                 up: [0.0, 1.0, 0.0],
@@ -147,7 +150,7 @@ pub fn test_suite() -> Vec<WorldSpec> {
             name: "solid-cube".to_string(),
             path: "assets/test/solid-cube.vox".to_string(),
             description: "a solid 12x12x12 cube with the camera inside — interior voxels (no exposed face) render through the DDA, not a hollow shell; every ray commits the enclosing voxel at t_min".to_string(),
-            camera: Some(CameraSpec {
+            camera: Some(Camera {
                 eye: [6.5, 6.5, 6.5],
                 target: [7.0, 6.5, 6.5],
                 up: [0.0, 1.0, 0.0],
@@ -158,7 +161,7 @@ pub fn test_suite() -> Vec<WorldSpec> {
             name: "hull-empty".to_string(),
             path: "assets/test/hull-empty.vox".to_string(),
             description: "two voxels with empty space between (empty space is background, no ghost geometry)".to_string(),
-            camera: Some(CameraSpec {
+            camera: Some(Camera {
                 eye: [20.0, 4.0, 9.0],
                 target: [20.0, 0.0, 0.0],
                 up: [0.0, 1.0, 0.0],
@@ -169,7 +172,7 @@ pub fn test_suite() -> Vec<WorldSpec> {
             name: "boundaries".to_string(),
             path: "assets/test/boundaries.vox".to_string(),
             description: "voxels at Micro-chunk (8) and Region (256) boundaries".to_string(),
-            camera: Some(CameraSpec {
+            camera: Some(Camera {
                 eye: [-40.0, 1.0, 10.0],
                 target: [150.0, 0.0, 0.0],
                 up: [0.0, 1.0, 0.0],
@@ -180,7 +183,7 @@ pub fn test_suite() -> Vec<WorldSpec> {
             name: "camera-in-voxel".to_string(),
             path: "assets/test/camera-in-voxel.vox".to_string(),
             description: "camera inside a solid voxel — the DDA commits the enclosing voxel at t_min (the old triangle-per-voxel driver reported the AABB exit t; the DDA path fixes it)".to_string(),
-            camera: Some(CameraSpec {
+            camera: Some(Camera {
                 eye: [0.2, 0.2, 0.2],
                 target: [1.0, 0.2, 0.2],
                 up: [0.0, 1.0, 0.0],
@@ -191,7 +194,7 @@ pub fn test_suite() -> Vec<WorldSpec> {
             name: "far-miss".to_string(),
             path: "assets/test/far-miss.vox".to_string(),
             description: "camera looking away from the only voxel (everything is background)".to_string(),
-            camera: Some(CameraSpec {
+            camera: Some(Camera {
                 eye: [0.0, 0.0, 12.0],
                 target: [0.0, 0.0, 30.0],
                 up: [0.0, 1.0, 0.0],
@@ -202,7 +205,7 @@ pub fn test_suite() -> Vec<WorldSpec> {
             name: "edit-seam".to_string(),
             path: "assets/test/edit-seam.vox".to_string(),
             description: "three voxels in a line; after the first frame the middle Micro-chunk (8,0,0) is removed through the input contract (zero-mask snapshot) and the second frame must match the edited world".to_string(),
-            camera: Some(CameraSpec {
+            camera: Some(Camera {
                 eye: [-14.0, 1.0, 6.0],
                 target: [10.0, 0.0, 0.0],
                 up: [0.0, 1.0, 0.0],
@@ -219,7 +222,7 @@ pub fn test_suite() -> Vec<WorldSpec> {
             name: "multi-region".to_string(),
             path: "assets/test/multi-region.vox".to_string(),
             description: "a 3x3 cluster per Region along +x (Regions (-1,0,0)..(3,0,0)) — negative and multi-Region occupancy through the full lattice".to_string(),
-            camera: Some(CameraSpec {
+            camera: Some(Camera {
                 eye: [-160.0, 25.0, 60.0],
                 target: [380.0, 0.0, 15.0],
                 up: [0.0, 1.0, 0.0],
@@ -230,7 +233,7 @@ pub fn test_suite() -> Vec<WorldSpec> {
             name: "materials".to_string(),
             path: "assets/test/materials.vox".to_string(),
             description: "a strip of voxels with known MATL-chunk Material properties (defaults, metallic, roughness, emissive) — the Material table (ADR 0008): its albedo column must equal the palette for the byte-exact capture path, so this world doubles as the invariant guard (GPU reads the table, the CPU reference reads the palette — any divergence fails the diff)".to_string(),
-            camera: Some(CameraSpec {
+            camera: Some(Camera {
                 eye: [-8.0, 2.0, 8.0],
                 target: [4.0, 0.0, 0.0],
                 up: [0.0, 1.0, 0.0],
@@ -241,7 +244,7 @@ pub fn test_suite() -> Vec<WorldSpec> {
             name: "residency".to_string(),
             path: "assets/test/residency.vox".to_string(),
             description: "a 2x2x2 cube per Region along +x (Regions (0,0,0)..(2,0,0)); after the first frame Region (1,0,0) is emptied through the contract (left residency), then re-populated (became resident again) — both frames must match the reference".to_string(),
-            camera: Some(CameraSpec {
+            camera: Some(Camera {
                 eye: [-90.0, 25.0, 45.0],
                 target: [256.0, 1.0, 1.0],
                 up: [0.0, 1.0, 0.0],
@@ -702,7 +705,10 @@ mod tests {
                 );
             }
         }
-        assert_eq!(table[6].metallic, 0.0, "emissive materials are dielectrics by default");
+        assert_eq!(
+            table[6].metallic, 0.0,
+            "emissive materials are dielectrics by default"
+        );
         assert_eq!(table[6].roughness, 0.3);
     }
 

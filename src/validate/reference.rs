@@ -51,8 +51,8 @@ pub enum VoxelShape {
 pub struct CameraInputs {
     view_inverse: Mat4,
     proj_inverse: Mat4,
-    width: u32,
-    height: u32,
+    pub width: u32,
+    pub height: u32,
     pub t_min: f32,
     pub t_max: f32,
 }

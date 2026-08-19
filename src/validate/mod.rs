@@ -54,20 +54,27 @@ use crate::{
         snapshot::{MicroChunkSnapshot, emit_snapshots},
     },
     validate::{
-        capture::CaptureTask,
+        capture::{CaptureTask, PathCaptureTask},
         compare::{CompareConfig, CompareReport, compare},
+        path_compare::{PathCompareConfig, PathCompareReport, compare_path},
+        path_tracer::{PathRender, PathTracer, render_path},
         reference::{CameraInputs, ReferenceTracer, VoxelShape, render_reference},
-        report::{build_diff_image, write_png, write_text_report},
-        test_worlds::{CameraSpec, WorldSpec, all_worlds, generate_all},
+        report::{
+            build_diff_image, build_path_diff_image, tone_map_rgba, write_path_report, write_png,
+            write_text_report,
+        },
+        test_worlds::{Camera, WorldSpec, all_worlds, generate_all},
     },
     world::{
-        voxel::{get_palette, open_file},
+        voxel::{get_material_table, get_palette, open_file},
         world::World,
     },
 };
 
 pub mod capture;
 pub mod compare;
+pub mod path_compare;
+pub mod path_tracer;
 pub mod reference;
 pub mod report;
 pub mod test_worlds;
@@ -85,6 +92,13 @@ pub struct ValidateOptions {
     pub gen_test_worlds: bool,
     pub list: bool,
     pub help: bool,
+    /// The shading-half diff's sample count (ticket 07): the GPU runs N
+    /// frames at frame_seed 0..N-1 (1 path per pixel per frame) and the CPU
+    /// mirror computes the same N samples from the same seeds; the per-pixel
+    /// means are compared with tolerance.
+    pub path_trace_samples: u32,
+    /// Disable the shading-half diff (geometry-only run).
+    pub no_path_trace: bool,
 }
 
 impl Default for ValidateOptions {
@@ -97,6 +111,8 @@ impl Default for ValidateOptions {
             gen_test_worlds: false,
             list: false,
             help: false,
+            path_trace_samples: 8,
+            no_path_trace: false,
         }
     }
 }
@@ -123,6 +139,17 @@ pub struct PassSummary {
     pub frames: Vec<FrameSummary>,
 }
 
+/// Result of one world's shading-half diff (ticket 07): the CPU path-tracer
+/// mirror vs the captured GPU radiance pair, per-pixel means over N
+/// identical-seed samples.
+pub struct PathPassSummary {
+    pub name: String,
+    pub pass: bool,
+    pub mismatches: usize,
+    pub hard_mismatches: usize,
+    pub samples: u32,
+}
+
 pub fn print_help() {
     println!(
         "atlas-rt correctness validator\n\
@@ -140,6 +167,11 @@ pub fn print_help() {
          \x20 --out <dir>          Report output directory (default: {DEFAULT_OUT_DIR})\n\
          \x20 --width <n>          Frame width  (default {DEFAULT_WIDTH})\n\
          \x20 --height <n>         Frame height (default {DEFAULT_HEIGHT})\n\
+         \x20 --path-trace-samples <n>  Shading-half diff sample count\n\
+         \x20                      (default 8: the GPU runs N frames at\n\
+         \x20                      frame_seed 0..N-1, the CPU mirror N\n\
+         \x20                      identical-seed samples; means compared)\n\
+         \x20 --no-path-trace      Skip the shading-half diff (geometry only)\n\
          \x20 --gen-test-worlds    (Re)write the hand-authored test worlds to\n\
          \x20                      assets/test/ and exit\n\
          \x20 --list               List the suite and exit\n\
@@ -183,6 +215,15 @@ pub fn parse_args(args: &[String]) -> Result<ValidateOptions, String> {
             }
             "--gen-test-worlds" => opts.gen_test_worlds = true,
             "--list" => opts.list = true,
+            "--path-trace-samples" => {
+                let value = iter
+                    .next()
+                    .ok_or_else(|| "--path-trace-samples requires a number".to_string())?;
+                opts.path_trace_samples = value
+                    .parse()
+                    .map_err(|_| format!("invalid --path-trace-samples: {value}"))?;
+            }
+            "--no-path-trace" => opts.no_path_trace = true,
             "--help" | "-h" => opts.help = true,
             other => return Err(format!("unknown argument: {other}")),
         }
@@ -190,6 +231,10 @@ pub fn parse_args(args: &[String]) -> Result<ValidateOptions, String> {
 
     if opts.width == 0 || opts.height == 0 {
         return Err("--width and --height must be nonzero".to_string());
+    }
+
+    if opts.path_trace_samples == 0 {
+        return Err("--path-trace-samples must be nonzero".to_string());
     }
 
     Ok(opts)
@@ -261,6 +306,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
         opts: opts.clone(),
         worlds,
         results: Vec::new(),
+        path_results: Vec::new(),
         done: false,
     };
 
@@ -270,7 +316,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
 
     let mut failures = 0;
 
-    for result in &app.results {
+    for (result, path) in app.results.iter().zip(&app.path_results) {
         match result {
             Ok(summary) => {
                 println!(
@@ -304,6 +350,23 @@ pub fn run(args: &[String]) -> Result<(), String> {
                 failures += 1;
             }
         }
+
+        // The shading-half diff (ticket 07): the CPU path-tracer mirror vs
+        // the captured GPU radiance pair (identical RNG seeds, per-pixel
+        // means, tolerance).
+        if let Some(path) = path {
+            println!(
+                "[{:>15}] PATH {}  (N={}, mismatches: {}, hard: {})",
+                path.name,
+                if path.pass { "PASS" } else { "FAIL" },
+                path.samples,
+                path.mismatches,
+                path.hard_mismatches,
+            );
+            if !path.pass {
+                failures += 1;
+            }
+        }
     }
 
     if failures > 0 {
@@ -317,13 +380,16 @@ pub fn run(args: &[String]) -> Result<(), String> {
 struct PassSpec {
     name: String,
     path: String,
-    camera: Option<CameraSpec>,
+    camera: Option<Camera>,
 }
 
 /// Everything shared between a world's frames: the hidden window, the
 /// swapchain with its bindless storage images, the t-image and the readback
-/// buffers. Built once per world; each frame gets its own task graph over
-/// the same resources (the edit-at-the-seam world runs two frames).
+/// buffers, and the shading-half resources (ticket 07): the production ray
+/// pass's six output images (the radiance pair + albedo aux captured) and
+/// their readback buffers. Built once per world; each frame gets its own task
+/// graph over the same resources (the edit-at-the-seam world runs two
+/// frames).
 struct FrameSetup {
     #[allow(dead_code)]
     window: Arc<Window>,
@@ -337,6 +403,12 @@ struct FrameSetup {
     t_readback_buffer_id: Id<Buffer>,
     camera: crate::region::render::capture_raygen::Camera,
     camera_inputs: CameraInputs,
+    /// The shading-half output images (ticket 07): the production raygen's
+    /// six-buffer set (ADR 0007); diff/spec/albedo are captured per frame.
+    path_images: PathTraceImages,
+    path_diff_readback_buffer_id: Id<Buffer>,
+    path_spec_readback_buffer_id: Id<Buffer>,
+    path_albedo_readback_buffer_id: Id<Buffer>,
 }
 
 struct ValidateFrame {
@@ -348,6 +420,16 @@ struct ValidateFrame {
     task_graph: ExecutableTaskGraph<RegionRenderContext>,
     rcx: RegionRenderContext,
     camera_inputs: CameraInputs,
+    /// The shading-half graph (ticket 07): the production ray pass + the
+    /// radiance-pair capture. Executed once per path-traced frame (the
+    /// frame_seed is set on the shared `rcx`).
+    path_virtual_swapchain_id: Id<Swapchain>,
+    path_task_graph: ExecutableTaskGraph<RegionRenderContext>,
+    /// The radiance-pair + albedo + normal readback buffers (copied per path
+    /// frame).
+    path_diff_readback_buffer_id: Id<Buffer>,
+    path_spec_readback_buffer_id: Id<Buffer>,
+    path_albedo_readback_buffer_id: Id<Buffer>,
 }
 
 struct ValidateApp {
@@ -355,6 +437,9 @@ struct ValidateApp {
     opts: ValidateOptions,
     worlds: Vec<WorldSpec>,
     results: Vec<Result<PassSummary, String>>,
+    /// The shading-half diff's outcome per world (parallel to `results`;
+    /// `None` when the run was geometry-only).
+    path_results: Vec<Option<PathPassSummary>>,
     done: bool,
 }
 
@@ -366,10 +451,21 @@ impl ApplicationHandler for ValidateApp {
 
         let worlds = std::mem::take(&mut self.worlds);
         let mut results = Vec::new();
+        let mut path_results = Vec::new();
         for world in worlds {
-            results.push(self.run_world(&world, event_loop));
+            match self.run_world(&world, event_loop) {
+                Ok((summary, path)) => {
+                    results.push(Ok(summary));
+                    path_results.push(path);
+                }
+                Err(error) => {
+                    results.push(Err(error));
+                    path_results.push(None);
+                }
+            }
         }
         self.results = results;
+        self.path_results = path_results;
 
         self.done = true;
         event_loop.exit();
@@ -392,12 +488,14 @@ impl ApplicationHandler for ValidateApp {
 
 impl ValidateApp {
     /// Runs one full pass over a single world: hidden window + swapchain +
-    /// ray pass + capture + reference trace + comparison + report files.
+    /// ray pass + capture + reference trace + comparison + report files, and
+    /// (unless disabled) the shading-half diff: the production ray pass at
+    /// frame_seed 0..N-1 captured against the CPU path-tracer mirror.
     fn run_world(
         &mut self,
         world: &WorldSpec,
         event_loop: &ActiveEventLoop,
-    ) -> Result<PassSummary, String> {
+    ) -> Result<(PassSummary, Option<PathPassSummary>), String> {
         let width = self.opts.width;
         let height = self.opts.height;
 
@@ -467,6 +565,17 @@ impl ValidateApp {
 
         let (camera, camera_inputs) = build_camera(&world_data, width, height, world.camera);
 
+        // The shading-half resources (ticket 07): the production ray pass's
+        // six output images (diff/spec RGBA16F, albedo RGBA8 captured) and
+        // the readback buffers for the radiance pair + albedo aux.
+        let path_images = create_path_trace_images(&self.gpu.resources, width, height);
+        let path_diff_readback_buffer_id =
+            create_host_readback(&self.gpu, (u64::from(width) * u64::from(height) * 8) as u64);
+        let path_spec_readback_buffer_id =
+            create_host_readback(&self.gpu, (u64::from(width) * u64::from(height) * 8) as u64);
+        let path_albedo_readback_buffer_id =
+            create_host_readback(&self.gpu, (u64::from(width) * u64::from(height) * 4) as u64);
+
         let setup = FrameSetup {
             window,
             swapchain_id,
@@ -479,6 +588,10 @@ impl ValidateApp {
             t_readback_buffer_id,
             camera,
             camera_inputs,
+            path_images,
+            path_diff_readback_buffer_id,
+            path_spec_readback_buffer_id,
+            path_albedo_readback_buffer_id,
         };
 
         // Startup: the world voices its initial state as one submit_batch;
@@ -497,9 +610,11 @@ impl ValidateApp {
         let mut frame = self.build_validate_frame(&setup, &store)?;
 
         // Frame 1: startup via submit_batch.
-        let first = self.run_frame(&world_data, &voxel_data, shape, world, &mut frame, "")?;
+        let (first, first_path) =
+            self.run_frame(&world_data, &voxel_data, shape, world, &mut frame, "")?;
 
         let mut frames = vec![first];
+        let mut path_frames = vec![first_path];
 
         // Frames 2..N: each step mutates
         // the world, voices the change through the contract (zero-mask
@@ -700,7 +815,7 @@ impl ValidateApp {
                     );
                 }
 
-                let summary = self.run_frame(
+                let (summary, path) = self.run_frame(
                     &world_data,
                     &voxel_data,
                     shape,
@@ -709,6 +824,7 @@ impl ValidateApp {
                     &step.label,
                 )?;
                 frames.push(summary);
+                path_frames.push(path);
             }
         }
 
@@ -738,15 +854,43 @@ impl ValidateApp {
             );
         }
 
-        Ok(PassSummary {
-            name: world.name.clone(),
-            path: world.path.clone(),
-            pass: frames.iter().all(|frame| frame.pass),
-            mismatches: frames.iter().map(|frame| frame.mismatches).sum(),
-            hard_mismatches: frames.iter().map(|frame| frame.hard_mismatches).sum(),
-            out_dir: self.opts.out_dir.join(&world.name),
-            frames,
-        })
+        // The shading-half diff aggregates over the world's frames (the
+        // path-tracer mirror runs against every frame's world state).
+        let path_summary = if self.opts.no_path_trace {
+            None
+        } else {
+            let pass = path_frames
+                .iter()
+                .all(|p| p.as_ref().is_some_and(|p| p.pass));
+            Some(PathPassSummary {
+                name: world.name.clone(),
+                pass,
+                mismatches: path_frames
+                    .iter()
+                    .filter_map(|p| p.as_ref())
+                    .map(|p| p.mismatches)
+                    .sum(),
+                hard_mismatches: path_frames
+                    .iter()
+                    .filter_map(|p| p.as_ref())
+                    .map(|p| p.hard_mismatches)
+                    .sum(),
+                samples: self.opts.path_trace_samples,
+            })
+        };
+
+        Ok((
+            PassSummary {
+                name: world.name.clone(),
+                path: world.path.clone(),
+                pass: frames.iter().all(|frame| frame.pass),
+                mismatches: frames.iter().map(|frame| frame.mismatches).sum(),
+                hard_mismatches: frames.iter().map(|frame| frame.hard_mismatches).sum(),
+                out_dir: self.opts.out_dir.join(&world.name),
+                frames,
+            },
+            path_summary,
+        ))
     }
 
     /// Builds the compiled task graph over the store's stable buffers.
@@ -862,29 +1006,137 @@ impl ValidateApp {
         }
         .map_err(|e| format!("compile: {e}"))?;
 
+        // The shading-half graph (ticket 07): the production ray pass (the
+        // app's raygen with the sky miss shader and the real Scene
+        // constants) writing the six output images, then a capture node
+        // copying the radiance pair + albedo aux to host-readable buffers.
+        // The graph is rebuilt per world (no resize) and executed once per
+        // path-traced frame with the shared `rcx`'s frame_seed set.
+        let path_raygen = unsafe {
+            crate::region::render::production_raygen::load(&self.gpu.device)
+                .unwrap()
+                .entry_point("main")
+                .unwrap()
+        };
+        let path_rt_task = RegionRenderTask::new(
+            &self.gpu,
+            store,
+            virtual_swapchain_id,
+            &path_raygen,
+            None,
+            None,
+            None,
+            // The production pipeline's miss shader returns the Procedural
+            // sky (ticket 06) — the shading half compares the real output.
+            true,
+        );
+        let path_instance_buffer_id = path_rt_task.instance_buffer_id();
+
+        let mut path_graph = TaskGraph::new(&self.gpu.resources);
+        let path_virtual_swapchain_id = path_graph.add_swapchain(&SwapchainCreateInfo::default());
+
+        let mut path_rt_node =
+            path_graph.create_task_node("PathRender", QueueFamilyType::Graphics, path_rt_task);
+        path_rt_node.image_access(
+            path_virtual_swapchain_id.current_image_id(),
+            AccessTypes::RAY_TRACING_SHADER_STORAGE_WRITE,
+            ImageLayoutType::General,
+        );
+        // The production raygen's six-buffer set (ADR 0007) — physical ids
+        // referenced directly (the validator never resizes, so the app's
+        // virtual-id indirection is unnecessary).
+        for image in [
+            &setup.path_images.diff,
+            &setup.path_images.spec,
+            &setup.path_images.normal_roughness,
+            &setup.path_images.viewz,
+            &setup.path_images.mv,
+            &setup.path_images.albedo,
+        ] {
+            path_rt_node.image_access(
+                image.physical_id,
+                AccessTypes::RAY_TRACING_SHADER_STORAGE_WRITE,
+                ImageLayoutType::General,
+            );
+        }
+        path_rt_node.buffer_access(
+            path_instance_buffer_id,
+            AccessTypes::RAY_TRACING_SHADER_ACCELERATION_STRUCTURE_READ,
+        );
+        let path_rt_node_id = path_rt_node.build();
+
+        let path_capture_task = PathCaptureTask::new(
+            setup.path_images.diff.physical_id,
+            setup.path_images.spec.physical_id,
+            setup.path_images.albedo.physical_id,
+            setup.path_diff_readback_buffer_id,
+            setup.path_spec_readback_buffer_id,
+            setup.path_albedo_readback_buffer_id,
+            self.opts.width,
+            self.opts.height,
+        );
+        let path_capture_node_id = path_graph
+            .create_task_node("PathCapture", QueueFamilyType::Graphics, path_capture_task)
+            .image_access(
+                setup.path_images.diff.physical_id,
+                AccessTypes::COPY_TRANSFER_READ,
+                ImageLayoutType::General,
+            )
+            .image_access(
+                setup.path_images.spec.physical_id,
+                AccessTypes::COPY_TRANSFER_READ,
+                ImageLayoutType::General,
+            )
+            .image_access(
+                setup.path_images.albedo.physical_id,
+                AccessTypes::COPY_TRANSFER_READ,
+                ImageLayoutType::General,
+            )
+            .build();
+        path_graph
+            .add_edge(path_rt_node_id, path_capture_node_id)
+            .unwrap();
+        path_graph.add_host_buffer_access(setup.path_diff_readback_buffer_id, HostAccessType::Read);
+        path_graph.add_host_buffer_access(setup.path_spec_readback_buffer_id, HostAccessType::Read);
+        path_graph
+            .add_host_buffer_access(setup.path_albedo_readback_buffer_id, HostAccessType::Read);
+
+        let path_task_graph = unsafe {
+            path_graph.compile(&CompileInfo {
+                queues: &[&self.gpu.graphics_queue],
+                present_queue: Some(&self.gpu.graphics_queue),
+                flight_id: self.gpu.graphics_flight_id,
+                ..Default::default()
+            })
+        }
+        .map_err(|e| format!("path compile: {e}"))?;
+
         let rcx = RegionRenderContext {
             camera: setup.camera,
             // The analytic lights' constants (ticket 06): written into the
-            // Scene buffer every frame, but the capture path never reads
-            // them (its miss shader is black). The defaults keep the buffer
-            // well-formed.
+            // Scene buffer every frame (the production sky miss + NEE read
+            // them). The capture path never dereferences the buffer, so the
+            // byte-exact geometry validator is unchanged.
             scene: default_scene(),
             swapchain_storage_image_ids: setup.swapchain_storage_image_ids.clone(),
             t_image_storage_id: setup.t_image_storage_id,
-            // The validator's capture raygen never writes the trace pass's
-            // output set (ADR 0007) — all six stay INVALID.
-            diff_radiance_image_id: StorageImageId::INVALID,
-            spec_radiance_image_id: StorageImageId::INVALID,
-            normal_roughness_image_id: StorageImageId::INVALID,
-            viewz_image_id: StorageImageId::INVALID,
-            mv_image_id: StorageImageId::INVALID,
-            albedo_metal_image_id: StorageImageId::INVALID,
+            // The shading-half output set (ADR 0007): the production raygen
+            // writes all six in Voxel mode. The capture raygen never
+            // dereferences them, so the shared rcx serves both graphs.
+            diff_radiance_image_id: setup.path_images.diff.storage_id,
+            spec_radiance_image_id: setup.path_images.spec.storage_id,
+            normal_roughness_image_id: setup.path_images.normal_roughness.storage_id,
+            viewz_image_id: setup.path_images.viewz.storage_id,
+            mv_image_id: setup.path_images.mv.storage_id,
+            albedo_metal_image_id: setup.path_images.albedo.storage_id,
             ev: 0.0,
             // The validator is Voxel-only: the capture raygen hardcodes
-            // sbtRecordOffset = 0 and never toggles to Hull.
+            // sbtRecordOffset = 0 and never toggles to Hull; the production
+            // raygen path-traces (mode 0) and writes the radiance pair.
             mode: RenderMode::default(),
-            // The capture raygen never reads frame_seed (the path tracer is
-            // production-only); 0 keeps the capture byte-identical.
+            // The path-tracing RNG's per-frame seed: set by the shading
+            // loop (0..N-1) before each path frame; the capture raygen never
+            // reads it.
             frame_seed: 0,
         };
 
@@ -897,12 +1149,20 @@ impl ValidateApp {
             task_graph,
             rcx,
             camera_inputs: setup.camera_inputs,
+            path_virtual_swapchain_id,
+            path_task_graph,
+            path_diff_readback_buffer_id: setup.path_diff_readback_buffer_id,
+            path_spec_readback_buffer_id: setup.path_spec_readback_buffer_id,
+            path_albedo_readback_buffer_id: setup.path_albedo_readback_buffer_id,
         })
     }
 
     /// Executes one frame, captures color + t, traces the reference,
     /// compares, and writes the report artifacts (suffixed by `label`: ""
-    /// for the first/only frame, the step label for edit-at-the-seam frames).
+    /// for the first/only frame, the step label for edit-at-the-seam
+    /// frames). Also runs the shading-half diff (ticket 07) unless disabled:
+    /// the CPU path-tracer mirror vs the production ray pass captured at
+    /// frame_seed 0..N-1.
     fn run_frame(
         &mut self,
         world_data: &Arc<World>,
@@ -911,7 +1171,7 @@ impl ValidateApp {
         world: &WorldSpec,
         frame: &mut ValidateFrame,
         label: &str,
-    ) -> Result<FrameSummary, String> {
+    ) -> Result<(FrameSummary, Option<PathPassSummary>), String> {
         let width = self.opts.width;
         let height = self.opts.height;
         let out_dir = self.opts.out_dir.join(&world.name);
@@ -994,14 +1254,219 @@ impl ValidateApp {
             return Err(format!("failed to write report: {error}"));
         }
 
-        Ok(FrameSummary {
-            label: label.to_string(),
-            pass: report.passes(),
-            mismatches: report.mismatch_count(),
-            hard_mismatches: report.hard_mismatch_count(),
+        // The shading half (ticket 07): the CPU path-tracer diff over the
+        // same world state — N GPU frames (frame_seed 0..N-1) vs N
+        // identical-seed CPU samples, per-pixel means with tolerance.
+        let path = if self.opts.no_path_trace {
+            None
+        } else {
+            Some(self.run_path_validation(world_data, voxel_data, world, frame, label)?)
+        };
+
+        Ok((
+            FrameSummary {
+                label: label.to_string(),
+                pass: report.passes(),
+                mismatches: report.mismatch_count(),
+                hard_mismatches: report.hard_mismatch_count(),
+            },
+            path,
+        ))
+    }
+
+    /// The shading-half diff (ticket 07): runs the production ray pass at
+    /// frame_seed 0..N-1, captures the radiance pair + albedo aux per frame,
+    /// accumulates the GPU's per-pixel means; computes the CPU mirror's
+    /// identical-seed N samples; compares the means with tolerance; writes
+    /// the path artifacts (PNGs + text). Returns the frame's path verdict.
+    fn run_path_validation(
+        &mut self,
+        world_data: &Arc<World>,
+        voxel_data: &dot_vox::DotVoxData,
+        world: &WorldSpec,
+        frame: &mut ValidateFrame,
+        label: &str,
+    ) -> Result<PathPassSummary, String> {
+        let width = self.opts.width;
+        let height = self.opts.height;
+        let samples = self.opts.path_trace_samples;
+        let out_dir = self.opts.out_dir.join(&world.name);
+        let gpu = &self.gpu;
+
+        // The CPU mirror (ticket 07): the same world, the same Material
+        // table (ADR 0008), and the same Scene constants the GPU reads
+        // (default_scene — the packed values are data, mirrored verbatim).
+        let materials = get_material_table(voxel_data);
+        let packed = default_scene();
+        let scene = path_tracer::Scene {
+            sun_dir: glam::Vec3::new(packed.sun_dir[0], packed.sun_dir[1], packed.sun_dir[2]),
+            sky_knots: [
+                packed.sky_knots[0],
+                packed.sky_knots[1],
+                packed.sky_knots[2],
+            ],
+            e_sun: packed.sun_disk[0],
+            cos_disk: packed.sun_disk[1],
+            l_disk: packed.sun_disk[2],
+        };
+        let tracer = PathTracer::new(world_data, materials, scene);
+
+        // --- GPU side: N frames at frame_seed 0..N-1, capture the radiance
+        // pair + albedo aux, accumulate the per-pixel means.
+        let pixel_count = (width as usize) * (height as usize);
+        let mut diff_sum = vec![glam::Vec3::ZERO; pixel_count];
+        let mut spec_sum = vec![glam::Vec3::ZERO; pixel_count];
+        let mut albedo_sum = vec![glam::Vec3::ZERO; pixel_count];
+        let mut hit_sum = vec![0u32; pixel_count];
+        // The octahedral normal encodings (RGBA8) and the in-lobe hit
+        // distance (the diffuse alpha) — for the corner-touch excuse.
+        let mut hitdist_sum = vec![0.0f32; pixel_count];
+
+        for f in 0..samples {
+            frame.rcx.frame_seed = f;
+
+            gpu.resources
+                .flight(gpu.graphics_flight_id)
+                .wait_idle()
+                .unwrap();
+
+            let resource_map = resource_map!(
+                &frame.path_task_graph,
+                frame.path_virtual_swapchain_id => frame.swapchain_id
+            )
+            .unwrap();
+            let execute_result = unsafe {
+                frame
+                    .path_task_graph
+                    .execute(resource_map, &frame.rcx, || {})
+            };
+            if let Err(error) = execute_result {
+                return Err(format!("path frame execution failed: {error:?}"));
+            }
+
+            gpu.resources
+                .flight(gpu.graphics_flight_id)
+                .wait_idle()
+                .unwrap();
+
+            let diff_bytes = read_host_bytes(gpu, frame.path_diff_readback_buffer_id);
+            let spec_bytes = read_host_bytes(gpu, frame.path_spec_readback_buffer_id);
+            let albedo_bytes = read_host_bytes(gpu, frame.path_albedo_readback_buffer_id);
+
+            let diff_rgba = decode_rgba16f(&diff_bytes);
+            let spec_rgba = decode_rgba16f(&spec_bytes);
+            for i in 0..pixel_count {
+                diff_sum[i] += diff_rgba[i].truncate();
+                spec_sum[i] += spec_rgba[i].truncate();
+                let a = &albedo_bytes[i * 4..i * 4 + 4];
+                albedo_sum[i] += glam::Vec3::new(
+                    f32::from(a[0]) / 255.0,
+                    f32::from(a[1]) / 255.0,
+                    f32::from(a[2]) / 255.0,
+                );
+                // The in-lobe hit distance rides the diffuse alpha: 0 is
+                // the sky sentinel (primary miss).
+                hitdist_sum[i] += diff_rgba[i].w;
+                hit_sum[i] += u32::from(diff_rgba[i].w > 0.0);
+            }
+        }
+
+        let n = samples as f32;
+        let gpu_diffuse: Vec<glam::Vec3> = diff_sum.iter().map(|v| *v / n).collect();
+        let gpu_specular: Vec<glam::Vec3> = spec_sum.iter().map(|v| *v / n).collect();
+        let gpu_albedo: Vec<glam::Vec3> = albedo_sum.iter().map(|v| *v / n).collect();
+        let gpu_hit_fraction: Vec<f32> = hit_sum.iter().map(|h| *h as f32 / n).collect();
+        let gpu_hitdist: Vec<f32> = hitdist_sum.iter().map(|h| *h / n).collect();
+        // The display radiance (re-modulated like the composite): the sky
+        // pixels stay raw (alpha 0 → no re-modulation).
+        let gpu_display: Vec<glam::Vec3> = (0..pixel_count)
+            .map(|i| {
+                let diff_de = gpu_diffuse[i];
+                let spec = gpu_specular[i];
+                if gpu_hit_fraction[i] > 0.0 {
+                    diff_de * gpu_albedo[i].max(glam::Vec3::splat(ALBEDO_EPS)) + spec
+                } else {
+                    diff_de
+                }
+            })
+            .collect();
+
+        // --- CPU side: the identical-seed mirror, parallel over rows.
+        let cpu_start = Instant::now();
+        let cpu: PathRender = render_path(&tracer, &frame.camera_inputs, width, height, samples);
+        let cpu_seconds = cpu_start.elapsed().as_secs_f64();
+
+        // --- compare + write the report ----------------------------------
+        let path_report: PathCompareReport = compare_path(
+            &gpu_diffuse,
+            &gpu_specular,
+            &gpu_hit_fraction,
+            &gpu_display,
+            &gpu_hitdist,
+            &gpu_albedo,
+            &cpu.diffuse,
+            &cpu.specular,
+            &cpu.display,
+            &cpu.hit_ts,
+            &cpu.albedos,
+            width,
+            height,
+            samples,
+            PathCompareConfig::default(),
+        );
+
+        fs::create_dir_all(&out_dir)
+            .map_err(|e| format!("failed to create path report dir: {e}"))?;
+        write_png(
+            &out_dir.join(format!("path-gpu{label}.png")),
+            &tone_map_rgba(&gpu_display),
+            width,
+            height,
+        )
+        .map_err(|e| format!("failed to write path-gpu.png: {e}"))?;
+        write_png(
+            &out_dir.join(format!("path-cpu{label}.png")),
+            &tone_map_rgba(&cpu.display),
+            width,
+            height,
+        )
+        .map_err(|e| format!("failed to write path-cpu.png: {e}"))?;
+        write_png(
+            &out_dir.join(format!("path-diff{label}.png")),
+            &build_path_diff_image(&cpu.display, &path_report),
+            width,
+            height,
+        )
+        .map_err(|e| format!("failed to write path-diff.png: {e}"))?;
+        write_path_report(
+            &out_dir.join(format!("path-report{label}.txt")),
+            &world.name,
+            &world.path,
+            &world
+                .camera
+                .map(camera_description)
+                .unwrap_or_else(|| "framed world bounding box".to_string()),
+            width,
+            height,
+            cpu_seconds,
+            &path_report,
+        )
+        .map_err(|e| format!("failed to write path report: {e}"))?;
+
+        Ok(PathPassSummary {
+            name: world.name.clone(),
+            pass: path_report.passes(),
+            mismatches: path_report.mismatch_count(),
+            hard_mismatches: path_report.hard_mismatch_count(),
+            samples,
         })
     }
 }
+
+/// The de-modulation guard (the composite's re-modulation divisor) — the
+/// display PNG re-modulates with the same max(albedo, eps) the trace pass
+/// divided by (ADR 0010).
+const ALBEDO_EPS: f32 = 1e-3;
 
 /// Writes the report artifacts (PNGs + text) for one frame. `label` suffixes
 /// the artifact names ("" for the first/only frame, "-after-edit" for the
@@ -1058,7 +1523,7 @@ fn write_report(
     )
 }
 
-fn camera_description(camera: CameraSpec) -> String {
+fn camera_description(camera: Camera) -> String {
     format!(
         "eye {:?} target {:?} up {:?}",
         camera.eye, camera.target, camera.up
@@ -1083,6 +1548,120 @@ fn read_host_floats(gpu: &GpuStack, id: Id<Buffer>) -> Vec<f32> {
         .read()
         .expect("host read of capture buffer")
         .to_vec()
+}
+
+// ---------------------------------------------------------------------------
+// The shading-half resources (ticket 07)
+// ---------------------------------------------------------------------------
+
+/// One of the shading-half's six output images: the physical image + its
+/// bindless storage id. The validator never resizes, so the app's
+/// virtual-id indirection is unnecessary — the graph references the physical
+/// ids directly.
+struct PathTraceImage {
+    physical_id: Id<Image>,
+    storage_id: StorageImageId,
+}
+
+struct PathTraceImages {
+    diff: PathTraceImage,
+    spec: PathTraceImage,
+    normal_roughness: PathTraceImage,
+    viewz: PathTraceImage,
+    mv: PathTraceImage,
+    albedo: PathTraceImage,
+}
+
+/// Creates the production ray pass's six output images (ADR 0007), sized to
+/// the frame, registered in the bindless set. All carry TRANSFER_SRC (the
+/// radiance pair + albedo are copied to host-readable buffers per frame).
+fn create_path_trace_images(
+    resources: &Arc<Resources>,
+    width: u32,
+    height: u32,
+) -> PathTraceImages {
+    let bcx = resources.bindless_context().unwrap();
+    let create = |format: Format| {
+        let physical_id = resources
+            .create_image(
+                &ImageCreateInfo {
+                    image_type: ImageType::Dim2d,
+                    format,
+                    extent: [width, height, 1],
+                    usage: ImageUsage::STORAGE | ImageUsage::TRANSFER_SRC,
+                    ..Default::default()
+                },
+                &AllocationCreateInfo::default(),
+            )
+            .unwrap();
+        let image = resources.image(physical_id).image().clone();
+        let image_view = ImageView::new_default(&image).unwrap();
+        let storage_id = bcx
+            .global_set()
+            .add_storage_image(image_view, ImageLayout::General);
+        PathTraceImage {
+            physical_id,
+            storage_id,
+        }
+    };
+    PathTraceImages {
+        diff: create(Format::R16G16B16A16_SFLOAT),
+        spec: create(Format::R16G16B16A16_SFLOAT),
+        normal_roughness: create(Format::R8G8B8A8_UNORM),
+        viewz: create(Format::R32_SFLOAT),
+        mv: create(Format::R16G16B16A16_SFLOAT),
+        albedo: create(Format::R8G8B8A8_UNORM),
+    }
+}
+
+/// Creates a host-readable TRANSFER_DST buffer of `bytes` (the capture
+/// readbacks: the copy target the capture node writes, read back per frame).
+fn create_host_readback(gpu: &GpuStack, bytes: u64) -> Id<Buffer> {
+    gpu.resources
+        .create_buffer(
+            &BufferCreateInfo {
+                usage: BufferUsage::TRANSFER_DST,
+                ..Default::default()
+            },
+            &AllocationCreateInfo {
+                memory_type_filter: MemoryTypeFilter::HOST_RANDOM_ACCESS,
+                ..Default::default()
+            },
+            DeviceLayout::new_unsized::<[u8]>(bytes).unwrap(),
+        )
+        .unwrap()
+}
+
+/// Decodes RGBA16F (R16G16B16A16_SFLOAT) bytes — 8 per pixel — to f32 RGBA.
+fn decode_rgba16f(bytes: &[u8]) -> Vec<glam::Vec4> {
+    bytes
+        .chunks_exact(8)
+        .map(|px| {
+            glam::Vec4::new(
+                half_to_f32(u16::from_le_bytes([px[0], px[1]])),
+                half_to_f32(u16::from_le_bytes([px[2], px[3]])),
+                half_to_f32(u16::from_le_bytes([px[4], px[5]])),
+                half_to_f32(u16::from_le_bytes([px[6], px[7]])),
+            )
+        })
+        .collect()
+}
+
+/// IEEE-754 binary16 → f32 (the radiance pair's storage format; the CPU
+/// mirror computes f32 and the tolerance absorbs the quantization).
+fn half_to_f32(h: u16) -> f32 {
+    let negative = h & 0x8000 != 0;
+    let exp = (h >> 10) & 0x1F;
+    let mant = u32::from(h & 0x3FF);
+    let magnitude = if exp == 0 {
+        (mant as f32) * 2.0_f32.powi(-24)
+    } else if exp == 31 {
+        // Inf/NaN — the radiance pair never contains them; map to +inf.
+        f32::INFINITY
+    } else {
+        ((mant as f32) + 1024.0) * 2.0_f32.powi(i32::from(exp) - 25)
+    };
+    if negative { -magnitude } else { magnitude }
 }
 
 // ---------------------------------------------------------------------------
@@ -1208,7 +1787,7 @@ fn build_camera(
     world: &World,
     width: u32,
     height: u32,
-    camera: Option<CameraSpec>,
+    camera: Option<Camera>,
 ) -> (crate::region::render::capture_raygen::Camera, CameraInputs) {
     let (eye, target, up) = match camera {
         Some(spec) => (
@@ -1246,4 +1825,30 @@ fn frame_world_camera(world: &World) -> (Vec3, Vec3, Vec3) {
     let direction = Vec3::new(1.0, 0.65, 0.85).normalize();
 
     (center + direction * distance, center, Vec3::Y)
+}
+
+#[cfg(test)]
+mod path_readback_tests {
+    use super::*;
+
+    #[test]
+    fn half_to_f32_decodes_known_values() {
+        assert_eq!(half_to_f32(0x3c00), 1.0); // 1.0
+        assert_eq!(half_to_f32(0x4b77), 1911.0 * 2.0f32.powi(-7)); // 14.9296875
+        assert_eq!(half_to_f32(0x0000), 0.0);
+        assert_eq!(half_to_f32(0x3e00), 1.5); // 1.5
+        assert_eq!(half_to_f32(0x3800), 0.5); // 0.5
+    }
+
+    #[test]
+    fn decode_rgba16f_reads_pixel_alignment() {
+        // One pixel: R=1.0 (0x3c00), G=1.5 (0x3e00), B=0.25 (0x3400), A=14.93 (0x4b77)
+        let bytes = [0x00, 0x3c, 0x00, 0x3e, 0x00, 0x34, 0x77, 0x4b];
+        let decoded = decode_rgba16f(&bytes);
+        assert_eq!(decoded.len(), 1);
+        assert_eq!(decoded[0].x, 1.0);
+        assert_eq!(decoded[0].y, 1.5);
+        assert_eq!(decoded[0].z, 0.25);
+        assert_eq!(decoded[0].w, 1911.0 * 2.0f32.powi(-7));
+    }
 }
