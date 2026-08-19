@@ -27,25 +27,13 @@ use winit::{
 /// confined to one place at the app boundary.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum InputKey {
-    /// Move forward (Z).
     Forward,
-    /// Move backward (S).
     Backward,
-    /// Move left (Q).
     Left,
-    /// Move right (D).
     Right,
-    /// Move up (Space).
     Up,
-    /// Move down (Control).
     Down,
-    /// Toggle the Render mode (Tab)
     ToggleRenderMode,
-    /// Raise the composite's manual exposure (])): +0.5 EV per press.
-    ExposureUp,
-    /// Lower the composite's manual exposure ([)): -0.5 EV per press.
-    ExposureDown,
-    /// Request the app to close (Escape).
     Close,
 }
 
@@ -57,10 +45,7 @@ pub enum InputButton {
     Right,
 }
 
-/// The app-owned per-frame input state. Held state ([Input::down],
-/// [Input::buttons_down]) persists across frames; the edge state
-/// ([Input::just_pressed], [Input::scroll_delta], [Input::mouse_motion]) is
-/// drained at the end of each frame by [Input::end_frame].
+/// The app-owned per-frame input state.
 #[derive(Default)]
 pub struct Input {
     /// Keys held down this frame. Movement polls this (continuous).
@@ -78,17 +63,13 @@ pub struct Input {
 }
 
 impl Input {
-    /// Drains the per-frame edge state (just-pressed keys, scroll delta,
-    /// mouse motion) at the end of a frame. Held state is untouched.
-    pub fn end_frame(&mut self) {
+    pub fn drain(&mut self) {
         self.just_pressed.clear();
         self.scroll_delta = 0.0;
         self.mouse_motion = (0.0, 0.0);
     }
 }
 
-/// Maps a winit key to its semantic action, or `None` for keys the app does
-/// not bind. This is the one place winit keys become [InputKey].
 pub fn map_key(key: &Key) -> Option<InputKey> {
     match key {
         Key::Character(ch) => match ch.as_str() {
@@ -96,8 +77,6 @@ pub fn map_key(key: &Key) -> Option<InputKey> {
             "s" => Some(InputKey::Backward),
             "q" => Some(InputKey::Left),
             "d" => Some(InputKey::Right),
-            "=" => Some(InputKey::ExposureUp),
-            ")" => Some(InputKey::ExposureDown),
             _ => None,
         },
         Key::Named(NamedKey::Space) => Some(InputKey::Up),
@@ -125,8 +104,6 @@ mod tests {
     use super::*;
     use winit::keyboard::SmolStr;
 
-    /// A press lands in both the held set and the edge set; the edge is
-    /// drained at end of frame while the held key survives until release.
     #[test]
     fn held_vs_just_pressed_set_semantics() {
         let mut input = Input::default();
@@ -136,18 +113,14 @@ mod tests {
         assert!(input.down.contains(&InputKey::Forward));
         assert!(input.just_pressed.contains(&InputKey::Forward));
 
-        // End of frame drains the edge; the held key remains.
-        input.end_frame();
+        input.drain();
         assert!(input.down.contains(&InputKey::Forward));
         assert!(!input.just_pressed.contains(&InputKey::Forward));
 
-        // Release removes the held key.
         input.down.remove(&InputKey::Forward);
         assert!(!input.down.contains(&InputKey::Forward));
     }
 
-    /// end_frame clears exactly the per-frame edge state (just-pressed keys,
-    /// scroll delta, mouse motion) and leaves held state intact.
     #[test]
     fn end_frame_drains_per_frame_state() {
         let mut input = Input::default();
@@ -157,18 +130,16 @@ mod tests {
         input.mouse_motion = (10.0, -5.0);
         input.buttons_down.insert(InputButton::Right);
 
-        input.end_frame();
+        input.drain();
 
         assert!(input.just_pressed.is_empty());
         assert_eq!(input.scroll_delta, 0.0);
         assert_eq!(input.mouse_motion, (0.0, 0.0));
-        // Held state is not drained.
+
         assert!(input.down.contains(&InputKey::Forward));
         assert!(input.buttons_down.contains(&InputButton::Right));
     }
 
-    /// The winit key-to-action mapping: every bound key maps to its action,
-    /// and unbound keys map to None.
     #[test]
     fn maps_winit_keys_to_actions() {
         let char_key = |s: &str| Key::Character(SmolStr::new(s));
@@ -177,8 +148,6 @@ mod tests {
         assert_eq!(map_key(&char_key("s")), Some(InputKey::Backward));
         assert_eq!(map_key(&char_key("q")), Some(InputKey::Left));
         assert_eq!(map_key(&char_key("d")), Some(InputKey::Right));
-        assert_eq!(map_key(&char_key("=")), Some(InputKey::ExposureUp));
-        assert_eq!(map_key(&char_key(")")), Some(InputKey::ExposureDown));
         assert_eq!(map_key(&Key::Named(NamedKey::Space)), Some(InputKey::Up));
         assert_eq!(
             map_key(&Key::Named(NamedKey::Control)),
@@ -193,14 +162,11 @@ mod tests {
             Some(InputKey::ToggleRenderMode)
         );
 
-        // Unbound keys are ignored.
         assert_eq!(map_key(&char_key("a")), None);
         assert_eq!(map_key(&char_key("w")), None);
         assert_eq!(map_key(&Key::Named(NamedKey::Enter)), None);
     }
 
-    /// The winit button-to-action mapping: left/middle/right map, side and
-    /// "other" buttons do not.
     #[test]
     fn maps_winit_buttons_to_actions() {
         assert_eq!(map_button(MouseButton::Left), Some(InputButton::Left));

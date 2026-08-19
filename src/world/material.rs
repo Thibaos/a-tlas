@@ -96,8 +96,6 @@ mod tests {
     use super::*;
     use dot_vox::{Color, DotVoxData, Material as VoxMaterial, Model, Size, Voxel};
 
-    /// A minimal scene-less .vox dataset with a red-ramp palette (index i →
-    /// (i, 0, 0)) and the given MATL chunk.
     fn data_with(materials: Vec<VoxMaterial>) -> DotVoxData {
         DotVoxData {
             version: 150,
@@ -135,8 +133,10 @@ mod tests {
         }
     }
 
-    /// Every palette index starts from the defaults; the albedo column is
-    /// the palette (the byte-exact capture path's invariant).
+    fn palette_red(i: usize) -> f32 {
+        f32::from(i as u8) / 255.0
+    }
+
     #[test]
     fn defaults_and_albedo_match_palette() {
         let data = data_with(vec![]);
@@ -163,7 +163,6 @@ mod tests {
         ]);
         let table = get_material_table(&data);
 
-        // Only the named indices changed.
         assert_eq!(table[1].metallic, 0.0);
         assert_eq!(table[3].metallic, 0.5);
         assert_eq!(table[3].roughness, 0.2);
@@ -172,8 +171,6 @@ mod tests {
         assert_eq!(table[7].emission, [0.0; 3]);
     }
 
-    /// The emission mapping: linear RGB radiance = `_emit` × albedo ×
-    /// EMISSION_SCALE.
     #[test]
     fn emission_is_emit_times_albedo_times_scale() {
         let data = data_with(vec![
@@ -194,7 +191,7 @@ mod tests {
                 );
             }
         }
-        // Non-emissive stays zero.
+
         assert_eq!(table[1].emission, [0.0; 3]);
     }
 
@@ -207,11 +204,10 @@ mod tests {
         let table = get_material_table(&data);
         assert_eq!(table[4].metallic, 1.0);
         assert_eq!(table[4].roughness, 0.0);
-        // _emit clamps to 1.0 before the albedo × scale mapping.
+
         assert_eq!(table[4].emission[0], palette_red(4) * EMISSION_SCALE);
     }
 
-    /// A malformed MATL entry (id outside the palette) is skipped, not fatal.
     #[test]
     fn out_of_range_matl_id_is_skipped() {
         let data = data_with(vec![matl(300, &[("_metal", "1.0")])]);
@@ -219,10 +215,5 @@ mod tests {
         for entry in &table {
             assert_eq!(entry.metallic, 0.0);
         }
-    }
-
-    /// Helper: palette index i's red channel (the ramp is (i, 0, 0)).
-    fn palette_red(i: usize) -> f32 {
-        f32::from(i as u8) / 255.0
     }
 }

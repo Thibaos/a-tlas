@@ -24,7 +24,7 @@ capture path.
   copy pass per frame; the swapchain image would still need storage access
   or a blit, and the debug overlay ordering would need a separate resolve
   edge. Direct write keeps one image and one pass.
-- **PresentMode::Fifo (vsync)**. Rejected for v1: measurement (ticket 06)
+- **PresentMode::Fifo (vsync)**. Rejected: measurement (ticket 06)
   is GPU-timestamp based and present-independent; Immediate keeps latency
   low and frame pacing in the renderer's hands. Revisit only if tearing
   becomes an issue on the RTX 3070.

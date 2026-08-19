@@ -54,7 +54,7 @@ use crate::{
         },
         swapchain::window_size_dependent_setup,
     },
-    world::{format::open_file, snapshot::emit_snapshots, World},
+    world::{World, format::open_file, snapshot::emit_snapshots},
 };
 
 #[cfg(debug_assertions)]
@@ -384,7 +384,10 @@ impl ApplicationHandler for App {
                 .global_set()
                 .create_storage_buffer(buffer_id, 0, Some(HEATMAP_MAX_PIXELS * 4))
                 .unwrap();
-            Some(HullCrossedCounter { buffer_id, storage_id })
+            Some(HullCrossedCounter {
+                buffer_id,
+                storage_id,
+            })
         };
         #[cfg(not(debug_assertions))]
         let hull_crossed: Option<HullCrossedCounter> = None;
@@ -512,7 +515,9 @@ impl ApplicationHandler for App {
         // render node directly (release); either way it is the last node
         // before present.
         #[cfg(debug_assertions)]
-        task_graph.add_edge(heatmap_node_id, composite_node_id).unwrap();
+        task_graph
+            .add_edge(heatmap_node_id, composite_node_id)
+            .unwrap();
         #[cfg(not(debug_assertions))]
         task_graph.add_edge(rt_node_id, composite_node_id).unwrap();
 
@@ -681,11 +686,8 @@ impl ApplicationHandler for App {
 
                         let swapchain_state = self.gpu.resources.swapchain(rcx.swapchain_id);
                         let extent = swapchain_state.images()[0].extent();
-                        let physical = create_trace_pass_images(
-                            &self.gpu.resources,
-                            extent[0],
-                            extent[1],
-                        );
+                        let physical =
+                            create_trace_pass_images(&self.gpu.resources, extent[0], extent[1]);
                         rcx.trace_pass_images.attach_physical(physical);
                         rcx.region.diff_radiance_image_id =
                             rcx.trace_pass_images.diff_radiance.storage_id;
@@ -793,20 +795,10 @@ impl ApplicationHandler for App {
         if self.player_input.just_pressed.contains(&InputKey::Close) {
             self.close_requested = true;
         }
-        // Manual exposure (ADR 0007): [ / ] step the composite's EV by half
-        // a stop per press, app-wide (not debug-gated. Exposure is a
-        // rendering control, not a diagnostic).
-        if let Some(rcx) = &mut self.rcx {
-            if self.player_input.just_pressed.contains(&InputKey::ExposureUp) {
-                rcx.region.ev += 0.5;
-            }
-            if self.player_input.just_pressed.contains(&InputKey::ExposureDown) {
-                rcx.region.ev -= 0.5;
-            }
-        }
+
         #[cfg(debug_assertions)]
         self.toggle_render_mode();
-        self.player_input.end_frame();
+        self.player_input.drain();
 
         if self.close_requested {
             event_loop.exit();
