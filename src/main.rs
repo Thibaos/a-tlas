@@ -16,13 +16,6 @@ fn main() -> Result<(), impl Error> {
         };
     }
 
-    // `atlas-rt --measure`: attach the GPU
-    // measurement — per-stage timestamps (trace_rays / AS rebuild / flight),
-    // min/avg/p95 in the FPS log, the 16 ms gate as the GPU timestamp sum
-    // with wall-clock beside it. On demand: off by default, and the
-    // validator never measures (the harness's captured frames are
-    // unaffected).
-    let measure = args.iter().any(|arg| arg == "--measure");
     let clip_oob = args.iter().any(|arg| arg == "--clip-oob");
     let world_path = args
         .iter()
@@ -33,7 +26,7 @@ fn main() -> Result<(), impl Error> {
 
     let event_loop = EventLoop::new().unwrap();
 
-    let mut app = App::new(&event_loop, measure, world_path, clip_oob);
+    let mut app = App::new(&event_loop, world_path, clip_oob);
 
     event_loop.run_app(&mut app)
 }

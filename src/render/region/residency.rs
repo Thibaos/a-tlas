@@ -42,8 +42,8 @@ use crate::{
             feed::RendererInput,
             pack::{REGION_COUNT, RegionData},
             rebuild::{
-                BlasBuild, NodeTimings, RebuildGraph, RebuildLogEntry, RebuildPlan, RegionUpload,
-                TlasBuild, allocate_scratch, blas_build_sizes, tlas_build_sizes,
+                BlasBuild, RebuildGraph, RebuildLogEntry, RebuildPlan, RegionUpload, TlasBuild,
+                allocate_scratch, blas_build_sizes, tlas_build_sizes,
             },
             task::capture_raygen,
         },
@@ -92,8 +92,6 @@ pub struct ApplyReport {
     /// **no** [`RebuildLogEntry::BuildTlas`]; a residency transition logs
     /// [`RebuildLogEntry::RewriteInstances`] + [`RebuildLogEntry::BuildTlas`].
     pub rebuild_log: Vec<RebuildLogEntry>,
-    /// Per-node GPU timings for this cycle.
-    pub timings: NodeTimings,
     /// The resident-instance count before this cycle (the TLAS instance set
     /// size — the harness's ±1 transition probe).
     pub instance_count_before: usize,
@@ -870,7 +868,7 @@ impl RegionStore {
             return report;
         }
 
-        report.timings = self.rebuild_with_plan(gpu, plan);
+        self.rebuild_with_plan(gpu, plan);
         report.instance_count = self.resident_ids.len();
         report
     }
@@ -879,15 +877,14 @@ impl RegionStore {
     /// the pending frees whose dropping rebuild executed (the graph above executed and waited idle, so
     /// the freed memory is safe to reuse). Shared by change cycles and the
     /// empty-world corner's forced dummy build.
-    fn rebuild_with_plan(&mut self, gpu: &GpuStack, plan: RebuildPlan) -> NodeTimings {
+    fn rebuild_with_plan(&mut self, gpu: &GpuStack, plan: RebuildPlan) {
         let tlas_rebuilds = plan.tlas.is_some();
         let graph = RebuildGraph::new(gpu, self, plan);
-        let timings = graph.execute(gpu);
+        graph.execute(gpu);
         if tlas_rebuilds {
             self.tlas_initialized = true;
         }
         self.release_pending_frees();
-        timings
     }
 
     /// The packed instance prefix the upload node rewrites: one instance per

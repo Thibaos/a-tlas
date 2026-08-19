@@ -25,27 +25,18 @@ use vulkano::{
             ShaderBindingTable,
         },
     },
-    query::QueryPool,
-    shader::{EntryPoint, SpecializationConstant},
+    shader::EntryPoint,
     swapchain::Swapchain,
-    sync::PipelineStage,
 };
+#[cfg(debug_assertions)]
+use vulkano::shader::SpecializationConstant;
 use vulkano_taskgraph::{
     Id, Task, TaskContext, TaskResult,
     command_buffer::{DependencyInfo, FillBufferInfo, MemoryBarrier, RecordingCommandBuffer},
     descriptor_set::{AccelerationStructureId, StorageBufferId, StorageImageId},
 };
 
-use crate::{
-    core::gpu::GpuStack,
-    render::{
-        measure::{
-            CounterBuffer, FLIGHT_BEGIN_SLOT, FLIGHT_END_SLOT, TIMESTAMP_SLOT_COUNT,
-            TRACE_BEGIN_SLOT, TRACE_END_SLOT,
-        },
-        region::residency::RegionStore,
-    },
-};
+use crate::{core::gpu::GpuStack, render::region::residency::RegionStore};
 
 pub(crate) mod capture_raygen {
     vulkano_shaders::shader! {
@@ -159,8 +150,7 @@ pub enum RenderMode {
     /// builds only.
     #[cfg(debug_assertions)]
     RayLatency = 2,
-    /// Each pixel is colored by how many Micro-chunk hulls its ray entered
-    /// (the spatial form of the march-and-miss counter's `hull_crossed` word).
+    /// Each pixel is colored by how many Micro-chunk hulls its ray entered.
     /// Debug builds only.
     #[cfg(debug_assertions)]
     HullCrossed = 3,
@@ -177,10 +167,10 @@ pub enum RenderMode {
 /// pass pixel, incremented by the DDA intersection shader's atomicAdd at
 /// slab-pass when the hull-crossed mode selects its hit group. Reset with a
 /// fill each frame; read on the GPU by the heatmap overlay node. The count is
-/// the same quantity as the `--measure` counter's `hull_crossed` word: a lower
-/// bound on traversal work (hulls entered, not rejected AABB tests) and an
-/// upper bound per-pixel (Vulkan may invoke intersection shaders redundantly).
-/// The validator and release paths pass `None` and never attach it.
+/// a lower bound on traversal work (hulls entered, not rejected AABB tests)
+/// and an upper bound per-pixel (Vulkan may invoke intersection shaders
+/// redundantly). The validator and release paths pass `None` and never attach
+/// it.
 #[derive(Clone, Copy)]
 pub struct HullCrossedCounter {
     /// The buffer id the render task fills (reset) each frame.
@@ -264,19 +254,6 @@ pub struct RegionRenderTask {
     /// alive for the whole pass — harmless retention.)
     #[allow(dead_code)]
     blases: Vec<Arc<AccelerationStructure>>,
-    /// The measurement pool: when attached, the
-    /// frame's GPU time is attributed per stage — the pool is reset at the
-    /// top of the frame, then flight begin / trace begin-end / flight end
-    /// timestamps are written around the node and the `trace_rays` call
-    /// (slot layout in [`crate::render::measure`]). `None` (the validator's path)
-    /// records nothing — the harness's captured frames are bit-identical.
-    timestamps: Option<Arc<QueryPool>>,
-    /// The march-and-miss counter buffer (reset with a fill + pushed each
-    /// frame only when measuring). `None` (the validator's path) records no
-    /// fill and pushes an INVALID id — and the intersection shader is
-    /// specialized with COUNTER_ENABLED = false, folding the atomicAdds away so
-    /// the validator/default pipelines render byte-identical output.
-    counter: Option<CounterBuffer>,
     /// The per-pixel hull-crossed count buffer (debug builds only): reset with
     /// a fill, pushed into the intersection shader's push constants, and read
     /// by the heatmap overlay node. `None` (the validator's and release paths)
@@ -291,9 +268,6 @@ impl RegionRenderTask {
     /// for every frame of the pass (residency rebuilds rewrite the buffers
     /// in place).
     ///
-    /// `timestamps`: the measurement pool, when
-    /// the app measures — the task records per-stage timestamps (flight /
-    /// trace_rays) around the node. The validator passes `None`.
     /// `hull_crossed`: the per-pixel hull-crossed count buffer (debug
     /// builds only). `sky_background` (ticket 06): whether the miss shader
     /// returns the Procedural sky (the app's production pipeline) or stays
@@ -305,8 +279,6 @@ impl RegionRenderTask {
         store: &RegionStore,
         virtual_swapchain_id: Id<Swapchain>,
         raygen: &EntryPoint,
-        timestamps: Option<Arc<QueryPool>>,
-        counter: Option<&CounterBuffer>,
         hull_crossed: Option<&HullCrossedCounter>,
         sky_background: bool,
     ) -> Self {
@@ -329,7 +301,6 @@ impl RegionRenderTask {
             let intersection = unsafe {
                 intersect::load(&gpu.device)
                     .unwrap()
-                    .specialize(&[(0, SpecializationConstant::Bool(counter.is_some()))])
                     .entry_point("main")
                     .unwrap()
             };
@@ -361,8 +332,6 @@ impl RegionRenderTask {
             shader_binding_table,
             pipeline,
             blases: store.blases(),
-            timestamps,
-            counter: counter.copied(),
             hull_crossed: hull_crossed.copied(),
         }
     }
@@ -447,10 +416,7 @@ pub(crate) fn build_ray_tracing_pipeline(
     let hull_crossed_intersection = unsafe {
         intersect::load(&gpu.device)
             .unwrap()
-            .specialize(&[
-                (0, SpecializationConstant::Bool(false)),
-                (1, SpecializationConstant::Bool(true)),
-            ])
+            .specialize(&[(1, SpecializationConstant::Bool(true))])
             .entry_point("main")
             .unwrap()
     };
@@ -534,17 +500,6 @@ impl Task for RegionRenderTask {
         tcx: &mut TaskContext<'_>,
         rcx: &Self::World,
     ) -> TaskResult {
-        // Measurement: reset the pool (queries
-        // must be reset between uses — Vulkan spec, queries.adoc) and write
-        // the flight begin as the first command of the node.
-        if let Some(pool) = &self.timestamps {
-            unsafe { cbf.as_raw().reset_query_pool(pool, 0, TIMESTAMP_SLOT_COUNT) };
-            unsafe {
-                cbf.as_raw()
-                    .write_timestamp(pool, FLIGHT_BEGIN_SLOT, PipelineStage::AllCommands)
-            };
-        }
-
         let swapchain_state = tcx.swapchain(self.swapchain_id);
         let image_index = swapchain_state.current_image_index().unwrap();
         let extent = swapchain_state.images()[0].extent();
@@ -571,33 +526,9 @@ impl Task for RegionRenderTask {
             })
         };
 
-        // Reset the march-and-miss counter (fill 0) before the ray pass —
-        // the app reads the words back after the flight idle. A fill runs on
-        // the transfer stage, so make it visible to the shader's atomicAdd.
-        if let Some(counter) = self.counter {
-            unsafe {
-                cbf.fill_buffer(&FillBufferInfo {
-                    dst_buffer: counter.buffer_id,
-                    data: 0,
-                    ..Default::default()
-                });
-                cbf.pipeline_barrier(&DependencyInfo {
-                    memory_barriers: &[MemoryBarrier {
-                        src_access: vulkano::sync::AccessFlags::TRANSFER_WRITE,
-                        dst_access: vulkano::sync::AccessFlags::SHADER_STORAGE_WRITE
-                            | vulkano::sync::AccessFlags::SHADER_STORAGE_READ,
-                        src_stages: vulkano::sync::PipelineStages::ALL_TRANSFER,
-                        dst_stages: vulkano::sync::PipelineStages::RAY_TRACING_SHADER,
-                        ..Default::default()
-                    }],
-                    ..Default::default()
-                });
-            }
-        }
-
         // Reset the per-pixel hull-crossed count buffer (fill 0) before the
-        // ray pass — the heatmap overlay reads it after. Same transfer-stage
-        // visibility discipline as the counter fill above.
+        // ray pass — the heatmap overlay reads it after. A fill runs on the
+        // transfer stage, so make it visible to the shader's atomicAdd.
         if let Some(hull_crossed) = self.hull_crossed {
             unsafe {
                 cbf.fill_buffer(&FillBufferInfo {
@@ -633,7 +564,6 @@ impl Task for RegionRenderTask {
                     scene_buffer_id: self.scene_storage_id,
                     region_table_buffer_id: self.region_table_storage_id,
                     aabb_table_buffer_id: self.aabb_table_storage_id(),
-                    counter_buffer_id: self.counter.map(|counter| counter.storage_id).unwrap_or(StorageBufferId::INVALID),
                     hull_count_buffer_id: self.hull_crossed.map(|hull_crossed| hull_crossed.storage_id).unwrap_or(StorageBufferId::INVALID),
                     mode: rcx.mode as u32,
                     frame_seed: rcx.frame_seed,
@@ -651,31 +581,7 @@ impl Task for RegionRenderTask {
             cbf.bind_pipeline(&self.pipeline);
         }
 
-        if let Some(pool) = &self.timestamps {
-            unsafe {
-                cbf.as_raw().write_timestamp(
-                    pool,
-                    TRACE_BEGIN_SLOT,
-                    PipelineStage::RayTracingShader,
-                )
-            };
-        }
-
         unsafe { cbf.trace_rays(self.shader_binding_table.addresses(), extent) };
-
-        if let Some(pool) = &self.timestamps {
-            unsafe {
-                cbf.as_raw()
-                    .write_timestamp(pool, TRACE_END_SLOT, PipelineStage::RayTracingShader)
-            };
-            // The flight end: the last command of the production path's
-            // frame work (the app-only debug overlay, when present, draws
-            // after — excluded from "flight").
-            unsafe {
-                cbf.as_raw()
-                    .write_timestamp(pool, FLIGHT_END_SLOT, PipelineStage::AllCommands)
-            };
-        }
 
         Ok(())
     }

@@ -25,8 +25,6 @@
 //! the store owns exactly one stable TLAS (rebuilt in place), the nodes
 //! only record ordered commands, and the plan is plain data. Startup is a
 //! one-shot pre-loop build from the initial batch through the same graph.
-//! Each node records begin/end GPU timestamps (when the device supports
-//! them), so rebuild time is attributable per node.
 
 use std::sync::Arc;
 
@@ -42,8 +40,7 @@ use vulkano::{
     },
     buffer::{Buffer, BufferCreateInfo, BufferUsage, Subbuffer},
     memory::allocator::AllocationCreateInfo,
-    query::{QueryPool, QueryPoolCreateInfo, QueryResultFlags, QueryType},
-    sync::{AccessFlags, PipelineStage, PipelineStages},
+    sync::{AccessFlags, PipelineStages},
 };
 use vulkano_taskgraph::{
     Id, QueueFamilyType, Task, TaskContext, TaskResult,
@@ -191,27 +188,6 @@ pub enum RebuildLogEntry {
     BuildTlas { instance_count: u32 },
 }
 
-/// Per-node GPU timings for one rebuild cycle: each node records begin/end timestamps around its work.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct NodeTimings {
-    /// The upload node's GPU time (host writes — expected ~0).
-    pub upload_ns: u64,
-    /// The BLAS-build node's GPU time.
-    pub blas_ns: u64,
-    /// The TLAS-build node's GPU time.
-    pub tlas_ns: u64,
-    /// Whether timestamp queries are available on this device (`false` → the
-    /// fields stay 0; the GPU time is still attributable by node *shape*).
-    pub supported: bool,
-}
-
-/// One node's begin/end timestamp queries inside the shared pool.
-struct QueryRange {
-    pool: Arc<QueryPool>,
-    begin: u32,
-    end: u32,
-}
-
 // ---------------------------------------------------------------------------
 // The ordered nodes
 // ---------------------------------------------------------------------------
@@ -219,16 +195,13 @@ struct QueryRange {
 /// The first node: host writes. Copies the plan's pool bytes, trimmed AABBs,
 /// region table and packed instance prefix into the store's buffers at
 /// record time (the taskgraph flushes the host writes before submit, so the
-/// subsequent nodes' declared accesses see them). No GPU commands — its
-/// begin/end timestamps bracket the (empty) node, keeping the per-node
-/// attribution uniform.
+/// subsequent nodes' declared accesses see them). No GPU commands.
 struct UploadRegionsTask {
     uploads: Vec<RegionUpload>,
     table: Option<[u64; REGION_COUNT]>,
     instances: Option<Vec<AccelerationStructureInstance>>,
     instance_buffer_id: Id<Buffer>,
     region_table_buffer_id: Id<Buffer>,
-    timestamps: Option<QueryRange>,
 }
 
 impl Task for UploadRegionsTask {
@@ -236,17 +209,10 @@ impl Task for UploadRegionsTask {
 
     unsafe fn execute(
         &self,
-        cbf: &mut RecordingCommandBuffer<'_>,
+        _cbf: &mut RecordingCommandBuffer<'_>,
         tcx: &mut TaskContext<'_>,
         _world: &Self::World,
     ) -> TaskResult {
-        if let Some(range) = &self.timestamps {
-            unsafe {
-                cbf.as_raw()
-                    .write_timestamp(&range.pool, range.begin, PipelineStage::AllCommands)
-            };
-        }
-
         for upload in &self.uploads {
             tcx.write_buffer::<[u8]>(
                 upload.pool_buffer_id,
@@ -279,13 +245,6 @@ impl Task for UploadRegionsTask {
             }
         }
 
-        if let Some(range) = &self.timestamps {
-            unsafe {
-                cbf.as_raw()
-                    .write_timestamp(&range.pool, range.end, PipelineStage::AllCommands)
-            };
-        }
-
         Ok(())
     }
 }
@@ -296,7 +255,6 @@ impl Task for UploadRegionsTask {
 /// the AS storage.
 struct BuildBlasTask {
     builds: Vec<BlasBuild>,
-    timestamps: Option<QueryRange>,
 }
 
 impl Task for BuildBlasTask {
@@ -308,13 +266,6 @@ impl Task for BuildBlasTask {
         tcx: &mut TaskContext<'_>,
         _world: &Self::World,
     ) -> TaskResult {
-        if let Some(range) = &self.timestamps {
-            unsafe {
-                cbf.as_raw()
-                    .write_timestamp(&range.pool, range.begin, PipelineStage::AllCommands)
-            };
-        }
-
         for build in &self.builds {
             let aabb_buffer = Subbuffer::new(tcx.buffer(build.aabb_buffer_id).buffer().clone())
                 .cast_aligned::<AabbPositions>();
@@ -366,13 +317,6 @@ impl Task for BuildBlasTask {
             };
         }
 
-        if let Some(range) = &self.timestamps {
-            unsafe {
-                cbf.as_raw()
-                    .write_timestamp(&range.pool, range.end, PipelineStage::AllCommands)
-            };
-        }
-
         Ok(())
     }
 }
@@ -394,7 +338,6 @@ struct BuildTlasTask {
     instance_buffer_id: Id<Buffer>,
     tlas: Arc<AccelerationStructure>,
     scratch: Arc<Buffer>,
-    timestamps: Option<QueryRange>,
 }
 
 impl Task for BuildTlasTask {
@@ -406,13 +349,6 @@ impl Task for BuildTlasTask {
         tcx: &mut TaskContext<'_>,
         _world: &Self::World,
     ) -> TaskResult {
-        if let Some(range) = &self.timestamps {
-            unsafe {
-                cbf.as_raw()
-                    .write_timestamp(&range.pool, range.begin, PipelineStage::AllCommands)
-            };
-        }
-
         let instance_buffer = Subbuffer::new(tcx.buffer(self.instance_buffer_id).buffer().clone())
             .cast_aligned::<AccelerationStructureInstance>();
         let instances_data = AccelerationStructureGeometryInstancesData {
@@ -456,13 +392,6 @@ impl Task for BuildTlasTask {
                 ..Default::default()
             })
         };
-
-        if let Some(range) = &self.timestamps {
-            unsafe {
-                cbf.as_raw()
-                    .write_timestamp(&range.pool, range.end, PipelineStage::AllCommands)
-            };
-        }
 
         Ok(())
     }
@@ -509,21 +438,10 @@ fn build_post_barrier() -> MemoryBarrier<'static> {
 /// residency), compiled once per change cycle over exactly the buffers
 /// involved, executed on the compute queue and waited before returning — so
 /// the freed memory release in the store is safe (the dropping rebuild
-/// executed) and the per-node timestamps can be read back. An idle renderer
-/// never builds one (zero cost: no pending rebuilds, no wakeups).
+/// executed). An idle renderer never builds one (zero cost: no pending
+/// rebuilds, no wakeups).
 pub struct RebuildGraph {
     executable: ExecutableTaskGraph<()>,
-    query_pool: Option<Arc<QueryPool>>,
-    slots: NodeTimingSlots,
-    /// The timestamp pool's query count (0 when unsupported).
-    query_count: u32,
-}
-
-/// Begin/end query slots per node kind (nodes that don't run have `None`).
-struct NodeTimingSlots {
-    upload: (u32, u32),
-    blas: Option<(u32, u32)>,
-    tlas: Option<(u32, u32)>,
 }
 
 impl RebuildGraph {
@@ -554,42 +472,6 @@ impl RebuildGraph {
             task_graph.add_host_buffer_access(store.instance_buffer_id, HostAccessType::Write);
         }
 
-        let timestamps_supported = timestamp_supported(gpu);
-        let mut slots = NodeTimingSlots {
-            upload: (0, 1),
-            blas: None,
-            tlas: None,
-        };
-        let mut next_slot = 2u32;
-        let mut node_count = 1;
-        if !plan.blas_builds.is_empty() {
-            slots.blas = Some((next_slot, next_slot + 1));
-            next_slot += 2;
-            node_count += 1;
-        }
-        if plan.tlas.is_some() {
-            slots.tlas = Some((next_slot, next_slot + 1));
-            node_count += 1;
-        }
-        let query_count = node_count * 2;
-        let query_pool = timestamps_supported.then(|| {
-            QueryPool::new(
-                &gpu.device,
-                &QueryPoolCreateInfo {
-                    query_count,
-                    ..QueryPoolCreateInfo::new(QueryType::Timestamp)
-                },
-            )
-            .unwrap()
-        });
-        let query_range = |pool: &Option<Arc<QueryPool>>, slot: (u32, u32)| {
-            pool.as_ref().map(|pool| QueryRange {
-                pool: pool.clone(),
-                begin: slot.0,
-                end: slot.1,
-            })
-        };
-
         let upload_node = task_graph
             .create_task_node(
                 "Rebuild upload",
@@ -600,7 +482,6 @@ impl RebuildGraph {
                     instances: plan.instances,
                     instance_buffer_id: store.instance_buffer_id,
                     region_table_buffer_id: store.region_table_buffer_id(),
-                    timestamps: query_range(&query_pool, slots.upload),
                 },
             )
             .build();
@@ -612,7 +493,6 @@ impl RebuildGraph {
                 QueueFamilyType::Compute,
                 BuildBlasTask {
                     builds: plan.blas_builds,
-                    timestamps: query_range(&query_pool, slots.blas.unwrap()),
                 },
             );
             for build in blas_buffers {
@@ -636,7 +516,6 @@ impl RebuildGraph {
                             instance_buffer_id: store.instance_buffer_id,
                             tlas: store.tlas(),
                             scratch: tlas.scratch,
-                            timestamps: query_range(&query_pool, slots.tlas.unwrap()),
                         },
                     )
                     .buffer_access(
@@ -667,66 +546,21 @@ impl RebuildGraph {
         }
         .unwrap();
 
-        Self {
-            executable,
-            query_pool,
-            slots,
-            query_count,
-        }
+        Self { executable }
     }
 
-    /// Executes the ordered rebuild nodes, waits for the compute flight, and
-    /// reads back the per-node GPU timestamps.
-    pub fn execute(self, gpu: &GpuStack) -> NodeTimings {
+    /// Executes the ordered rebuild nodes and waits for the compute flight
+    /// before returning (the rebuild sequence must complete before the
+    /// caller releases the pending frees — the dropping rebuild executed).
+    pub fn execute(self, gpu: &GpuStack) {
         let resource_map = resource_map!(&self.executable).unwrap();
 
         unsafe { self.executable.execute(resource_map, &(), || {}) }.unwrap();
 
-        // The rebuild sequence must complete before the caller reads the
-        // timestamps or releases the pending frees (the dropping rebuild
-        // executed).
         gpu.resources
             .flight(gpu.compute_flight_id)
             .wait_idle()
             .unwrap();
-
-        self.read_timings(gpu)
-    }
-
-    /// Reads the per-node begin/end timestamp pairs (elapsed ×
-    /// `timestamp_period`; 0 when unsupported or unavailable).
-    fn read_timings(&self, gpu: &GpuStack) -> NodeTimings {
-        let mut timings = NodeTimings {
-            supported: self.query_pool.is_some(),
-            ..Default::default()
-        };
-        let Some(pool) = &self.query_pool else {
-            return timings;
-        };
-
-        let mut values = vec![0u64; self.query_count as usize];
-        let available = pool
-            .get_results::<u64>(0, self.query_count, &mut values, QueryResultFlags::empty())
-            .unwrap();
-        if !available {
-            return timings;
-        }
-
-        let period = gpu.device.physical_device().properties().timestamp_period as f64;
-        let elapsed = |slot: (u32, u32)| {
-            let begin = values[slot.0 as usize];
-            let end = values[slot.1 as usize];
-            (end.wrapping_sub(begin) as f64 * period) as u64
-        };
-
-        timings.upload_ns = elapsed(self.slots.upload);
-        if let Some(slot) = self.slots.blas {
-            timings.blas_ns = elapsed(slot);
-        }
-        if let Some(slot) = self.slots.tlas {
-            timings.tlas_ns = elapsed(slot);
-        }
-        timings
     }
 }
 
@@ -737,14 +571,6 @@ fn blas_buffer_ids(plan: &RebuildPlan) -> Vec<Id<Buffer>> {
         .iter()
         .map(|build| build.aabb_buffer_id)
         .collect()
-}
-
-/// Whether the compute queue family supports timestamp queries.
-fn timestamp_supported(gpu: &GpuStack) -> bool {
-    let index = gpu.compute_queue.queue_family_index() as usize;
-    gpu.device.physical_device().queue_family_properties()[index]
-        .timestamp_valid_bits
-        .is_some()
 }
 
 /// Allocates a build scratch buffer of `size` bytes (the plan phase; kept

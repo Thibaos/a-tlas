@@ -1,7 +1,6 @@
 mod input;
 mod player;
 mod schedule;
-mod stats;
 
 use std::{f32::consts::PI, sync::Arc, time::Duration};
 use vulkano::{
@@ -40,7 +39,6 @@ use crate::{
         input::{Input, InputButton, InputKey},
         player::PlayerController,
         schedule::ScheduleController,
-        stats::Measurement,
     },
     core::gpu::{GpuStack, MIN_SWAPCHAIN_IMAGES},
     core::grid::LATTICE_HALF_EXTENT,
@@ -99,13 +97,6 @@ pub struct App {
     /// nodes on change cycles.
     store: RegionStore,
 
-    /// GPU measurement: per-stage timestamps
-    /// (trace_rays / AS rebuild / flight), min/avg/p95 in the FPS log, the
-    /// 16 ms gate as the GPU timestamp sum with wall-clock beside it. Only
-    /// created with `atlas-rt --measure` (on demand); the validator never
-    /// constructs one, so the harness's captured frames are unaffected.
-    measurement: Option<Measurement>,
-
     rcx: Option<RenderContext>,
 }
 
@@ -125,12 +116,7 @@ pub struct RenderContext {
 }
 
 impl App {
-    pub fn new(
-        event_loop: &EventLoop<()>,
-        measure: bool,
-        world_path: &str,
-        clip_oob: bool,
-    ) -> Self {
+    pub fn new(event_loop: &EventLoop<()>, world_path: &str, clip_oob: bool) -> Self {
         let gpu = GpuStack::new(event_loop);
 
         let voxel_data = open_file(world_path);
@@ -163,11 +149,6 @@ impl App {
         let store = RegionStore::new(&gpu, &voxel_data, input.packed_regions());
         input.take_dirty_regions();
 
-        // Measurement: on demand only — the pool is attached
-        // to the render task in `resumed`, and the frame loop feeds it the
-        // rebuild timings and per-frame readbacks.
-        let measurement = measure.then(|| Measurement::new(&gpu));
-
         let mut schedule_controller = ScheduleController::new();
         schedule_controller.add_schedule_frames("delta", 1);
         schedule_controller.add_schedule_duration("log", Duration::from_secs(1));
@@ -190,8 +171,6 @@ impl App {
 
             input,
             store,
-
-            measurement,
 
             rcx: None,
         }
@@ -248,12 +227,6 @@ impl App {
     fn request_log(&mut self) {
         if self.schedule_controller.check("log").is_some() {
             println!("{:.2} fps", 1.0 / self.delta_time.as_secs_f32());
-            // Measurement surface: min/avg/p95 per stage over
-            // the ~60-frame window, the 16 ms gate as the GPU timestamp
-            // sum (trace + as rebuild) and the wall-clock beside it.
-            if let Some(measurement) = &self.measurement {
-                measurement.print_log();
-            }
         }
     }
 
@@ -421,12 +394,6 @@ impl ApplicationHandler for App {
             &self.store,
             virtual_swapchain_id,
             &raygen,
-            // The measurement pool: attached only with
-            // `--measure`; `None` records no timestamps.
-            self.measurement.as_ref().and_then(Measurement::pool),
-            // The march-and-miss counter: same on-demand gate; `None` (the
-            // default app) pushes INVALID and specializes COUNTER_ENABLED off.
-            self.measurement.as_ref().and_then(Measurement::counter),
             hull_crossed.as_ref(),
             // The production pipeline's miss shader returns the Procedural
             // sky (ticket 06).
@@ -658,16 +625,8 @@ impl ApplicationHandler for App {
                 // frame is applied through the ordered rebuild nodes (pool
                 // upload → BLAS build → TLAS build on residency transitions)
                 // before the consuming trace.
-                let report = if !self.input.take_dirty_regions().is_empty() {
-                    Some(self.store.apply(&self.gpu, &self.input))
-                } else {
-                    None
-                };
-                // The cycle's per-node rebuild time is attributed
-                // to the frame being assembled (a rebuild spike shows up in
-                // the AS-rebuild line, not in trace_rays).
-                if let (Some(measurement), Some(report)) = (&mut self.measurement, &report) {
-                    measurement.record_rebuild(&report.timings);
+                if !self.input.take_dirty_regions().is_empty() {
+                    self.store.apply(&self.gpu, &self.input);
                 }
 
                 {
@@ -748,14 +707,6 @@ impl ApplicationHandler for App {
                     .flight(self.gpu.graphics_flight_id)
                     .wait_idle()
                     .unwrap();
-
-                // complete the previous frame's sample — the
-                // flight idle above makes its timestamps available; the wall
-                // interval is this frame's `delta_time` (the previous
-                // frame's interval, aligned with the readback).
-                if let Some(measurement) = &mut self.measurement {
-                    measurement.record_frame(&self.gpu, self.delta_time.as_nanos() as u64);
-                }
 
                 let rcx = self.rcx.as_mut().unwrap();
 

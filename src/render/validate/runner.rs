@@ -473,38 +473,10 @@ impl ValidateRunner {
                         );
                     }
                 }
-                // Per-node GPU attribution ):
-                // real builds report nonzero times when timestamps exist.
-                if report.timings.supported {
-                    if report.tlas_rebuilt {
-                        assert!(
-                            report.timings.tlas_ns > 0,
-                            "the TLAS rebuild's GPU time must be attributable (tlas_ns > 0)"
-                        );
-                    }
-                    if log
-                        .iter()
-                        .any(|e| matches!(e, RebuildLogEntry::BuildBlas { .. }))
-                    {
-                        assert!(
-                            report.timings.blas_ns > 0,
-                            "the BLAS rebuilds' GPU time must be attributable (blas_ns > 0)"
-                        );
-                    }
-                }
+                // The rebuild log line (step observability): what the cycle's
+                // nodes did, in node order.
                 if !report.rebuild_log.is_empty() {
-                    println!(
-                        "              rebuild {}: upload {:>6} ns, blas {:>6} ns, tlas {:>6} ns{}",
-                        step.label,
-                        report.timings.upload_ns,
-                        report.timings.blas_ns,
-                        report.timings.tlas_ns,
-                        if report.timings.supported {
-                            ""
-                        } else {
-                            " (timestamps unsupported)"
-                        }
-                    );
+                    println!("              rebuild {}: {:?}", step.label, report.rebuild_log);
                 }
 
                 let (summary, path) = self.run_frame(
@@ -611,15 +583,6 @@ impl ValidateRunner {
             store,
             virtual_swapchain_id,
             &raygen,
-            // No measurement pool: the validator
-            // never measures — no timestamp commands are recorded, so the
-            // captured frames are bit-identical with or without measurement
-            // (which runs on demand in the app only).
-            None,
-            // No counter: the validator's intersection shader is specialized
-            // with COUNTER_ENABLED = false (no atomicAdd), so the captured
-            // frames stay byte-identical.
-            None,
             // No hull-crossed counter: the validator's capture raygen hardcodes
             // Voxel, so the hull-crossed hit group is never selected and the
             // captured frames stay byte-identical.
@@ -715,8 +678,6 @@ impl ValidateRunner {
             store,
             virtual_swapchain_id,
             &path_raygen,
-            None,
-            None,
             None,
             // The production pipeline's miss shader returns the Procedural
             // sky (ticket 06) — the shading half compares the real output.

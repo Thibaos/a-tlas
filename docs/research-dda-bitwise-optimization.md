@@ -1,12 +1,12 @@
-# DDA "bit-wise optimization" — video research
+# DDA "bit-wise optimization": video research
 
-## 0. Correction — the video shows the ray-mask occupancy filter, not the empty-space skip
+## 0. Correction: the video shows the ray-mask occupancy filter, not the empty-space skip
 
 The original version of this note could not identify the video and then
 *guessed* the technique was the bit-scan empty-space skip (§2a) and
 recommended implementing it. That guess was wrong. The user watched the video
 and reports its actual content: **bit masking over the occupancy mask,
-skipping the empty occupancy bits by filtering — ANDing a precomputed
+skipping the empty occupancy bits by filtering, ANDing a precomputed
 ray-direction bit representation against the bit representation of occupied
 voxels.** That is the *ray-mask occupancy filter / subspace cull* (§2f), not
 the find-first-set empty-space skip. The empty-space skip (§2a) remains a
@@ -18,9 +18,9 @@ corrected accordingly.
 ## 1. Video identity (and confidence)
 
 **I could not identify the video from the URL/ID.** Every web_search query
-for the ID — `P2bGF6GPmfc`, `youtube.com/watch?v=P2bGF6GPmfc`,
+for the ID, `P2bGF6GPmfc`, `youtube.com/watch?v=P2bGF6GPmfc`,
 `site:youtube.com P2bGF6GPmfc`, plus keyword variants ("DDA", "voxel",
-"ray tracing", "shader") — returned either no results or a single
+"ray tracing", "shader"), returned either no results or a single
 false-positive. The search backend in this session returns source URLs only
 (no answer summaries or snippets), and the sandbox blocks all outbound TLS
 (HTTPS), so I could not fetch the YouTube page, oEmbed, or the one Chinese
@@ -46,12 +46,12 @@ companion (unconfirmed).
 "Bit-wise DDA optimization" is a family, not one trick. Per the user's
 first-hand account of the video, the member it shows is **(f) the ray-mask
 occupancy filter**: AND a precomputed ray-direction bit mask against the
-occupancy mask and skip the empty bits. The bit-scan empty-space skip (§2a) —
-the technique this note originally, wrongly, bet on — is a sibling, and the
+occupancy mask and skip the empty bits. The bit-scan empty-space skip (§2a),
+the technique this note originally, wrongly, bet on, is a sibling, and the
 remaining members (integer tMax, mantissa/octant/tree tricks) are covered
 below for completeness.
 
-### 2a. Bit-scan / find-first-set empty-space skip (a sibling — NOT the video's technique)
+### 2a. Bit-scan / find-first-set empty-space skip (a sibling, not the video's technique)
 
 Standard Amanatides-Woo marches one cell per loop iteration and tests
 `mask & (1 << bit)` per cell. The bit-wise form holds the current run of
@@ -82,20 +82,20 @@ the 8×8 (x,y) plane at height z):
 
 This is the same primitive Laine & Karras use in their octree traversal:
 maintain a bit mask of candidate children, AND it with the valid (child)
-mask, and take the first set bit to descend — see §5.
+mask, and take the first set bit to descend. See §5.
 
-### 2f. Ray-mask occupancy filter (subspace cull) — the video's technique
+### 2f. Ray-mask occupancy filter (subspace cull), the video's technique
 
 Per the user's first-hand account of the video: hold the occupancy mask (the
 bit representation of occupied voxels); for a ray, look up (or compute) a
-*ray mask* — a precomputed bit representation of the cells the ray traverses,
+*ray mask*, a precomputed bit representation of the cells the ray traverses,
 keyed by ray direction; AND the two. The surviving bits are the occupied
 voxels the ray actually crosses; the empty ones are filtered out in one
 operation instead of being marched cell-by-cell.
 
 This is the AMD "Subspace Culling for Ray–Box Intersection" family (I3D
 2023): embed a binary occupancy mask in each primitive and AND it against a
-ray mask, rejecting the primitive when the AND is empty — already cited in
+ray mask, rejecting the primitive when the AND is empty, already cited in
 `docs/research-voxel-rt-cost-model.md` finding 9 (−37.5% intersections,
 −13.1% time on a 12.1M-triangle hair scene, a 64-bit mask over a 4³ grid).
 Laine & Karras' sparse-voxel-octree traversal is the same AND + bit-scan
@@ -115,7 +115,7 @@ ray direction by a fixed scale so the dominant axis advances exactly one
 integer unit per step), turning the crossing test into integer compares and
 adds. This is what the request calls "(a)" / "(d) 1D DDA integer-only
 traversal". It removes the float divide/reciprocal per step but does **not**
-remove the 3-way min select — that is inherent to a grid walk.
+remove the 3-way min select. That is inherent to a grid walk.
 
 ### 2c. Mantissa bit-manipulation (dubiousconst282)
 
@@ -142,7 +142,7 @@ the mantissa, addressed by shift-and-mask with **no** float→int conversion and
 
 To re-enter the tree at the right depth after a step, XOR the old and new
 mantissa and take `firstbithigh` (findMSB / clz) to get the highest changed
-bit — that names the common ancestor level, replacing a descent-from-root
+bit. That names the common ancestor level, replacing a descent-from-root
 every step:
 
 ```hlsl
@@ -204,13 +204,13 @@ Measured by dubiousconst282 (integrated GPU, 4K "Bistro" scene, cycles/ray):
 
 ## 5. Sources / citations
 
-- Amanatides & Woo (1987), "A Fast Voxel Traversal Algorithm for Ray Tracing" — the baseline DDA. https://www.researchgate.net/publication/2611491_A_Fast_Voxel_Traversal_Algorithm_for_Ray_Tracing
-- Laine & Karras (2010), "Efficient Sparse Voxel Octrees — Analysis, Extensions, and Implementation" (NVIDIA Tech Report NVR-2010-001) — the canonical bitmask + find-first-set voxel traversal. https://research.nvidia.com/publication/2010-02_efficient-sparse-voxel-octrees
-- dubiousconst282, "A guide to fast voxel ray tracing using sparse 64-trees" (Oct 3, 2024) — primary source for §2c/2d/2e and the measured numbers. https://dubiousconst282.github.io/2024/10/03/voxel-ray-tracing/ (archived: https://web.archive.org/web/20260419004803/https://dubiousconst282.github.io/2024/10/03/voxel-ray-tracing/ )
+- Amanatides & Woo (1987), "A Fast Voxel Traversal Algorithm for Ray Tracing", the baseline DDA. https://www.researchgate.net/publication/2611491_A_Fast_Voxel_Traversal_Algorithm_for_Ray_Tracing
+- Laine & Karras (2010), "Efficient Sparse Voxel Octrees — Analysis, Extensions, and Implementation" (NVIDIA Tech Report NVR-2010-001), the canonical bitmask + find-first-set voxel traversal. https://research.nvidia.com/publication/2010-02_efficient-sparse-voxel-octrees
+- dubiousconst282, "A guide to fast voxel ray tracing using sparse 64-trees" (Oct 3, 2024), primary source for §2c/2d/2e and the measured numbers. https://dubiousconst282.github.io/2024/10/03/voxel-ray-tracing/ (archived: https://web.archive.org/web/20260419004803/https://dubiousconst282.github.io/2024/10/03/voxel-ray-tracing/ )
 - dubiousconst282/VoxelRT (code): https://github.com/dubiousconst282/VoxelRT
 - expenses/tree64 (independent re-implementation of the above): https://github.com/expenses/tree64
-- AMD (I3D 2023), "Subspace Culling for Ray–Box Intersection" — occupancy-mask AND ray-mask culling (already cited in docs/research-voxel-rt-cost-model.md). https://gpuopen.com/download/I3D2023_SubspaceCulling.pdf
-- javidx9, "Super Fast Ray Casting in Tiled Worlds using DDA" — the most-cited *DDA* video, but it is 2D tile raycasting, not voxel, and not the "bit trick". https://www.youtube.com/watch?v=NbSee-XM7WA
+- AMD (I3D 2023), "Subspace Culling for Ray–Box Intersection", occupancy-mask AND ray-mask culling (already cited in docs/research-voxel-rt-cost-model.md). https://gpuopen.com/download/I3D2023_SubspaceCulling.pdf
+- javidx9, "Super Fast Ray Casting in Tiled Worlds using DDA", the most-cited *DDA* video, but it is 2D tile raycasting, not voxel, and not the "bit trick". https://www.youtube.com/watch?v=NbSee-XM7WA
 
 ## 6. Applicability to atlas-rt's intersection-shader DDA
 
@@ -222,14 +222,14 @@ raymarcher framing:
 1. **The DDA already runs in small integer lattice space.** `mc = cell >> 3`,
    `c = cell & 7`, `idx = x + 8y + 64z` are already bit ops; `floor(entry)`
    happens once at setup. So the mantissa/octant-mirroring tricks (2c/2e) buy
-   almost nothing here — there is no per-step float→int or sign select to
+   almost nothing here. There is no per-step float→int or sign select to
    remove (sign/step is set once, lines 132–149).
 2. **The measured bottleneck is per-step ALU chains, not memory, not step
    count in dense views.** Nsight: intersection shader = 93% of SM time;
    warp states WAIT 37% / Not Selected 14% / Selected 13%. Ticket 08
    (`.scratch/renderer-impl/issues/08-dda-mask-caching.md`) already tried
-   hoisting the mask/offset loads into registers and got **+11% regression**
-   — per-step ALU is the floor, and the A-W min-axis select chain
+   hoisting the mask/offset loads into registers and got **+11% regression**.
+   Per-step ALU is the floor, and the A-W min-axis select chain
    (FADD→CMP→SEL→FADD) is "scalar-irreducible".
 3. **The renderer is HW RT with a buffer_reference pool**, not a compute
    raymarcher. The DDA runs inside an intersection shader per trimmed-hull
@@ -239,13 +239,13 @@ raymarcher framing:
 **Verdict per trick:**
 
 - **2f ray-mask occupancy filter (the video's technique):** the candidate to
-  evaluate as a *cull* — AND a per-micro-chunk ray mask against the 512-bit
+  evaluate as a *cull*: AND a per-micro-chunk ray mask against the 512-bit
   Occupancy mask and reject the candidate (return without marching) when the
   AND is empty, attacking the wasted empty-hull DDA invocation the cost-model
   research flags (finding 8/9) rather than the per-step ALU floor ticket 08
   measured. Exact-t and entry-offset precision are open questions (§0).
 - **2a empty-space skip (a sibling, not the video's):** the one worth evaluating,
-  but only for *sparse* views and grazing rays — it reduces step count, which
+  but only for *sparse* views and grazing rays. It reduces step count, which
   is exactly the axis the ticket already lists as "occupancy run-skip (sparse
   views)". In the dense looking-down view (their 22–26 ms worst case) a
   mostly-occupied chunk has no runs to skip, so expect ~zero there. The
@@ -257,15 +257,15 @@ raymarcher framing:
 - **2b integer tMax DDA:** marginal. Their `t_next`/min-select is the
   irreducible floor the ticket already identified; int vs float compare is
   not the differentiator on modern GPUs.
-- **2c/2d/2e:** not applicable — tree-level and mantissa-level tricks assume a
+- **2c/2d/2e:** not applicable. Tree-level and mantissa-level tricks assume a
   hierarchical sparse tree and float-fractional coordinates; atlas-rt is a
   flat 8³ lattice addressed by small integers.
 
 **Bottom line for the user (corrected):** the video's technique is the
 *ray-mask occupancy filter* (§2f), not the empty-space skip. Evaluate it as a
-*cull* — AND a per-micro-chunk ray mask against the 512-bit Occupancy mask
-and reject the candidate (return without marching) when the AND is empty —
-the lever that attacks wasted empty-hull DDA invocations, which the
+*cull*: AND a per-micro-chunk ray mask against the 512-bit Occupancy mask
+and reject the candidate (return without marching) when the AND is empty.
+That lever attacks wasted empty-hull DDA invocations, which the
 cost-model research already flags as the procedural-path pitfall. Its
 precision (a direction-only ray mask vs. the ray's fractional entry offset
 into a chunk) and the exact-t commitment it leaves behind are open questions

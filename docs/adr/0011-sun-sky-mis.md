@@ -9,7 +9,7 @@ NEE block in the path loop (`shaders/region/production.rgen`).
 **The Sun is a delta directional light at infinity, defined by its
 illuminance `E_sun`** (lux on a surface perpendicular to its rays), with a
 fixed world direction. A delta has no solid angle, so the BSDF sampler can
-never produce exactly its direction — its MIS weight is 1 and it is
+never produce exactly its direction. Its MIS weight is 1 and it is
 NEE-only. The estimate at a hit is `f(ω_sun)·E_sun·max(n·ω_sun, 0) /
 p_sun` with `p_sun = SUN_PICK_P` (0.5), gated by a shadow test against the
 TLAS (any hit occludes; both lights are at infinity, so no distance
@@ -18,29 +18,29 @@ origin and consumes no RNG draws.
 
 **The Procedural sky is a piecewise-linear radiance gradient in
 μ = cos(elevation)**, with knots at ground (μ = -1), horizon (0), and
-zenith (1) — all strictly positive (no zero-crossings: the marginal pdf
-stays positive everywhere) — continuing below the horizon, so it is one
+zenith (1), all strictly positive (no zero-crossings: the marginal pdf
+stays positive everywhere), continuing below the horizon, so it is one
 function over the whole sphere. The miss shader evaluates it at the ray's
 world direction; the env NEE samples it by analytic inversion of its CDF.
 The gradient form is chosen for the CPU mirror (ticket 07): evaluation is
 lerp/clamp only, and the per-segment quadratic CDF inversion uses only
-f32 mul/add/div/sqrt — all bit-reproducible in Rust — no new
+f32 mul/add/div/sqrt, all bit-reproducible in Rust, no new
 transcendentals beyond the cos/sin the 05 slice already requires.
 
 **The Sun disk is the Sun's visual, not part of the transport.** The map's
 lock put a "sun disk" in the miss shader's radiance; the resolution scopes
 it to the raygen's primary-miss branch only (the camera's direct view,
-evaluated by a pure dot test, `L_disk = E_sun/Ω_disk` — the same source as
+evaluated by a pure dot test, `L_disk = E_sun/Ω_disk`, the same source as
 the delta). The transport radiance (env NEE and BSDF-miss samples) sees
 the gradient only: a measure-zero radiance bump with a gradient-matched
-pdf would be sampled with huge weights at 1 spp — ~100+ firefly pixels per
-frame — and the delta already carries the sun's light. Reflections do not
+pdf would be sampled with huge weights at 1 spp, ~100+ firefly pixels per
+frame, and the delta already carries the sun's light. Reflections do not
 show the disk in this slice (a specular surface shows the delta's point
 highlight instead); the disk in reflections is a future refinement, not a
 regression.
 
 **NEE runs at every bounce, including the primary**, with one light picked
-per bounce (`p_sun = p_sky = 0.5`, a draw per NEE — part of the mirror's
+per bounce (`p_sun = p_sky = 0.5`, a draw per NEE, part of the mirror's
 draw sequence). At the primary hit the estimate evaluates the selected
 lobe only and joins the path radiance, so the existing 1/lobe_p channel
 split keeps it unbiased (probabilistic splitting); deeper bounces evaluate
@@ -50,13 +50,13 @@ produce a direction:
 - Sun NEE: weight 1 (delta).
 - Sky NEE: `p_light = SKY_PICK_P·L(μ)/(2π·Z)`; weight
   `p_light/(p_light + p_bsdf)`, with `p_bsdf` the BSDF technique's output
-  density at the light direction — the mixture over the lobe pick
+  density at the light direction, the mixture over the lobe pick
   (`LOBE_P·p_vndf + (1-LOBE_P)·p_cos` at the primary; `0.5·(p_vndf +
   p_cos)` deeper).
 - BSDF-miss (a bounce ray hitting the sky): the throughput's terminal
   factor used the picked lobe's *conditional* pdf with the 1/p_pick split,
-  so the balance-heuristic weight is `p_cond·p_pick/(p_light + p_mixture)`
-  — the standard `f·cosθ/p_mixture` MIS form converted to the splitting
+  so the balance-heuristic weight is `p_cond·p_pick/(p_light + p_mixture)`,
+  the standard `f·cosθ/p_mixture` MIS form converted to the splitting
   basis. The loop retains the last lobe pick for the weight.
 
 The draw order per bounce is the CPU mirror's contract: light pick, then
@@ -66,12 +66,12 @@ none. The `vndf_pdf` helper was extracted from `sample_vndf` (identical
 arithmetic) so the NEE/MIS weights can evaluate the VNDF pdf at arbitrary
 directions; the new `specular_nl` (D·G2·F/(4·(n·v))) is the NEE's specular
 integrand factor, distinct from the sampled-lobe `specular_weight` (which
-divides by the BSDF pdf — the two round differently and are mirrored
+divides by the BSDF pdf. The two round differently and are mirrored
 separately).
 
 **The sky reaches the eye raw on primary miss**: the raygen's primary-miss
 branch writes `L_sky(ω)` (gradient + disk) to the diffuse channel with
-alpha 0 (the in-lobe hit distance is 0 — the sky sentinel), viewZ 0, and
+alpha 0 (the in-lobe hit distance is 0, the sky sentinel), viewZ 0, and
 no de-modulation (dividing by `max(albedo, eps)` would crush it to ~0);
 the composite adds those pixels raw (alpha ≤ 0 → no re-modulation), and
 NRD's denoisingRange excludes them (ticket 01's finding).

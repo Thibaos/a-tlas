@@ -10,16 +10,9 @@
 #include "header.glsl"
 #include "common.glsl"
 
-// March-and-miss counter gate: true only in the --measure pipeline. The
-// default/validator pipelines specialize this to false, folding the three
-// atomicAdds away (dead code) so the executed shader has no counter side
-// effect and the rendered output is byte-identical. The SPIR-V still carries
-// this gated block and the counter push-constant field — the validator's
-// byte-identity seam is the captured frames, not the shader module.
-layout(constant_id = 0) const bool COUNTER_ENABLED = false;
 // Per-pixel hull-crossed count gate: true only for the debug hull-crossed hit
-// group. Like COUNTER_ENABLED, false folds the atomicAdd away so the default
-// and validator pipelines render byte-identical output.
+// group. False (the default and validator pipelines) folds the atomicAdd away
+// so they render byte-identical output.
 layout(constant_id = 1) const bool PER_PIXEL_COUNTER = false;
 
 // The count buffer's fixed 4K pixel ceiling (matches app.rs HEATMAP_MAX_PIXELS);
@@ -93,32 +86,6 @@ uint material_rank(RegionPool pool, uint block_offset, uint idx) {
     return count;
 }
 
-// Whether the occupancy box [lo, hi] (inclusive, chunk-local cell coords) has
-// no set bit — the provisional empty-AND test for the ray-mask cull's lower
-// bound (ticket 11). Conservative: the DDA only steps a coordinate in its
-// direction sign, so every cell it visits lies in this box. The 512-bit mask
-// is walked as 8 z-planes x 2 words; each 32-bit word is 4 y-rows of an 8-bit
-// x-range mask.
-bool occupancy_box_empty(RegionPool pool, uint block_offset, ivec3 lo, ivec3 hi) {
-    uint base = block_offset >> 2u;
-    uint xmask = ((1u << uint(hi.x - lo.x + 1)) - 1u) << uint(lo.x);
-    uint acc = 0u;
-    for (int z = lo.z; z <= hi.z; ++z) {
-        for (int j = 0; j < 2; ++j) {
-            uint word_mask = 0u;
-            for (int yr = 0; yr < 4; ++yr) {
-                int gy = 4 * j + yr;
-                if (gy >= lo.y && gy <= hi.y) {
-                    word_mask |= xmask << uint(8 * yr);
-                }
-            }
-            uint w = uint(2 * z + j);
-            acc |= pool.words[base + w] & word_mask;
-        }
-    }
-    return acc == 0u;
-}
-
 // Slab test of the ray against [bmin, bmax] over [tmin, tmax]. Returns false
 // if the ray misses the box; on a hit, t0 is the entry t and t1 the exit t.
 bool aabb_slab(vec3 origin, vec3 dir, float tmin, float tmax, vec3 bmin, vec3 bmax, out float t0, out float t1) {
@@ -186,17 +153,14 @@ void main() {
         return;
     }
 
-    // The invocation is committed to marching the chunk: count it as
-    // hull-crossed (the denominator of the march-and-miss rate).
-    if (COUNTER_ENABLED) {
-        atomicAdd(counter.hull_crossed, 1u);
-    }
-    // The per-pixel hull-crossed count (debug builds): the same slab-passed
-    // point, but to a per-pixel buffer the heatmap overlay reads. The index
-    // is the ray pass launch coordinate (y-major, matching gl_LaunchSizeEXT).
-    // Like the scalar counter, it is a lower bound on traversal work (hulls
-    // entered, not rejected AABB tests) and an upper bound per-pixel (Vulkan
-    // may invoke intersection shaders redundantly).
+    // The invocation is committed to marching the chunk.
+
+    // The per-pixel hull-crossed count (debug builds): the slab-passed point
+    // to a per-pixel buffer the heatmap overlay reads. The index is the ray
+    // pass launch coordinate (y-major, matching gl_LaunchSizeEXT). It is a
+    // lower bound on traversal work (hulls entered, not rejected AABB tests)
+    // and an upper bound per-pixel (Vulkan may invoke intersection shaders
+    // redundantly).
     if (PER_PIXEL_COUNTER) {
         uint pixel = gl_LaunchIDEXT.y * gl_LaunchSizeEXT.x + gl_LaunchIDEXT.x;
         if (pixel < HULL_COUNT_MAX_PIXELS) {
@@ -242,33 +206,6 @@ void main() {
     float t_entry = t0;
     ivec3 chunk_origin = mc << 3;
 
-    // The provisional empty-AND test (ticket 11): the forward box from the
-    // clamped start cell, extended in each direction sign, has no occupancy.
-    // It is the lower bound on the ray-mask cull's win. The sentinel guard
-    // matches the DDA's occupancy test (defensive — the BLAS holds an AABB
-    // only per non-empty chunk, so it never fires in practice).
-    if (COUNTER_ENABLED && block_offset != OFFSET_SENTINEL) {
-        ivec3 anchor = clamp(cell - chunk_origin, ivec3(0), ivec3(7));
-        ivec3 lo = ivec3(0);
-        ivec3 hi = ivec3(0);
-        for (int a = 0; a < 3; ++a) {
-            float d = dir[a];
-            if (d > 0.0) {
-                lo[a] = anchor[a];
-                hi[a] = 7;
-            } else if (d < 0.0) {
-                lo[a] = 0;
-                hi[a] = anchor[a];
-            } else {
-                lo[a] = anchor[a];
-                hi[a] = anchor[a];
-            }
-        }
-        if (occupancy_box_empty(pool, block_offset, lo, hi)) {
-            atomicAdd(counter.empty_and, 1u);
-        }
-    }
-
     while (true) {
         // Chunk-local cell, by exact subtraction from the fixed chunk origin.
         // The march is bounded to the hull, but the entry point can land a
@@ -310,11 +247,7 @@ void main() {
         }
         float next_t = t_next[axis];
         if (next_t >= t1) {
-            // Marched the whole hull with no hit: count it as march-and-miss
-            // (the numerator — the upper bound on the ray-mask cull's win).
-            if (COUNTER_ENABLED) {
-                atomicAdd(counter.march_and_miss, 1u);
-            }
+            // Marched the whole hull with no hit.
             return;
         }
         cell[axis] += step[axis];

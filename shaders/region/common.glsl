@@ -38,20 +38,6 @@ VKO_DECLARE_STORAGE_BUFFER(aabb_table, AabbTable {
 
 #define aabb_table vko_buffer(aabb_table, aabb_table_buffer_id)
 
-// The march-and-miss counter: three uint counters the DDA intersection shader
-// increments by atomicAdd — hull_crossed (the slab passed), march_and_miss
-// (the march hit nothing), and empty_and (the forward box has no occupancy).
-// Attached only under --measure; the increments are gated by the
-// COUNTER_ENABLED specialization constant (false by default), so the
-// default/validator pipelines render byte-identical output.
-VKO_DECLARE_STORAGE_BUFFER(counter, Counter {
-    uint hull_crossed;
-    uint march_and_miss;
-    uint empty_and;
-})
-
-#define counter vko_buffer(counter, counter_buffer_id)
-
 // The per-pixel hull-crossed count buffer (debug builds): one uint per ray
 // pass pixel, incremented by the DDA intersection shader's atomicAdd at
 // slab-pass when the hull-crossed mode selects its hit group. Attached only in
@@ -94,10 +80,6 @@ layout(push_constant) uniform RegionPushConstants {
     // The region -> AABB-buffer device-address table (the DDA's and the
     // Hull intersection shader's lookup, parallel to `region_table`).
     StorageBufferId aabb_table_buffer_id;
-    // The march-and-miss counter buffer (bindless); INVALID when not
-    // measuring — the DDA's increments are gated by COUNTER_ENABLED, so the
-    // field is never dereferenced in the default/validator pipelines.
-    StorageBufferId counter_buffer_id;
     // The per-pixel hull-crossed count buffer (bindless); INVALID when not in
     // the hull-crossed debug mode — the intersection shader's PER_PIXEL_COUNTER
     // gate folds the atomicAdd away in the default/validator pipelines.

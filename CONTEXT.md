@@ -15,7 +15,7 @@ _Avoid_: Scene, level, map
 1 voxel = 1/16 meter (0.0625 m), per VOXEL_PHYSICAL_LENGTH. Physical
 dimensions (player size, speeds) are expressed in meters.
 _Avoid_: Block size, grid resolution
-_Note_: differs from wgpu-rt (1/8 m) — do not assume a shared scale.
+_Note_: differs from wgpu-rt (1/8 m). Do not assume a shared scale.
 
 **Palette**:
 A 256-entry RGBA8 color table from the .vox file mapping Material indices to
@@ -39,7 +39,7 @@ hitKind) and the payload is opaque to intersection shaders, so the closest
 hit reconstructs it from the hit point (the reported t is the cell-entry
 boundary crossing): p[a] is an integer, within epsilon, exactly on the
 crossed axis. Ties (edge/corner entries) break to the first axis in x, y, z
-order — the DDA's own preference order. A camera embedded in a voxel (the
+order, the DDA's own preference order. A camera embedded in a voxel (the
 t_min commit, no crossed face) gets the camera-facing direction instead.
 Object space == world space up to the translation instance transform. Carried
 in the ray payload; the Normal debug Render mode paints it as a heatmap
@@ -71,7 +71,7 @@ _Avoid_: Voxel buffer, voxel data store
 
 **Occupancy mask**:
 The 512-bit presence bitmap of a Micro-chunk: one bit per voxel, set iff
-the voxel is occupied. The mask — not a sentinel material — defines which
+the voxel is occupied. The mask, not a sentinel material, defines which
 voxels exist (palette index 0 is a real color). Material indices hang off
 it.
 _Avoid_: Bitmask, presence bitmap
@@ -81,7 +81,7 @@ _Avoid_: Bitmask, presence bitmap
 **Snapshot**:
 The unit of change the world hands the renderer: a Micro-chunk's global
 coords, 64-byte Occupancy mask, and u8 material indices. Create, update,
-and removal are the same message — an emptied Micro-chunk re-snapshots with
+and removal are the same message. An emptied Micro-chunk re-snapshots with
 a zero mask.
 _Avoid_: Edit message, delta
 
@@ -98,7 +98,7 @@ Micro-chunk and leaves residency when the last one empties.
 _Avoid_: Active region, loaded region
 
 **Dirty region**:
-A Resident region whose content changed since the last rebuild — queued for
+A Resident region whose content changed since the last rebuild, queued for
 a rebuild.
 _Avoid_: Changed region
 
@@ -128,7 +128,7 @@ _Avoid_: voxel ray march, ray walk
 A candidate primary-visibility optimization under evaluation: a coarse
 (lower-resolution) ray pass records each tile's nearest-hit t, which the
 full-resolution pass then uses to skip nearer empty space. Named by its
-mechanism — a lower-res t pass — not an effect.
+mechanism, a lower-res t pass, not an effect.
 _Avoid_: beam (classic beam tracing is secondary-ray cone tracing, out of
 scope), depth pre-pass (implies a raster depth buffer this renderer lacks)
 
@@ -151,12 +151,12 @@ not a place)
 ## Light transport
 
 **Path tracing**:
-The renderer's lighting algorithm: per-pixel light transport — a primary ray
+The renderer's lighting algorithm: per-pixel light transport, a primary ray
 plus up to N BSDF-scattered Bounces, terminated by Russian roulette and a
 depth cap. Path tracing replaces flat palette shading as the default Render
 mode's output.
 _Avoid_: raytracing (that is the *mechanism*; path tracing is the algorithm),
-GI (an effect path tracing delivers — describe what is seen)
+GI (an effect path tracing delivers. Describe what is seen)
 
 **Sample**:
 One path per pixel, produced once per frame (1 spp by design); samples become
@@ -170,28 +170,28 @@ Russian roulette.
 **Emission**:
 The per-Material emissive radiance; a voxel whose Material has emission > 0
 is an Emissive voxel and a light source. Emissive light reaches pixels only
-via path hits — there is no next-event sampling of Emissive voxels.
-_Avoid_: light (say Sun, Procedural sky, or Emissive voxel — which one)
+via path hits. There is no next-event sampling of Emissive voxels.
+_Avoid_: light (say Sun, Procedural sky, or Emissive voxel, which one)
 
 **Sun**:
-The analytic directional light: a delta light at infinity — fixed world
+The analytic directional light: a delta light at infinity, with fixed world
 direction and illuminance (`E_sun`, lux on a surface perpendicular to its
-rays) constants — sampled by NEE with MIS weight 1: a delta has no solid
+rays) constants, sampled by NEE with MIS weight 1. A delta has no solid
 angle, so the BSDF sampler can never produce exactly its direction.
 
 **Procedural sky**:
-The analytic environment light — a piecewise-linear radiance gradient in
+The analytic environment light, a piecewise-linear radiance gradient in
 μ = cos(elevation), knots at ground/horizon/zenith (all positive), evaluated
 by the miss shader; the Background. Importance-sampleable by analytic CDF
 inversion; no assets. The Sun disk (below) is the Sun's visual, not part of
-the transport radiance — NEE and BSDF-miss samples see the gradient only.
+the transport radiance. NEE and BSDF-miss samples see the gradient only.
 _Avoid_: skybox, environment map
 
 **Sun disk**:
 The Sun's visual: the measure-zero radiance bump on the Procedural sky in
 the Sun's direction, detected by a dot test. Seen only by the camera's
 direct view of the sky (the primary-miss branch); the transport never
-importance-samples it — the delta Sun light carries the light, and sampling
+importance-samples it. The delta Sun light carries the light, and sampling
 a bright bump with a gradient-matched pdf would firefly at 1 spp.
 _Avoid_: the Sun (the disk is the look; the Sun is the light)
 
@@ -218,7 +218,7 @@ or specular lobes the first Bounce samples (p = 0.5, inside NRD's [1/4, 3/4]
 clamp for its AREA_3X3 hit-distance reconstruction mode); the whole path's
 radiance is attributed to the selected lobe's channel, the other channel gets
 0 that frame, and the Denoise pass's temporal accumulation fills both.
-_Avoid_: split path (per-pixel the path is single-lobe by design —
+_Avoid_: split path (per-pixel the path is single-lobe by design.
 subsequent Bounces sample the full BSDF)
 
 **Trace pass**:
@@ -236,8 +236,8 @@ albedo+metalness).
 _Avoid_: filter, temporal AA
 
 **Beauty buffer**:
-The trace pass's noisy radiance output — a diffuse + specular RGBA16F pair,
-in-lobe hit distance in alpha — written per pixel and consumed by the
+The trace pass's noisy radiance output, a diffuse + specular RGBA16F pair
+whose alpha holds the in-lobe hit distance, written per pixel and consumed by the
 Denoise pass; exposed to the swapchain after exposure and tonemap in the
 Composite.
 _Avoid_: render target, output image
@@ -257,7 +257,7 @@ input contract specifically)
 The node that exposes the (denoised) radiance to the swapchain:
 re-modulation by albedo/metallic, manual EV exposure, and the ACES tonemap.
 A no-op for the debug Render modes, which paint the swapchain directly.
-_Avoid_: post-processing (beyond exposure/tonemap — out of scope), final
+_Avoid_: post-processing (beyond exposure/tonemap, out of scope), final
 pass
 
 ## Render mode
@@ -275,7 +275,7 @@ _Avoid_: shading mode, visualization mode
 **Ray latency**:
 A diagnostic Render mode (debug builds): each pixel is colored by its ray's
 wall-clock lifetime, read as a `clockRealtime` delta around `traceRayEXT` in
-the raygen. Latency, not cost — it includes stalls, occupancy contention, and
+the raygen. Latency, not cost. It includes stalls, occupancy contention, and
 the slowest warp lane, and is not reproducible frame-to-frame; it is the only
 per-pixel instrument that sees the hardware BVH traversal, which no
 shader-side counter observes.
@@ -283,8 +283,7 @@ _Avoid_: traversal time
 
 **hull-crossed**:
 The count of Micro-chunk hulls a ray enters (slab-passed, march begun) before
-committing or missing; the same quantity the `--measure` counter's
-`hull_crossed` word totals per frame. A diagnostic Render mode (debug builds)
+committing or missing. A diagnostic Render mode (debug builds)
 paints each pixel by this count. A lower bound on traversal work (hulls
 entered, not the close-but-rejected AABB tests the hardware performs before
 any shader runs) and an upper bound per-pixel (Vulkan may invoke intersection
@@ -293,7 +292,7 @@ _Avoid_: traversal count
 
 **Normal (Render mode)**:
 A diagnostic Render mode (debug builds): each pixel is colored by its hit's
-geometric Normal, -1..1 mapped to 0..1 per channel — voxel faces paint by
+geometric Normal, -1..1 mapped to 0..1 per channel, voxel faces paint by
 their axis (x red, y green, z blue; + side bright, - side dark), background
 gray. Traces the DDA hit group like Voxel; the normal rides the payload.
 _Avoid_: normal map visualization (a texture-space concept)
@@ -308,31 +307,3 @@ the renderer's DDA/AABB/pool representation, so a divergence points at the
 renderer rather than at shared algorithm assumptions (rendering-core ticket
 06).
 _Avoid_: Reference renderer, oracle
-
-## Measurement
-
-**GPU timestamp**:
-A QueryType::Timestamp sample from the graphics queue (the compute queue's
-rebuild nodes are timestamped the same way). Runs on demand: only the app
-attaches a pool (`atlas-rt --measure`); the validator never measures.
-_Avoid_: Timer, clock (the wall-clock is a different thing, below)
-
-**Per-stage attribution**:
-The FPS log's breakdown of the frame's GPU time into trace_rays, AS rebuild
-(the ordered rebuild nodes' upload+BLAS+TLAS), and flight lines — a rebuild
-spike shows up in the AS-rebuild line, never in trace_rays.
-_Avoid_: Total frame time (that is flight's job)
-
-**Gate**:
-Retired by the path-tracing effort (2026-08-17): the 16 ms/frame budget is
-removed — performance requirements are not absolute; lower latency is always
-better. What remains is report-only: the **GPU timestamp sum** and per-stage
-attribution, with the wall-clock frame interval reported beside it. A
-wall-clock far over the GPU sum means CPU/present-bound — a different fix
-than traversal.
-_Avoid_: FPS target, frame-time target
-
-**Flight**:
-The frame's whole GPU interval on the graphics queue, bracketed around the
-render node's work (the app-only debug overlay draws after and is excluded).
-_Avoid_: Frame interval (the wall-clock's term)

@@ -5,20 +5,20 @@ turns one primary ray per pixel into the diffuse+specular radiance pair
 (ADR 0007). Decided with the owner (ticket 05) and landed as the Voxel
 mode's output in `shaders/region/production.rgen`.
 
-**The path runs as a raygen loop, not recursive shader bounces** — the
+**The path runs as a raygen loop, not recursive shader bounces**. The
 raygen traces the primary ray, then up to `MAX_BOUNCES` (4) BSDF-scattered
 secondary rays, holding the accumulated radiance, throughput, and RNG draw
 index in locals. The payload stays `{color, t, hit_kind, normal}` (no path
-state in it), and `maxPipelineRayRecursionDepth` stays 1 — the charted
+state in it), and `maxPipelineRayRecursionDepth` stays 1. The charted
 "bump to max-bounces+1" never happened. Each Bounce reads the material
 table (ADR 0008), adds the hit's Emission × throughput to the path radiance
-(no emissive NEE — map lock), samples the next direction, applies Russian
+(no emissive NEE, map lock), samples the next direction, applies Russian
 roulette, and traces with the origin nudged off the face along the normal
 (`BOUNCE_OFFSET`, plus the DDA's `[0, RAY_T_MIN)` skip).
 
 **The RNG is a stateless PCG-XSH-RR hash** (O'Neill 2014): every draw is a
-pure function of `(seed, draw_index)` with `seed = hash(pixel_id × frame_seed)`
-— no mutable per-path state, so the CPU mirror (ticket 07) reproduces every
+pure function of `(seed, draw_index)` with `seed = hash(pixel_id × frame_seed)`,
+no mutable per-path state, so the CPU mirror (ticket 07) reproduces every
 value byte-identically regardless of control flow. The frame seed is a new
 push-constant counter the app increments per frame (the capture raygen
 never reads it; the validator pushes 0, keeping the byte-exact capture
@@ -31,7 +31,7 @@ the first Bounce samples; the whole path's radiance goes to the selected
 channel weighted by 1/p, the other channel gets 0 that frame, and the
 Denoise pass's temporal accumulation fills both. The primary hit's Emission
 (ADR 0008: `_emit × albedo × EMISSION_SCALE`, albedo-light) is added to the
-diffuse channel regardless of the lobe pick — it is deterministic given the
+diffuse channel regardless of the lobe pick. It is deterministic given the
 hit, so it needs no 1/p. Later Bounces sample the full BSDF with a 50/50
 lobe pick (weight × 2).
 
@@ -47,7 +47,7 @@ filters pure light; the Composite re-modulates by the same
 `max(albedo, eps)` and adds the raw specular channel before exposure +
 ACES. Emission is albedo-proportional, so it de-modulates to the constant
 `_emit × EMISSION_SCALE` and denoises as pure light (CONTEXT.md:
-De-modulation). The specular channel stays raw — its BRDF/envBRDF
+De-modulation). The specular channel stays raw. Its BRDF/envBRDF
 de-modulation factor lands with 06/08. Alpha carries the in-lobe 1st-bounce
 hit distance (the DDA's primary t), matching NRD's hitT contract.
 
@@ -57,8 +57,8 @@ is the safety cap. The Background is black in this slice (the miss shader's
 output); the Procedural sky lands with ticket 06, and the bounce-miss path
 already reads `payload.color` so 06 slots in without restructuring.
 
-**Modes** (item 6, confirmed by 02): the SBT-offset selector is unchanged —
+**Modes** (item 6, confirmed by 02): the SBT-offset selector is unchanged.
 Voxel (path traced) writes the radiance pair; the debug modes paint the
 swapchain directly and the composite no-ops for them. The firefly/clamp
-question stays in the map's fog (Q6) — with no NEE the noise the slice
+question stays in the map's fog (Q6). With no NEE the noise the slice
 shows is not the noise the denoised user sees.
