@@ -2,6 +2,7 @@
 
 ## When writing code
 
+- Keep documentation as minimal as possible
 - Avoid in-code documentation, avoid per-field documentation
 - Always prefer a self-descriptive code rather than documentation
 - Documentation should be as semantically dense and clear as possible, use the unslop skill preferably

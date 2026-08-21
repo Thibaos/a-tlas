@@ -109,9 +109,11 @@ pub struct PathCaptureTask {
     diff_image_id: Id<Image>,
     spec_image_id: Id<Image>,
     albedo_image_id: Id<Image>,
+    normal_roughness_image_id: Id<Image>,
     pub diff_readback_buffer_id: Id<Buffer>,
     pub spec_readback_buffer_id: Id<Buffer>,
     pub albedo_readback_buffer_id: Id<Buffer>,
+    pub normal_roughness_readback_buffer_id: Id<Buffer>,
     width: u32,
     height: u32,
 }
@@ -122,9 +124,11 @@ impl PathCaptureTask {
         diff_image_id: Id<Image>,
         spec_image_id: Id<Image>,
         albedo_image_id: Id<Image>,
+        normal_roughness_image_id: Id<Image>,
         diff_readback_buffer_id: Id<Buffer>,
         spec_readback_buffer_id: Id<Buffer>,
         albedo_readback_buffer_id: Id<Buffer>,
+        normal_roughness_readback_buffer_id: Id<Buffer>,
         width: u32,
         height: u32,
     ) -> Self {
@@ -132,9 +136,11 @@ impl PathCaptureTask {
             diff_image_id,
             spec_image_id,
             albedo_image_id,
+            normal_roughness_image_id,
             diff_readback_buffer_id,
             spec_readback_buffer_id,
             albedo_readback_buffer_id,
+            normal_roughness_readback_buffer_id,
             width,
             height,
         }
@@ -165,6 +171,10 @@ impl Task for PathCaptureTask {
             (self.diff_image_id, self.diff_readback_buffer_id),
             (self.spec_image_id, self.spec_readback_buffer_id),
             (self.albedo_image_id, self.albedo_readback_buffer_id),
+            (
+                self.normal_roughness_image_id,
+                self.normal_roughness_readback_buffer_id,
+            ),
         ] {
             unsafe {
                 cbf.copy_image_to_buffer(&TgCopyInfo {

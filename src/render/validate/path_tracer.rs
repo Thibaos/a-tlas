@@ -14,8 +14,11 @@
 //! DDA, sharing only the committed voxel's identity with the GPU path. The DDA
 //! mirrors the GPU's stepping arithmetic (division + accumulation, Amanatides-
 //! Woo with the x,y,z tie-break, the GPU's own preference order) so the
-//! committed t and the entering face agree at the f32 level; the face reports
-//! the mirror's own step axis with the same tie-break (ADR 0009).
+//! committed t agrees at the f32 level; the entered face is the march's step
+//! axis where one was taken, and the closest-hit's hit-point reconstruction
+//! (mirrored, ADR 0009) where none was — a slab entry that floors into the
+//! committed voxel has no step yet, and the old -dir fallback there reported
+//! the camera-facing normal the shader never produces on a real surface.
 //!
 //! The mirror produces the trace pass's output contract (ADR 0007): the
 //! de-modulated diffuse radiance and the raw specular radiance per sample.
@@ -28,6 +31,7 @@
 use glam::{IVec3, Vec3};
 
 use crate::{
+    core::grid::{grid_origin, REGION_LENGTH},
     render::validate::reference::{CameraInputs, T_MAX, T_MIN},
     world::{material::MaterialTable, World},
 };
@@ -248,9 +252,9 @@ pub struct PathHit {
     pub t: f32,
     /// The material index (the 8-bit hitKind).
     pub material: u32,
-    /// The geometric normal: the entered face's outward normal, or
-    /// -normalize(dir) when no face was crossed (the camera-in-voxel t_min
-    /// commit, the GPU's no-face-found fallback).
+    /// The geometric normal: the entered face's outward normal — the march's
+    /// step axis, or (on start-cell and t_min commits, where no step was
+    /// taken) the mirrored closest-hit reconstruction of ADR 0009.
     pub normal: Vec3,
 }
 
@@ -268,6 +272,9 @@ pub struct PathSample {
     /// The primary albedo (the de-modulation divisor; 0 on primary miss),
     /// carried for the display re-modulation.
     pub albedo: Vec3,
+    /// The primary hit's entered-face normal (ZERO on primary miss), the
+    /// face-tie signal of the shading diff.
+    pub normal: Vec3,
 }
 
 impl<'a> PathTracer<'a> {
@@ -348,8 +355,9 @@ impl<'a> PathTracer<'a> {
         }
 
         // The committed entry t; the face is the axis of the step that
-        // entered the committed cell (`None` for the start cell, no face
-        // crossed: the camera-in-voxel fallback).
+        // entered the committed cell. `None` means no step was taken: the
+        // start-cell commit (a slab entry that floors into the voxel) or the
+        // camera-in-voxel t_min commit — the reconstruction decides.
         let mut t_entry = t0;
         let mut face: Option<usize> = None;
 
@@ -358,18 +366,29 @@ impl<'a> PathTracer<'a> {
             // storage: a bit test instead of a HashMap probe at every cell.
             if self.macro_grid.cell_occupied(cell) {
                 if let Some(voxel) = self.world.try_get_voxel(&cell) {
-                    let normal = match face {
+                    // The reported t snaps to the division form of the
+                    // entered boundary (the intersection shader's contract):
+                    // accumulated stepping carries one rounding per step,
+                    // and the reported hit must sit on the face for the
+                    // closest-hit reconstruction. The face itself is the
+                    // shader's reconstruction over the snapped t — never the
+                    // step axis, whose canonical scan legitimately disagrees
+                    // with the shader inside the epsilon window.
+                    let t_report = match face {
                         Some(a) => {
-                            let mut n = Vec3::ZERO;
-                            n[a] = -direction[a].signum();
-                            n
+                            let boundary = if step[a] > 0 {
+                                cell[a] as f32
+                            } else {
+                                (cell[a] + 1) as f32
+                            };
+                            ((boundary - origin[a]) / direction[a]).max(T_MIN)
                         }
-                        None => -direction.normalize(),
+                        None => t_entry,
                     };
                     return Some(PathHit {
-                        t: t_entry,
+                        t: t_report,
                         material: *voxel,
-                        normal,
+                        normal: entered_face_normal(origin, direction, cell, t_report),
                     });
                 }
             }
@@ -774,6 +793,7 @@ impl<'a> PathTracer<'a> {
             specular,
             hit_t,
             albedo: primary_albedo,
+            normal: primary_normal,
         }
     }
 }
@@ -783,6 +803,38 @@ impl<'a> PathTracer<'a> {
 // corresponding function in shaders/region/production.rgen and sky.glsl with
 // the same arithmetic and the same rounding form.
 // ---------------------------------------------------------------------------
+
+/// The entered-face normal, reconstructed from the hit point exactly like the
+/// GPU's closest hit (ADR 0009): the first axis in x, y, z order whose
+/// object-space hit coordinate sits on a cell boundary within the shader's
+/// epsilon, oriented against the ray; -dir when none does (the camera-in-voxel
+/// t_min commit, the shader's no-face-found fallback). Runs on the snapped t
+/// (division-form crossing) so both marches hand the scan identical inputs.
+/// The mirror's own step axis is never consulted: the canonical scan
+/// legitimately disagrees with it inside the epsilon window, and the mirror
+/// must reproduce the shader's choice. The pre-ticket fallback reported the
+/// camera-facing -dir on start-cell commits — a slab entry that floors into
+/// the committed voxel, e.g. rays entering the occupied bbox through a voxel
+/// face — where the shader reconstructs the crossed boundary.
+fn entered_face_normal(origin: Vec3, direction: Vec3, cell: IVec3, t: f32) -> Vec3 {
+    // Object space == world space minus the region translation (the TLAS
+    // instance's only transform), so the epsilon sees the same magnitudes.
+    let p = origin + direction * t - grid_origin(cell, REGION_LENGTH).as_vec3();
+    for a in 0..3 {
+        if direction[a] == 0.0 {
+            continue;
+        }
+
+        let f = p[a] - p[a].floor();
+        let eps = 32.0 * 1.192_092_9e-7 * p[a].abs().max(1.0);
+        if f < eps || f > 1.0 - eps {
+            let mut n = Vec3::ZERO;
+            n[a] = -direction[a].signum();
+            return n;
+        }
+    }
+    -direction.normalize()
+}
 
 /// Deterministic local tangent frame from the geometric normal: reference
 /// (0,1,0), falling back to (1,0,0) when the normal is (anti-)parallel to y.
@@ -1032,6 +1084,9 @@ pub struct PathRender {
     /// Per-pixel mean primary albedo (0 for sky), for the corner-touch
     /// material-boundary signal (the committed voxel's material).
     pub albedos: Vec<Vec3>,
+    /// Per-pixel mean primary normal (ZERO for sky), the face-tie signal
+    /// (seed-independent, so the mean is the per-sample value).
+    pub normals: Vec<Vec3>,
 }
 
 /// Renders the path-traced frame set: for each pixel, N samples seeded by
@@ -1052,6 +1107,7 @@ pub fn render_path(
     let mut hit_count = vec![0u32; pixel_count];
     let mut hit_ts = vec![0.0f32; pixel_count];
     let mut albedos = vec![Vec3::ZERO; pixel_count];
+    let mut normals = vec![Vec3::ZERO; pixel_count];
 
     let thread_count = std::thread::available_parallelism()
         .map(|n| n.get())
@@ -1066,6 +1122,7 @@ pub fn render_path(
         let mut hit_rest = hit_count.as_mut_slice();
         let mut hit_ts_rest = hit_ts.as_mut_slice();
         let mut albedos_rest = albedos.as_mut_slice();
+        let mut normals_rest = normals.as_mut_slice();
 
         for row_start in (0..height as usize).step_by(rows_per_thread) {
             let rows = row_start..(row_start + rows_per_thread).min(height as usize);
@@ -1076,12 +1133,14 @@ pub fn render_path(
             let (h_part, h_tail) = hit_rest.split_at_mut(len);
             let (t_part, t_tail) = hit_ts_rest.split_at_mut(len);
             let (a_part, a_tail) = albedos_rest.split_at_mut(len);
+            let (n_part, n_tail) = normals_rest.split_at_mut(len);
             diffuse_rest = d_tail;
             specular_rest = s_tail;
             display_rest = p_tail;
             hit_rest = h_tail;
             hit_ts_rest = t_tail;
             albedos_rest = a_tail;
+            normals_rest = n_tail;
 
             scope.spawn(move || {
                 for (row_offset, y) in rows.clone().enumerate() {
@@ -1091,6 +1150,7 @@ pub fn render_path(
                         let mut p_sum = Vec3::ZERO;
                         let mut t_sum = 0.0f32;
                         let mut a_sum = Vec3::ZERO;
+                        let mut n_sum = Vec3::ZERO;
                         let mut hits = 0u32;
                         for f in 0..samples {
                             let sample = tracer.sample(camera, x, y as u32, f);
@@ -1105,6 +1165,7 @@ pub fn render_path(
                             p_sum += modulated;
                             t_sum += sample.hit_t;
                             a_sum += sample.albedo;
+                            n_sum += sample.normal;
                             hits += u32::from(sample.hit_t > 0.0);
                         }
                         let n = samples as f32;
@@ -1115,6 +1176,7 @@ pub fn render_path(
                         h_part[local] = hits;
                         t_part[local] = t_sum / n;
                         a_part[local] = a_sum / n;
+                        n_part[local] = n_sum / n;
                     }
                 }
             });
@@ -1131,6 +1193,7 @@ pub fn render_path(
         hit_count,
         hit_ts,
         albedos,
+        normals,
     }
 }
 
@@ -1254,6 +1317,71 @@ mod tests {
         );
     }
 
+    /// The entered-face reconstruction (the mirrored closest-hit contract,
+    /// ADR 0009): boundary axes win in x,y,z order oriented against the ray;
+    /// an interior hit point (the t_min commit) falls back to -dir.
+    #[test]
+    fn entered_face_reconstruction() {
+        let dir = Vec3::new(-0.6, -0.8, 0.0).normalize();
+        let cell = IVec3::ZERO;
+
+        // Top-face entry: the hit point on the y boundary -> +y.
+        let hit = Vec3::new(6.127_19, 1.0, 0.335);
+        let origin = hit - dir * 8.0;
+        assert_eq!(entered_face_normal(origin, dir, cell, 8.0), Vec3::Y);
+
+        // The reported t snaps to the division form of the entered boundary:
+        // a stepped commit's t is the boundary crossing recomputed by one
+        // division (mirroring the intersection shader's snap), so a hit at
+        // t = 5 on the x = 0 face reports exactly 5.
+        let world = single_voxel_world();
+        let tracer = PathTracer::new(&world, materials(), default_scene());
+        let snapped = tracer.trace_ray(Vec3::new(-5.0, 0.5, 0.5), Vec3::X).unwrap();
+        assert_eq!(snapped.t, 5.0);
+        assert_eq!(snapped.normal, Vec3::NEG_X);
+
+        // Corner tie: p on the x AND y boundaries picks x (the canonical
+        // first axis), oriented against the ray's own direction sign.
+        let corner = Vec3::new(5.0, 6.0, 0.5);
+        assert_eq!(
+            entered_face_normal(corner, Vec3::new(-1.0, -1.0, 0.0), cell, 1.0),
+            Vec3::X
+        );
+        assert_eq!(
+            entered_face_normal(corner, Vec3::new(1.0, 1.0, 0.0), cell, 1.0),
+            Vec3::NEG_X
+        );
+
+        // Interior hit point: no boundary within eps -> the camera-facing
+        // fallback (the GPU's no-face-found branch).
+        assert_eq!(
+            entered_face_normal(Vec3::new(0.2, 0.2, 0.2), Vec3::X, cell, T_MIN),
+            Vec3::NEG_X
+        );
+    }
+
+    /// Regression (ticket 07): a ray entering the occupied bbox through its
+    /// top face — the slab entry floors into the committed voxel itself, so
+    /// the march commits the start cell with no step taken. The normal is
+    /// still the crossed +y face (the closest-hit reconstruction), never the
+    /// -dir camera fallback. The sweep straddles every ULP of entry height;
+    /// every hit must report the face.
+    #[test]
+    fn bbox_top_entry_reports_face_normal() {
+        let mut world = World::default();
+        world.insert_voxel_at(IVec3::new(6, 0, 0), 7);
+        let tracer = PathTracer::new(&world, materials(), default_scene());
+
+        let direction = Vec3::new(-0.61137193, -0.44708133, -0.6529492).normalize();
+        for i in 0..300 {
+            let origin = Vec3::new(14.834292, 7.30 + (i as f32) * 0.0005, 9.634149);
+            if let Some(hit) = tracer.trace_ray(origin, direction) {
+                assert!(hit.t > T_MIN);
+                assert_eq!(hit.normal, Vec3::Y, "origin.y = {}", origin.y);
+            }
+        }
+    }
+
     /// A ray along +X from (-5, 0, 0) must hit the voxel cell [0, 1]³ at
     /// t = 5, with the face normal -X (the entry face).
     #[test]
@@ -1358,18 +1486,21 @@ mod tests {
         let mut face: Option<usize> = None;
         loop {
             if let Some(voxel) = world.try_get_voxel(&cell) {
-                let normal = match face {
+                let t_report = match face {
                     Some(a) => {
-                        let mut n = Vec3::ZERO;
-                        n[a] = -direction[a].signum();
-                        n
+                        let boundary = if step[a] > 0 {
+                            cell[a] as f32
+                        } else {
+                            (cell[a] + 1) as f32
+                        };
+                        ((boundary - origin[a]) / direction[a]).max(T_MIN)
                     }
-                    None => -direction.normalize(),
+                    None => t_entry,
                 };
                 return Some(PathHit {
-                    t: t_entry,
+                    t: t_report,
                     material: *voxel,
-                    normal,
+                    normal: entered_face_normal(origin, direction, cell, t_report),
                 });
             }
             let axis = if t_next.x <= t_next.y && t_next.x <= t_next.z {

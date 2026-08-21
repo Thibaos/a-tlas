@@ -230,18 +230,20 @@ pub fn write_path_report(
         report.config.max_mismatch_ratio * 100.0
     ));
     out.push_str(&format!(
-        "excuses: hit-status silhouette (1px dilated), firefly (both sides > {}), corner-touch (same t, different face)\n",
+        "excuses: hit-status silhouette (1px dilated), firefly (both sides > {}), corner-touch (same t, different face), face-tie (same cell, disagreeing normals), path-divergence (minority of seeds flipped path)\n",
         report.config.firefly_floor
     ));
     out.push_str("\n");
 
     out.push_str(&format!(
-        "mismatches: {} total, {} excused (silhouette: {}, firefly: {}, corner-touch: {}), {} hard\n",
+        "mismatches: {} total, {} excused (silhouette: {}, firefly: {}, corner-touch: {}, face-tie: {}, path-divergence: {}), {} hard\n",
         report.mismatch_count(),
         report.mismatch_count() - report.hard_mismatch_count(),
         report.edge_excused(),
         report.firefly_excused(),
         report.corner_touch_excused(),
+        report.face_tie_excused(),
+        report.path_divergence_excused(),
         report.hard_mismatch_count()
     ));
     out.push_str(&format!(
@@ -276,16 +278,16 @@ pub fn write_path_report(
 
     if !report.hard_mismatches.is_empty() {
         out.push_str("hard mismatches (differing pixels, first 64):\n");
-        out.push_str("  (x, y)  gpu diffuse          cpu diffuse           gpu spec             cpu spec              err\n");
+        out.push_str("  (x, y)  gpu diffuse          cpu diffuse           gpu spec             cpu spec              err   seeds\n");
         for mismatch in report.hard_mismatches.iter().take(64) {
             let d = mismatch.gpu_diffuse;
             let c = mismatch.cpu_diffuse;
             let s = mismatch.gpu_specular;
             let cs = mismatch.cpu_specular;
             out.push_str(&format!(
-                "  ({:>4}, {:>4})  ({:>6.3},{:>6.3},{:>6.3})  ({:>6.3},{:>6.3},{:>6.3})  ({:>6.3},{:>6.3},{:>6.3})  ({:>6.3},{:>6.3},{:>6.3})  {:5.2}\n",
+                "  ({:>4}, {:>4})  ({:>6.3},{:>6.3},{:>6.3})  ({:>6.3},{:>6.3},{:>6.3})  ({:>6.3},{:>6.3},{:>6.3})  ({:>6.3},{:>6.3},{:>6.3})  {:5.2}  {}\n",
                 mismatch.x, mismatch.y, d.x, d.y, d.z, c.x, c.y, c.z, s.x, s.y, s.z, cs.x, cs.y,
-                cs.z, mismatch.error
+                cs.z, mismatch.error, mismatch.seed_note
             ));
         }
         if report.hard_mismatches.len() > 64 {

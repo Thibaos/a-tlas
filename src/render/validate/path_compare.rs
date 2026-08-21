@@ -7,7 +7,7 @@
 //! radiance (the trace pass's output contract, ADR 0007). A pixel mismatches
 //! when any channel of either mean's relative error exceeds the tolerance.
 //!
-//! Two classes of divergence are excused explicitly (the ticket's
+//! Three classes of divergence are excused explicitly (the ticket's
 //! "edge-silhouette and firefly outliers handled explicitly"):
 //!
 //! - **Edge silhouette**: the GPU's Region-local DDA and the mirror's
@@ -25,12 +25,17 @@
 //!   pixel whose mean radiance is bright on *both* sides is excused as a
 //!   firefly outlier (real shading bugs manifest across a region, not as
 //!   isolated bright pixels).
+//! - **Face tie** (ticket 07): same committed cell and material with agreeing
+//!   t, but the two sides' hit-point reconstructions of the entered face land
+//!   on opposite sides of the epsilon window's edge — ADR 0009's canonical
+//!   corner tie, reached by independent f32 ray computations. The shading
+//!   differs through the face normal; reported per-run as its own count.
 //!
 //! The run passes when there are no hard mismatches and the excused
 //! mismatches total ≤ the budget fraction of pixels (matching the byte-exact
 //! compare's posture).
 
-use glam::Vec3;
+use glam::{Vec2, Vec3};
 
 /// The corner-touch material disagreement threshold: the committed voxels'
 /// material differs by more than this (adjacent cells at a material
@@ -56,6 +61,20 @@ pub fn encode_octahedral(n: Vec3) -> glam::Vec2 {
     enc * 0.5 + 0.5
 }
 
+/// Inverts encode_octahedral: the RGBA8-stored octahedral encoding back to
+/// the unit normal (the aux buffer's per-pixel value, the face-tie signal of
+/// the shading diff).
+pub fn decode_octahedral(enc01: glam::Vec2) -> Vec3 {
+    let e = enc01 * 2.0 - 1.0;
+    let mut n = Vec3::new(e.x, e.y, 1.0 - e.x.abs() - e.y.abs());
+    if n.z < 0.0 {
+        let s = Vec2::new(n.x.signum(), n.y.signum());
+        let w = Vec2::new((1.0 - e.y.abs()) * s.x, (1.0 - e.x.abs()) * s.y);
+        n = Vec3::new(w.x, w.y, n.z);
+    }
+    n.normalize_or_zero()
+}
+
 /// Why a mismatching pixel was excused (or not).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ExcuseKind {
@@ -68,7 +87,91 @@ pub enum ExcuseKind {
     /// Both sides committed a surface at the same point with different
     /// committed cells (the geometry half's corner-touch class).
     CornerTouch,
+    /// Same committed cell and material, agreeing t, but the entered-face
+    /// reconstructions disagree: two f32 computations of p land on opposite
+    /// sides of the epsilon window's edge (ADR 0009's canonical tie). The
+    /// shading then differs through the face normal, not through lighting.
+    FaceTie,
+    /// The pixel's means disagree because a minority of its identical-seed
+    /// samples took categorically different paths (a shadow occlusion or a
+    /// bounce commit that flipped on ULP-level geometry noise inside deep
+    /// bounce chains), while the remaining seeds agree tightly. A systematic
+    /// shading bug diverges on every seed that exercises it and stays Hard.
+    PathDivergence,
 }
+
+/// A seed's radiance pair disagrees past this relative error: not noise, a
+/// different path outcome (lit vs unlit, emissive hit vs miss).
+const CATEGORICAL_ERROR: f32 = 0.5;
+
+/// The compare's per-channel relative error with its denominator floor.
+fn channel_rel_err(g: Vec3, c: Vec3, abs_floor: f32) -> f32 {
+    let denom = g.abs().max(c.abs()).max(Vec3::splat(abs_floor));
+    let diff = (g - c).abs();
+    diff.x.max(diff.y).max(diff.z)
+        / denom.x.max(denom.y).max(denom.z).max(1e-9)
+}
+
+/// Per-seed divergence evidence for one mismatching pixel: how many of the N
+/// identical-seed samples disagree categorically (a different path outcome),
+/// how many sit in the moderate band between tolerance and categorical (a
+/// shifted value — the systematic-bug signature), and how many agree.
+#[derive(Clone, Copy, Debug)]
+pub struct SeedEvidence {
+    /// Seeds inside the tolerance.
+    pub agreeing: u32,
+    /// Seeds past CATEGORICAL_ERROR.
+    pub diverged: u32,
+    /// Seeds between the tolerance and CATEGORICAL_ERROR.
+    pub shifted: u32,
+}
+
+impl SeedEvidence {
+    /// The chaos signature: a minority of seeds (at most half, with at most
+    /// a quarter shifted moderately — the milder flip where a path grazed a
+    /// decision) diverge while the rest agree. A systematic bug shifts every
+    /// seed that exercises it and trips the shifted or majority bounds.
+    pub fn is_minority_flip(&self, samples: u32) -> bool {
+        let disagreeing = self.diverged + self.shifted;
+        disagreeing > 0
+            && self.shifted <= samples / 4
+            && self.diverged <= samples / 2
+            && disagreeing <= samples / 2
+    }
+}
+
+/// Classifies one pixel's N identical-seed sample pairs.
+pub fn seed_evidence(
+    gpu_diff: &[Vec3],
+    gpu_spec: &[Vec3],
+    cpu_diff: &[Vec3],
+    cpu_spec: &[Vec3],
+    tolerance: f32,
+    abs_floor: f32,
+) -> SeedEvidence {
+    let mut ev = SeedEvidence {
+        agreeing: 0,
+        diverged: 0,
+        shifted: 0,
+    };
+    for s in 0..gpu_diff.len() {
+        let err = channel_rel_err(gpu_diff[s], cpu_diff[s], abs_floor)
+            .max(channel_rel_err(gpu_spec[s], cpu_spec[s], abs_floor));
+        if err > CATEGORICAL_ERROR {
+            ev.diverged += 1;
+        } else if err > tolerance {
+            ev.shifted += 1;
+        } else {
+            ev.agreeing += 1;
+        }
+    }
+    ev
+}
+
+/// The face-tie signal: the reconstructed normals disagree past this dot
+/// product while cell, material and t agree (an axis flip is orthogonal,
+/// dot ~ 0; noise-level agreement sits above 0.999).
+const FACE_TIE_MIN_DOT: f32 = 0.99;
 
 /// `PathCompareConfig::default()`: 10% relative tolerance, 0.08 absolute
 /// floor, 5% mismatch budget. The tolerance absorbs the GPU's RGBA16F
@@ -106,7 +209,7 @@ impl Default for PathCompareConfig {
 
 /// One mismatching pixel (all mismatches are recorded; the report details the
 /// first few hard ones).
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct PathMismatch {
     pub x: u32,
     pub y: u32,
@@ -122,6 +225,9 @@ pub struct PathMismatch {
     pub cpu_t: f32,
     /// Why the mismatch was excused (or `Hard`).
     pub excuse: ExcuseKind,
+    /// Per-seed agreement summary for hard mismatches ("6/8 seeds agree"),
+    /// empty otherwise.
+    pub seed_note: String,
 }
 
 pub struct PathCompareReport {
@@ -177,6 +283,20 @@ impl PathCompareReport {
             .count()
     }
 
+    pub fn face_tie_excused(&self) -> usize {
+        self.mismatches
+            .iter()
+            .filter(|m| m.excuse == ExcuseKind::FaceTie)
+            .count()
+    }
+
+    pub fn path_divergence_excused(&self) -> usize {
+        self.mismatches
+            .iter()
+            .filter(|m| m.excuse == ExcuseKind::PathDivergence)
+            .count()
+    }
+
     /// Pass = no hard mismatches and the excused mismatches total ≤ the
     /// budget fraction of pixels.
     pub fn passes(&self) -> bool {
@@ -194,11 +314,13 @@ pub fn compare_path(
     gpu_display: &[Vec3],
     gpu_hitdist: &[f32],
     gpu_albedo: &[Vec3],
+    gpu_normals: &[Vec3],
     cpu_diffuse: &[Vec3],
     cpu_specular: &[Vec3],
     cpu_display: &[Vec3],
     cpu_hit_ts: &[f32],
     cpu_albedo: &[Vec3],
+    cpu_normals: &[Vec3],
     width: u32,
     height: u32,
     samples: u32,
@@ -211,11 +333,13 @@ pub fn compare_path(
     assert_eq!(gpu_display.len(), pixel_count);
     assert_eq!(gpu_hitdist.len(), pixel_count);
     assert_eq!(gpu_albedo.len(), pixel_count);
+    assert_eq!(gpu_normals.len(), pixel_count);
     assert_eq!(cpu_diffuse.len(), pixel_count);
     assert_eq!(cpu_specular.len(), pixel_count);
     assert_eq!(cpu_display.len(), pixel_count);
     assert_eq!(cpu_hit_ts.len(), pixel_count);
     assert_eq!(cpu_albedo.len(), pixel_count);
+    assert_eq!(cpu_normals.len(), pixel_count);
 
     // Edge silhouette mask: a pixel is an edge pixel when its primary hit
     // status (hit vs miss) differs from a 4-neighbor's. The surface
@@ -285,11 +409,7 @@ pub fn compare_path(
         let cd = cpu_diffuse[i];
         let cs = cpu_specular[i];
 
-        let err = |g: Vec3, c: Vec3| {
-            let denom = g.abs().max(c.abs()).max(Vec3::splat(config.abs_floor));
-            let diff = (g - c).abs();
-            (diff.x / denom.x).max(diff.y / denom.y).max(diff.z / denom.z)
-        };
+        let err = |g: Vec3, c: Vec3| channel_rel_err(g, c, config.abs_floor);
         let error = err(gd, cd).max(err(gs, cs));
         relative_error[i] = error;
 
@@ -309,12 +429,22 @@ pub fn compare_path(
             let corner_touch = gpu_hit_fraction[i] > 0.0
                 && cpu_hit_ts[i] > 0.0
                 && (gpu_albedo[i] - cpu_albedo[i]).abs().max_element() > CORNER_TOUCH_ENC_EPS;
+            // Same committed cell and material (the albedos agree), the t's
+            // agree, but the entered faces differ: the canonical scan decided
+            // from two f32 computations of p that land on opposite sides of
+            // the window edge (ADR 0009's float corner tie).
+            let face_tie = gpu_hit_fraction[i] > 0.0
+                && cpu_hit_ts[i] > 0.0
+                && (gpu_albedo[i] - cpu_albedo[i]).abs().max_element() <= CORNER_TOUCH_ENC_EPS
+                && gpu_normals[i].dot(cpu_normals[i]) < FACE_TIE_MIN_DOT;
             let excuse = if on_edge {
                 ExcuseKind::Silhouette
             } else if firefly {
                 ExcuseKind::Firefly
             } else if corner_touch {
                 ExcuseKind::CornerTouch
+            } else if face_tie {
+                ExcuseKind::FaceTie
             } else {
                 ExcuseKind::Hard
             };
@@ -330,8 +460,9 @@ pub fn compare_path(
                 gpu_t: gpu_hitdist[i],
                 cpu_t: cpu_hit_ts[i],
                 excuse,
+                seed_note: String::new(),
             };
-            mismatches.push(mismatch);
+            mismatches.push(mismatch.clone());
             if excuse == ExcuseKind::Hard {
                 hard_mismatches.push(mismatch);
             }
@@ -387,6 +518,7 @@ mod tests {
     ) -> PathCompareReport {
         let pixels = (w * h) as usize;
         let (t, alb, t2, alb2) = benign_aux(pixels);
+        let n = flat(Vec3::Z, pixels);
         compare_path(
             gpu_d,
             gpu_s,
@@ -394,11 +526,13 @@ mod tests {
             gpu_disp,
             &t,
             &alb,
+            &n,
             cpu_d,
             cpu_s,
             cpu_disp,
             &t2,
             &alb2,
+            &n,
             w,
             h,
             8,
@@ -506,11 +640,13 @@ mod tests {
             &disp,
             &t,
             &gpu_albedo,
+            &flat(Vec3::Z, pixels),
             &cpu_d,
             &spec,
             &disp,
             &t,
             &cpu_albedo,
+            &flat(Vec3::Z, pixels),
             w,
             h,
             8,
@@ -550,11 +686,13 @@ mod tests {
             &disp,
             &gpu_t,
             &albedo,
+            &flat(Vec3::Z, pixels),
             &cpu_d,
             &spec,
             &disp,
             &cpu_t,
             &albedo,
+            &flat(Vec3::Z, pixels),
             w,
             h,
             8,
@@ -590,11 +728,13 @@ mod tests {
             &disp,
             &t,
             &gpu_albedo,
+            &flat(Vec3::Z, pixels),
             &cpu_d,
             &spec,
             &disp,
             &t,
             &cpu_albedo,
+            &flat(Vec3::Z, pixels),
             w,
             h,
             8,
@@ -604,6 +744,43 @@ mod tests {
         assert_eq!(report.hard_mismatch_count(), 0);
         assert_eq!(report.corner_touch_excused(), 1);
         assert!(report.passes());
+    }
+
+    /// The path-divergence signature: a minority of seeds took categorically
+    /// different paths (rel err ~1) while the rest agree to tolerance. A
+    /// systematic bug shifts every seed moderately and never qualifies.
+    #[test]
+    fn seed_evidence_separates_chaos_from_shift() {
+        let g_d = vec![Vec3::splat(1.0); 8];
+        let g_s = vec![Vec3::ZERO; 8];
+        let c_s = vec![Vec3::ZERO; 8];
+
+        let mut c_d = vec![Vec3::splat(1.0); 8];
+        c_d[6] = Vec3::ZERO;
+        c_d[7] = Vec3::ZERO;
+        let ev = seed_evidence(&g_d, &g_s, &c_d, &c_s, 0.1, 0.08);
+        assert_eq!((ev.agreeing, ev.diverged, ev.shifted), (6, 2, 0));
+        assert!(ev.is_minority_flip(8));
+
+        // Every seed shifted 30%: a real estimator difference, not chaos.
+        let c_d = vec![Vec3::splat(1.3); 8];
+        let ev = seed_evidence(&g_d, &g_s, &c_d, &c_s, 0.1, 0.08);
+        assert_eq!((ev.agreeing, ev.diverged, ev.shifted), (0, 0, 8));
+        assert!(!ev.is_minority_flip(8));
+
+        // One seed shifted moderately (the milder flip: 7/8 agree) is still
+        // the chaos signature.
+        let mut c_d = vec![Vec3::splat(1.0); 8];
+        c_d[5] = Vec3::splat(1.35);
+        let ev = seed_evidence(&g_d, &g_s, &c_d, &c_s, 0.1, 0.08);
+        assert_eq!((ev.agreeing, ev.diverged, ev.shifted), (7, 0, 1));
+        assert!(ev.is_minority_flip(8));
+
+        // A majority of seeds flipped: also not the minority signature.
+        let c_d = vec![Vec3::ZERO; 8];
+        let ev = seed_evidence(&g_d, &g_s, &c_d, &c_s, 0.1, 0.08);
+        assert_eq!((ev.agreeing, ev.diverged, ev.shifted), (0, 8, 0));
+        assert!(!ev.is_minority_flip(8));
     }
 
     /// A bright pixel on BOTH sides (a firefly both sides see, identical

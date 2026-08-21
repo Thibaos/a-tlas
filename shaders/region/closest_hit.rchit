@@ -25,7 +25,13 @@ void main() {
         }
 
         float f = hit_point[a] - floor(hit_point[a]);
-        float eps = 8.0 * 1.1920929e-07 * max(abs(hit_point[a]), 1.0);
+        // The reported t is the division-form crossing of the entered face
+        // (intersect.rint snaps it), so p = o + d*t sits on the boundary to
+        // within the residual of that division plus the mul/add here — up to
+        // a dozen ULP of the coordinate scale. Object space caps |p| at the
+        // region edge, so even 32 ULP keeps the false-positive window on
+        // non-crossed axes a fraction of a percent of a cell.
+        float eps = 32.0 * 1.1920929e-07 * max(abs(hit_point[a]), 1.0);
 
         if (f < eps || f > 1.0 - eps) {
             face = a;

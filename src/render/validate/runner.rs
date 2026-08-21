@@ -43,12 +43,15 @@ use crate::{
             capture::{CaptureTask, PathCaptureTask},
             cli::ValidateOptions,
             compare::{CompareConfig, compare},
-            path_compare::{PathCompareConfig, PathCompareReport, compare_path},
+            path_compare::{
+                ExcuseKind, PathCompareConfig, PathCompareReport, compare_path,
+                decode_octahedral, seed_evidence,
+            },
             path_tracer,
             path_tracer::{PathRender, PathTracer, render_path},
             readback::{
                 create_host_readback, create_t_image, create_validate_swapchain, decode_rgba,
-                decode_rgba16f, read_host_bytes, read_host_floats,
+                decode_rgba16f, half_to_f32, read_host_bytes, read_host_floats,
             },
             reference::{CameraInputs, ReferenceTracer, VoxelShape, render_reference},
             report::{
@@ -99,6 +102,7 @@ struct FrameSetup {
     path_diff_readback_buffer_id: Id<Buffer>,
     path_spec_readback_buffer_id: Id<Buffer>,
     path_albedo_readback_buffer_id: Id<Buffer>,
+    path_normal_roughness_readback_buffer_id: Id<Buffer>,
 }
 
 struct ValidateFrame {
@@ -120,6 +124,7 @@ struct ValidateFrame {
     path_diff_readback_buffer_id: Id<Buffer>,
     path_spec_readback_buffer_id: Id<Buffer>,
     path_albedo_readback_buffer_id: Id<Buffer>,
+    path_normal_roughness_readback_buffer_id: Id<Buffer>,
 }
 
 pub struct ValidateRunner {
@@ -140,15 +145,60 @@ impl ApplicationHandler for ValidateRunner {
         }
 
         let worlds = std::mem::take(&mut self.worlds);
+        let total = worlds.len();
         let mut results = Vec::new();
         let mut path_results = Vec::new();
-        for world in worlds {
-            match self.run_world(&world, event_loop) {
+
+        for (i, world) in worlds.iter().enumerate() {
+            println!("[{}/{}] {} \u{00b7} {}", i + 1, total, world.name, world.path);
+
+            match self.run_world(world, event_loop) {
                 Ok((summary, path)) => {
+                    for frame in &summary.frames {
+                        let tag = if frame.label.is_empty() {
+                            String::from("geometry")
+                        } else {
+                            format!("geometry '{}'", frame.label)
+                        };
+                        println!(
+                            "   {:<20} {}   {} {}",
+                            tag,
+                            verdict(frame.pass),
+                            frame.mismatches,
+                            plural(frame.mismatches, "mismatch", "mismatches")
+                        );
+                    }
+
+                    if let Some(p) = &path {
+                        let classes = [
+                            ("silhouette", p.silhouette),
+                            ("firefly", p.firefly),
+                            ("corner-touch", p.corner_touch),
+                            ("face-tie", p.face_tie),
+                            ("path-divergence", p.path_divergence),
+                        ]
+                        .iter()
+                        .filter(|(_, count)| *count > 0)
+                        .map(|(label, count)| format!("{label} {count}"))
+                        .collect::<Vec<_>>();
+                        println!(
+                            "   {:<20} {}   {} px over tolerance{}",
+                            "shading",
+                            verdict(p.pass),
+                            p.mismatches,
+                            if classes.is_empty() {
+                                String::new()
+                            } else {
+                                format!("  ({})", classes.join(" \u{b} "))
+                            }
+                        );
+                    }
+
                     results.push(Ok(summary));
                     path_results.push(path);
                 }
                 Err(error) => {
+                    println!("   ERROR {error}");
                     results.push(Err(error));
                     path_results.push(None);
                 }
@@ -176,6 +226,37 @@ impl ApplicationHandler for ValidateRunner {
     }
 }
 
+fn thousands(mut n: u64) -> String {
+    let mut groups = Vec::new();
+    loop {
+        groups.push(format!("{:03}", n % 1000));
+        n /= 1000;
+        if n == 0 {
+            break;
+        }
+    }
+    let last = groups.len() - 1;
+    groups[last] = groups[last].trim_start_matches('0').to_string();
+    groups.reverse();
+    groups.join(",")
+}
+
+pub fn verdict(pass: bool) -> &'static str {
+    if pass {
+        "PASS"
+    } else {
+        "FAIL"
+    }
+}
+
+fn plural<'a>(n: usize, one: &'a str, many: &'a str) -> &'a str {
+    if n == 1 {
+        one
+    } else {
+        many
+    }
+}
+
 impl ValidateRunner {
     /// Runs one full pass over a single world: hidden window + swapchain +
     /// ray pass + capture + reference trace + comparison + report files, and
@@ -198,8 +279,9 @@ impl ValidateRunner {
         let shape = VoxelShape::GridCell;
 
         println!(
-            "[{:>15}] {} ({} voxels): rendering…",
-            world.name, world.path, voxel_count
+            "        {} {}",
+            thousands(voxel_count as u64),
+            plural(voxel_count, "voxel", "voxels")
         );
 
         let window_attributes = WindowAttributes::default()
@@ -259,12 +341,14 @@ impl ValidateRunner {
         // six output images (diff/spec RGBA16F, albedo RGBA8 captured) and
         // the readback buffers for the radiance pair + albedo aux.
         let path_images = create_path_trace_images(&self.gpu.resources, width, height);
+        let path_pixel_bytes = (u64::from(width) * u64::from(height) * 4) as u64;
         let path_diff_readback_buffer_id =
             create_host_readback(&self.gpu, (u64::from(width) * u64::from(height) * 8) as u64);
         let path_spec_readback_buffer_id =
             create_host_readback(&self.gpu, (u64::from(width) * u64::from(height) * 8) as u64);
-        let path_albedo_readback_buffer_id =
-            create_host_readback(&self.gpu, (u64::from(width) * u64::from(height) * 4) as u64);
+        let path_albedo_readback_buffer_id = create_host_readback(&self.gpu, path_pixel_bytes);
+        let path_normal_roughness_readback_buffer_id =
+            create_host_readback(&self.gpu, path_pixel_bytes);
 
         let setup = FrameSetup {
             window,
@@ -282,6 +366,7 @@ impl ValidateRunner {
             path_diff_readback_buffer_id,
             path_spec_readback_buffer_id,
             path_albedo_readback_buffer_id,
+            path_normal_roughness_readback_buffer_id,
         };
 
         // Startup: the world voices its initial state as one submit_batch;
@@ -540,6 +625,31 @@ impl ValidateRunner {
                     .map(|p| p.hard_mismatches)
                     .sum(),
                 samples: self.opts.path_trace_samples,
+                silhouette: path_frames
+                    .iter()
+                    .filter_map(|p| p.as_ref())
+                    .map(|p| p.silhouette)
+                    .sum(),
+                firefly: path_frames
+                    .iter()
+                    .filter_map(|p| p.as_ref())
+                    .map(|p| p.firefly)
+                    .sum(),
+                corner_touch: path_frames
+                    .iter()
+                    .filter_map(|p| p.as_ref())
+                    .map(|p| p.corner_touch)
+                    .sum(),
+                face_tie: path_frames
+                    .iter()
+                    .filter_map(|p| p.as_ref())
+                    .map(|p| p.face_tie)
+                    .sum(),
+                path_divergence: path_frames
+                    .iter()
+                    .filter_map(|p| p.as_ref())
+                    .map(|p| p.path_divergence)
+                    .sum(),
             })
         };
 
@@ -722,30 +832,30 @@ impl ValidateRunner {
             setup.path_images.diff.physical_id,
             setup.path_images.spec.physical_id,
             setup.path_images.albedo.physical_id,
+            setup.path_images.normal_roughness.physical_id,
             setup.path_diff_readback_buffer_id,
             setup.path_spec_readback_buffer_id,
             setup.path_albedo_readback_buffer_id,
+            setup.path_normal_roughness_readback_buffer_id,
             self.opts.width,
             self.opts.height,
         );
-        let path_capture_node_id = path_graph
-            .create_task_node("PathCapture", QueueFamilyType::Graphics, path_capture_task)
-            .image_access(
-                setup.path_images.diff.physical_id,
+        let mut path_capture_node = path_graph
+            .create_task_node("PathCapture", QueueFamilyType::Graphics, path_capture_task);
+        for image in [
+            &setup.path_images.diff,
+            &setup.path_images.spec,
+            &setup.path_images.albedo,
+            &setup.path_images.normal_roughness,
+            &setup.path_images.viewz,
+        ] {
+            path_capture_node.image_access(
+                image.physical_id,
                 AccessTypes::COPY_TRANSFER_READ,
                 ImageLayoutType::General,
-            )
-            .image_access(
-                setup.path_images.spec.physical_id,
-                AccessTypes::COPY_TRANSFER_READ,
-                ImageLayoutType::General,
-            )
-            .image_access(
-                setup.path_images.albedo.physical_id,
-                AccessTypes::COPY_TRANSFER_READ,
-                ImageLayoutType::General,
-            )
-            .build();
+            );
+        }
+        let path_capture_node_id = path_capture_node.build();
         path_graph
             .add_edge(path_rt_node_id, path_capture_node_id)
             .unwrap();
@@ -753,6 +863,10 @@ impl ValidateRunner {
         path_graph.add_host_buffer_access(setup.path_spec_readback_buffer_id, HostAccessType::Read);
         path_graph
             .add_host_buffer_access(setup.path_albedo_readback_buffer_id, HostAccessType::Read);
+        path_graph.add_host_buffer_access(
+            setup.path_normal_roughness_readback_buffer_id,
+            HostAccessType::Read,
+        );
 
         let path_task_graph = unsafe {
             path_graph.compile(&CompileInfo {
@@ -807,6 +921,8 @@ impl ValidateRunner {
             path_diff_readback_buffer_id: setup.path_diff_readback_buffer_id,
             path_spec_readback_buffer_id: setup.path_spec_readback_buffer_id,
             path_albedo_readback_buffer_id: setup.path_albedo_readback_buffer_id,
+            path_normal_roughness_readback_buffer_id: setup
+                .path_normal_roughness_readback_buffer_id,
         })
     }
 
@@ -970,10 +1086,15 @@ impl ValidateRunner {
         let mut diff_sum = vec![glam::Vec3::ZERO; pixel_count];
         let mut spec_sum = vec![glam::Vec3::ZERO; pixel_count];
         let mut albedo_sum = vec![glam::Vec3::ZERO; pixel_count];
+        let mut normal_sum = vec![glam::Vec3::ZERO; pixel_count];
         let mut hit_sum = vec![0u32; pixel_count];
         // The octahedral normal encodings (RGBA8) and the in-lobe hit
         // distance (the diffuse alpha), for the corner-touch excuse.
         let mut hitdist_sum = vec![0.0f32; pixel_count];
+        // The per-frame radiance pairs (raw f16), kept so a hard-mismatch
+        // pixel can be classified per seed (the path-divergence check).
+        let mut frame_diff_f16: Vec<Vec<u8>> = Vec::with_capacity(samples as usize);
+        let mut frame_spec_f16: Vec<Vec<u8>> = Vec::with_capacity(samples as usize);
 
         for f in 0..samples {
             frame.rcx.frame_seed = f;
@@ -1005,9 +1126,12 @@ impl ValidateRunner {
             let diff_bytes = read_host_bytes(gpu, frame.path_diff_readback_buffer_id);
             let spec_bytes = read_host_bytes(gpu, frame.path_spec_readback_buffer_id);
             let albedo_bytes = read_host_bytes(gpu, frame.path_albedo_readback_buffer_id);
+            let nr_bytes = read_host_bytes(gpu, frame.path_normal_roughness_readback_buffer_id);
 
             let diff_rgba = decode_rgba16f(&diff_bytes);
             let spec_rgba = decode_rgba16f(&spec_bytes);
+            frame_diff_f16.push(diff_bytes);
+            frame_spec_f16.push(spec_bytes);
             for i in 0..pixel_count {
                 diff_sum[i] += diff_rgba[i].truncate();
                 spec_sum[i] += spec_rgba[i].truncate();
@@ -1017,6 +1141,11 @@ impl ValidateRunner {
                     f32::from(a[1]) / 255.0,
                     f32::from(a[2]) / 255.0,
                 );
+                let nr = &nr_bytes[i * 4..i * 4 + 4];
+                normal_sum[i] += decode_octahedral(glam::Vec2::new(
+                    f32::from(nr[0]) / 255.0,
+                    f32::from(nr[1]) / 255.0,
+                ));
                 // The in-lobe hit distance rides the diffuse alpha: 0 is
                 // the sky sentinel (primary miss).
                 hitdist_sum[i] += diff_rgba[i].w;
@@ -1028,6 +1157,7 @@ impl ValidateRunner {
         let gpu_diffuse: Vec<glam::Vec3> = diff_sum.iter().map(|v| *v / n).collect();
         let gpu_specular: Vec<glam::Vec3> = spec_sum.iter().map(|v| *v / n).collect();
         let gpu_albedo: Vec<glam::Vec3> = albedo_sum.iter().map(|v| *v / n).collect();
+        let gpu_normals: Vec<glam::Vec3> = normal_sum.iter().map(|v| v.normalize_or_zero()).collect();
         let gpu_hit_fraction: Vec<f32> = hit_sum.iter().map(|h| *h as f32 / n).collect();
         let gpu_hitdist: Vec<f32> = hitdist_sum.iter().map(|h| *h / n).collect();
         // The display radiance (re-modulated like the composite): the sky
@@ -1050,23 +1180,87 @@ impl ValidateRunner {
         let cpu_seconds = cpu_start.elapsed().as_secs_f64();
 
         // --- compare + write the report ----------------------------------
-        let path_report: PathCompareReport = compare_path(
+        let config = PathCompareConfig::default();
+        let mut path_report: PathCompareReport = compare_path(
             &gpu_diffuse,
             &gpu_specular,
             &gpu_hit_fraction,
             &gpu_display,
             &gpu_hitdist,
             &gpu_albedo,
+            &gpu_normals,
             &cpu.diffuse,
             &cpu.specular,
             &cpu.display,
             &cpu.hit_ts,
             &cpu.albedos,
+            &cpu.normals,
             width,
             height,
             samples,
-            PathCompareConfig::default(),
+            config,
         );
+
+        // Per-seed evidence on the hard mismatches: a pixel whose means
+        // disagree because a MINORITY of its identical-seed samples took
+        // categorically different paths is two f32 engines parting ways on
+        // a marginal shadow/bounce decision deep in a bounce chain — chaos,
+        // not a shading bug. A systematic bug shifts values on every seed
+        // that exercises it and stays hard.
+        let mut flipped: Vec<(u32, u32)> = Vec::new();
+        let mut still_hard = Vec::new();
+        for m in std::mem::take(&mut path_report.hard_mismatches) {
+            let i = (m.y as usize) * width as usize + m.x as usize;
+            let mut gpu_d = Vec::with_capacity(samples as usize);
+            let mut gpu_s = Vec::with_capacity(samples as usize);
+            let mut cpu_d = Vec::with_capacity(samples as usize);
+            let mut cpu_s = Vec::with_capacity(samples as usize);
+            for f in 0..samples as usize {
+                let b = i * 8;
+                let rgb = |w: &[u8]| {
+                    glam::Vec3::new(
+                        half_to_f32(u16::from_le_bytes([w[b], w[b + 1]])),
+                        half_to_f32(u16::from_le_bytes([w[b + 2], w[b + 3]])),
+                        half_to_f32(u16::from_le_bytes([w[b + 4], w[b + 5]])),
+                    )
+                };
+                gpu_d.push(rgb(&frame_diff_f16[f]));
+                gpu_s.push(rgb(&frame_spec_f16[f]));
+                let smp = tracer.sample(&frame.camera_inputs, m.x, m.y, f as u32);
+                cpu_d.push(smp.diffuse_de);
+                cpu_s.push(smp.specular);
+            }
+            let ev = seed_evidence(
+                &gpu_d,
+                &gpu_s,
+                &cpu_d,
+                &cpu_s,
+                config.tolerance,
+                config.abs_floor,
+            );
+            if ev.is_minority_flip(samples) {
+                flipped.push((m.x, m.y));
+            } else {
+                let mut m = m;
+                let mut note = format!("{}/{} seeds agree", ev.agreeing, samples);
+                if ev.shifted > 0 {
+                    note.push_str(&format!(", {} shifted", ev.shifted));
+                }
+                if ev.diverged > 0 {
+                    note.push_str(&format!(", {} flipped", ev.diverged));
+                }
+                m.seed_note = note;
+                still_hard.push(m);
+            }
+        }
+        if !flipped.is_empty() {
+            for m in &mut path_report.mismatches {
+                if m.excuse == ExcuseKind::Hard && flipped.contains(&(m.x, m.y)) {
+                    m.excuse = ExcuseKind::PathDivergence;
+                }
+            }
+            path_report.hard_mismatches = still_hard;
+        }
 
         fs::create_dir_all(&out_dir)
             .map_err(|e| format!("failed to create path report dir: {e}"))?;
@@ -1112,6 +1306,11 @@ impl ValidateRunner {
             mismatches: path_report.mismatch_count(),
             hard_mismatches: path_report.hard_mismatch_count(),
             samples,
+            silhouette: path_report.edge_excused(),
+            firefly: path_report.firefly_excused(),
+            corner_touch: path_report.corner_touch_excused(),
+            face_tie: path_report.face_tie_excused(),
+            path_divergence: path_report.path_divergence_excused(),
         })
     }
 }

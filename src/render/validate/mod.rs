@@ -45,13 +45,19 @@ pub struct PassSummary {
 
 /// Result of one world's shading-half diff (ticket 07): the CPU path-tracer
 /// mirror vs the captured GPU radiance pair, per-pixel means over N
-/// identical-seed samples.
+/// identical-seed samples. The excuse counts break the over-tolerance pixels
+/// down by class (the hard count is whatever no excuse covered).
 pub struct PathPassSummary {
     pub name: String,
     pub pass: bool,
     pub mismatches: usize,
     pub hard_mismatches: usize,
     pub samples: u32,
+    pub silhouette: usize,
+    pub firefly: usize,
+    pub corner_touch: usize,
+    pub face_tie: usize,
+    pub path_divergence: usize,
 }
 
 pub fn run(args: &[String]) -> Result<(), String> {
@@ -124,61 +130,52 @@ pub fn run(args: &[String]) -> Result<(), String> {
         .run_app(&mut app)
         .map_err(|e| format!("event loop: {e}"))?;
 
-    let mut failures = 0;
+    let total = app.results.len();
+    let mut failures: Vec<String> = Vec::new();
 
     for (result, path) in app.results.iter().zip(&app.path_results) {
         match result {
             Ok(summary) => {
-                println!(
-                    "[{:>15}] {}  (mismatches: {}, hard: {})",
-                    summary.name,
-                    if summary.pass { "PASS" } else { "FAIL" },
-                    summary.mismatches,
-                    summary.hard_mismatches,
-                );
-
-                for frame in &summary.frames {
-                    if frame.label.is_empty() {
-                        continue;
-                    }
-                    println!(
-                        "              {}: {} (mismatches: {}, hard: {}), report: {}",
-                        frame.label,
-                        if frame.pass { "PASS" } else { "FAIL" },
-                        frame.mismatches,
-                        frame.hard_mismatches,
-                        summary.out_dir.join("report.txt").display()
-                    );
+                let shading = path.as_ref();
+                if summary.pass && shading.is_none_or(|p| p.pass) {
+                    continue;
                 }
+
+                let mut lines = vec![format!("{} \u{00b7} {}", summary.name, summary.path)];
 
                 if !summary.pass {
-                    failures += 1;
+                    lines.push(format!(
+                        "    geometry  FAIL   {} mismatches ({} hard)",
+                        summary.mismatches, summary.hard_mismatches
+                    ));
                 }
-            }
-            Err(error) => {
-                eprintln!("ERROR: {error}");
-                failures += 1;
-            }
-        }
 
-        if let Some(path) = path {
-            println!(
-                "[{:>15}] PATH {}  (N={}, mismatches: {}, hard: {})",
-                path.name,
-                if path.pass { "PASS" } else { "FAIL" },
-                path.samples,
-                path.mismatches,
-                path.hard_mismatches,
-            );
-            if !path.pass {
-                failures += 1;
+                if let Some(p) = shading.filter(|p| !p.pass) {
+                    lines.push(format!(
+                        "    shading   FAIL   {} px over tolerance ({} unexcused)",
+                        p.mismatches, p.hard_mismatches
+                    ));
+                }
+
+                lines.push(format!(
+                    "    artifacts {}",
+                    summary.out_dir.join("path-report.txt").display()
+                ));
+                failures.push(lines.join("\n"));
             }
+            Err(error) => failures.push(format!("ERROR \u{00b7} {error}")),
         }
     }
 
-    if failures > 0 {
-        Err(format!("{failures} of {} worlds failed", app.results.len()))
-    } else {
+    println!();
+    println!("{} of {} worlds passed", total - failures.len(), total);
+    for failure in &failures {
+        println!("\nFAILED {failure}");
+    }
+
+    if failures.is_empty() {
         Ok(())
+    } else {
+        Err(format!("{} world(s) failed", failures.len()))
     }
 }

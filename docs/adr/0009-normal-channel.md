@@ -4,7 +4,14 @@ Shading (BRDF eval, NEE cosine, the BSDF's reflection) needs the geometric surfa
 
 ## Status
 
-accepted (path-tracing ticket 04, 2026-08-17)
+accepted (path-tracing ticket 04, 2026-08-17); amended (path-tracing
+ticket 07, 2026-08-19): the reported t is snapped in the intersection shader
+to the division-form crossing of the entered boundary — accumulated stepping
+drift otherwise pushed `p` tens of ULP past the boundary and the scan fell
+into the no-face fallback on ordinary hits — and the epsilon is 32 ULP of
+the object-space coordinate (object space caps |p| at the region edge, so
+the false-positive window stays a fraction of a cell). The validator's CPU
+mirror runs the identical snap + reconstruction.
 
 ## Decision
 

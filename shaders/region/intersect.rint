@@ -144,6 +144,7 @@ void main() {
     }
 
     float t_entry = t0;
+    int last_axis = -1;
     ivec3 chunk_origin = mc << 3;
 
     while (true) {
@@ -163,7 +164,24 @@ void main() {
                     uint byte_off = block_offset + 64u + count;
                     uint byte_word = pool.words[byte_off >> 2u];
                     uint material = (byte_word >> ((byte_off & 3u) << 3u)) & 0xFFu;
-                    reportIntersectionEXT(t_entry, material);
+                    // Snap the reported crossing to the division form of the
+                    // entered boundary: the accumulated t_entry carries one
+                    // rounding per march step, and closest-hit reconstructs
+                    // the entered face from p = o + d*t — drift past a few
+                    // ULP would fall off the boundary into the no-face
+                    // fallback. One division here keeps the reported hit on
+                    // the face.
+                    float t_report = t_entry;
+                    if (last_axis >= 0) {
+                        float boundary = (step[last_axis] > 0)
+                            ? float(cell[last_axis])
+                            : float(cell[last_axis] + 1);
+                        t_report = max(
+                            (boundary - origin[last_axis]) / dir[last_axis],
+                            tmin
+                        );
+                    }
+                    reportIntersectionEXT(t_report, material);
                     return;
                 }
             }
@@ -184,5 +202,6 @@ void main() {
         cell[axis] += step[axis];
         t_next[axis] = next_t + delta[axis];
         t_entry = next_t;
+        last_axis = axis;
     }
 }
