@@ -82,6 +82,7 @@ pub struct RegionStore {
     pub material_table_storage_id: StorageBufferId,
     pub acceleration_structure_id: AccelerationStructureId,
     region_table_buffer_id: Id<Buffer>,
+    aabb_table_buffer_id: Id<Buffer>,
     pub aabb_table_storage_id: StorageBufferId,
     instances: Vec<AccelerationStructureInstance>,
     resident_ids: Vec<u32>,
@@ -98,7 +99,10 @@ pub struct RegionStore {
 }
 
 impl RegionStore {
-    pub fn new(gpu: &GpuStack, voxel_data: &DotVoxData, initial: Vec<RegionData>) -> Self {
+    pub fn new(gpu: &GpuStack, voxel_data: &DotVoxData, input: &RendererInput) -> Self {
+        input.wait_until_idle();
+        let initial = input.packed_regions();
+
         let camera_buffer_id = gpu
             .resources
             .create_buffer(
@@ -339,6 +343,7 @@ impl RegionStore {
             material_table_storage_id,
             acceleration_structure_id,
             region_table_buffer_id,
+            aabb_table_buffer_id,
             aabb_table_storage_id,
             instances: static_instances(),
             resident_ids: Vec::new(),
@@ -756,6 +761,14 @@ impl RegionStore {
         }
 
         self.rebuild_with_plan(gpu, plan);
+
+        let aabbs_moved = !report.became_resident.is_empty()
+            || !report.left_resident.is_empty()
+            || !report.blas_replaced.is_empty();
+        if aabbs_moved {
+            self.write_aabb_table(gpu, self.aabb_table_buffer_id);
+        }
+
         report.instance_count = self.resident_ids.len();
         report
     }

@@ -4,7 +4,14 @@ The world hands the renderer **Micro-chunk snapshots**, {global coords, 64-byte 
 
 ## Status
 
-accepted (rendering-core ticket 07, 2026-08-10)
+accepted (rendering-core ticket 07, 2026-08-10). Amended (grilling
+session, 2026-08-21): the consume cycle is owned by `RegionStore` —
+`new` and `apply` are the only drain points of the dirty-region set,
+and the app calls `apply` unconditionally each frame. The "ordered
+taskgraph nodes" above is realized as host-side sequencing between
+frames (graphics flight idle → compute-flight rebuild graph → next
+trace), not as nodes of one taskgraph; the race-freedom argument holds
+through the flight waits.
 
 ## Considered Options
 

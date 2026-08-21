@@ -1,20 +1,3 @@
-//! Player input layer.
-//!
-//! One winit-free input structure owned by the app and passed by reference:
-//! held keys, just-pressed keys (an edge drained every frame), a this-frame
-//! scroll delta, a this-frame mouse-motion pair, and held mouse buttons.
-//! Before this module, input was split between the player controller (which
-//! owned a held-key set and imported winit) and the app (wheel-to-speed and
-//! right-button cursor capture), with no shared per-frame state.
-//!
-//! [`Input`] concentrates that state. Movement polls [`Input::down`] and
-//! reads [`Input::scroll_delta`]; look reads [`Input::mouse_motion`];
-//! cursor capture toggles on the right-button press edge (held state in
-//! [`Input::buttons_down`]); close and the render-mode toggle read
-//! [`Input::just_pressed`]. The winit-to-semantic mapping
-//! ([map_key] / [map_button]) lives here at the app boundary. Nothing else
-//! imports winit input types.
-
 use std::collections::HashSet;
 
 use winit::{
@@ -22,9 +5,6 @@ use winit::{
     keyboard::{Key, NamedKey},
 };
 
-/// The semantic action a key maps to (winit-free; the mapping lives in
-/// [map_key]). Consumers read the action, not a keycode, so key bindings are
-/// confined to one place at the app boundary.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum InputKey {
     Forward,
@@ -37,7 +17,6 @@ pub enum InputKey {
     Close,
 }
 
-/// The semantic mouse button (winit-free; the mapping lives in [map_button]).
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum InputButton {
     Left,
@@ -45,7 +24,6 @@ pub enum InputButton {
     Right,
 }
 
-/// The app-owned per-frame input state.
 #[derive(Default)]
 pub struct Input {
     pub down: HashSet<InputKey>,

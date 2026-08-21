@@ -290,9 +290,8 @@ impl ValidateRunner {
         // (never the world directly).
         let input = RendererInput::new();
         input.submit_batch(emit_snapshots(&world_data));
-        input.wait_until_idle();
 
-        let mut store = RegionStore::new(&self.gpu, &voxel_data, input.packed_regions());
+        let mut store = RegionStore::new(&self.gpu, &voxel_data, &input);
 
         // The task graph is built once per world: the store's buffers are
         // stable across frames (residency rebuilds rewrite them in place),

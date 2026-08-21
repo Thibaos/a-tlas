@@ -211,7 +211,8 @@ impl RendererInput {
         }
     }
 
-    pub fn take_dirty_regions(&self) -> Vec<IVec3> {
+    /// Consumed only by `RegionStore` (`new`/`apply`): the drain is single-owner.
+    pub(in crate::render) fn take_dirty_regions(&self) -> Vec<IVec3> {
         let mut dirty = std::mem::take(&mut *self.queue.inner.applied_regions.lock().unwrap());
         dirty.sort_unstable_by_key(|region| region.to_array());
         dirty

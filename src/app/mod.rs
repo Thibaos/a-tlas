@@ -70,10 +70,6 @@ pub struct App {
 
     delta_time: Duration,
     focused: bool,
-    /// The path-tracing RNG's per-frame seed (ticket 05, ADR 0010):
-    /// incremented every rendered frame and written into the render
-    /// context's `frame_seed`, so consecutive frames decorrelate for the
-    /// Denoise pass's temporal accumulation.
     frame_seed: u32,
 
     pub voxel_data: dot_vox::DotVoxData,
@@ -83,16 +79,7 @@ pub struct App {
     player_input: Input,
     schedule_controller: ScheduleController,
 
-    /// The renderer input contract: the world voices its
-    /// initial state as one `submit_batch`; the worker drains it into
-    /// per-Region mirrors. Kept so future world edits flow through the
-    /// same contract (the minimal snapshot emitter stays as the world
-    /// side's seed).
     input: RendererInput,
-    /// The full static lattice's GPU half: residency,
-    /// free lists, the stable TLAS. Built once from the initial batch (the
-    /// one-shot pre-loop build) and rebuilt through the ordered rebuild
-    /// nodes on change cycles.
     store: RegionStore,
 
     rcx: Option<RenderContext>,
@@ -128,10 +115,8 @@ impl App {
 
         let input = RendererInput::new();
         input.submit_batch(emit_snapshots(&world));
-        input.wait_until_idle();
 
-        let store = RegionStore::new(&gpu, &voxel_data, input.packed_regions());
-        input.take_dirty_regions();
+        let store = RegionStore::new(&gpu, &voxel_data, &input);
 
         let mut schedule_controller = ScheduleController::new();
         schedule_controller.add_schedule_frames("delta", 1);
@@ -178,11 +163,6 @@ impl App {
         }
     }
 
-    /// TAB (debug builds) cycles the Render mode Voxel -> Hull -> Ray
-    /// latency -> hull-crossed -> normal heatmap. Reads the just-pressed
-    /// edge from the shared input layer; the mode lives in the render
-    /// context and is written into the push constants every frame, so
-    /// toggling is a per-frame flag, never a pipeline rebuild.
     #[cfg(debug_assertions)]
     fn handle_toggle_render_mode(&mut self) {
         if self
@@ -558,10 +538,6 @@ impl ApplicationHandler for App {
                 self.rcx.as_mut().unwrap().region.frame_seed = self.frame_seed;
                 self.request_log();
 
-                if !self.input.take_dirty_regions().is_empty() {
-                    self.store.apply(&self.gpu, &self.input);
-                }
-
                 {
                     let rcx = self.rcx.as_mut().unwrap();
 
@@ -632,6 +608,8 @@ impl ApplicationHandler for App {
                     .flight(self.gpu.graphics_flight_id)
                     .wait_idle()
                     .unwrap();
+
+                self.store.apply(&self.gpu, &self.input);
 
                 let rcx = self.rcx.as_mut().unwrap();
 
@@ -739,23 +717,12 @@ impl ApplicationHandler for App {
     }
 }
 
-/// One of the trace pass's six output images (ADR 0007): the virtual graph
-/// resource the nodes' accesses reference, the physical image, and its
-/// bindless storage id. The graph maps the virtual id to the physical id
-/// per frame, so a window resize can destroy and recreate the physical
-/// image without rebuilding the graph.
 pub(crate) struct TracePassImage {
     pub virtual_id: Id<Image>,
     pub physical_id: Id<Image>,
     pub storage_id: StorageImageId,
 }
 
-/// The trace pass's output images (ADR 0007): the noisy radiance pair and
-/// the auxiliary guide buffers the production raygen writes in Voxel mode
-/// (diffuse+specular radiance with in-lobe hit distance in alpha,
-/// normal+roughness, linear viewZ, backward motion vectors,
-/// albedo+metalness). The composite node exposes them (and, from ticket 08,
-/// the Denoise pass consumes them).
 pub(crate) struct TracePassImages {
     pub diff_radiance: TracePassImage,
     pub spec_radiance: TracePassImage,
@@ -766,11 +733,6 @@ pub(crate) struct TracePassImages {
 }
 
 impl TracePassImages {
-    /// Adds the six virtual image resources to the task graph (the nodes'
-    /// accesses reference these; the per-frame resource map binds them to
-    /// the physical images). The create infos must match the physical
-    /// images' format and sharing mode (the map asserts on it). Physical
-    /// ids and storage ids are filled in by [`Self::attach_physical`].
     fn add_virtual(task_graph: &mut TaskGraph<RegionRenderContext>) -> Self {
         let mut add = |format: Format| {
             task_graph.add_image(&ImageCreateInfo {
@@ -797,10 +759,6 @@ impl TracePassImages {
         }
     }
 
-    /// Replaces the physical images and bindless storage ids with the given
-    /// freshly created ones (startup and resize), keeping the virtual ids.
-    /// The task graph is untouched. The per-frame resource map binds the
-    /// virtual ids to the new physical images.
     fn attach_physical(&mut self, physical: TracePassImages) {
         self.diff_radiance.physical_id = physical.diff_radiance.physical_id;
         self.diff_radiance.storage_id = physical.diff_radiance.storage_id;
@@ -817,11 +775,6 @@ impl TracePassImages {
     }
 }
 
-/// Creates the trace pass's six physical output images (ADR 0007), sized to
-/// the window, and registers them in the bindless set. Called at startup
-/// and again on resize (the old images are destroyed first); the virtual
-/// ids in the returned struct are INVALID. They ride on the render
-/// context's [`TracePassImages`].
 pub(crate) fn create_trace_pass_images(
     resources: &Resources,
     width: u32,
