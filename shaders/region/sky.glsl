@@ -1,30 +1,9 @@
-// The Procedural sky (ticket 06): the analytic environment light's radiance
-// and importance pdf (CONTEXT.md). The radiance is a piecewise-linear
-// gradient in μ = cos(elevation), knots at ground (μ = -1), horizon (μ = 0),
-// zenith (μ = 1), all strictly positive (no zero-crossings: the marginal pdf
-// stays positive everywhere), continuing below the horizon, so the sky is
-// one function over the whole sphere (the Void reports the Background color).
-//
-// The Sun disk is deliberately NOT part of the transport radiance: the delta
-// Sun light carries the sun's light, and a measure-zero radiance bump with a
-// gradient-matched pdf would firefly at 1 spp. The disk is evaluated only by
-// the raygen's primary-miss branch (the camera's direct view of the Sun).
-//
-// Every function here is part of the CPU mirror's contract (ticket 07): only
-// clamp/lerp/mul/div/sqrt, all bit-reproducible in Rust f32 (no sin/cos/pow
-// beyond what the 05 slice already uses; the env sampler's cos/sin are the
-// same ops the bounce samplers already require).
-
-// The gradient radiance at μ ∈ [-1, 1] (piecewise-linear between the knots;
-// clamped for safety. The mirror reproduces the clamp identically).
 float sky_gradient(float mu) {
     vec4 k = scene.sky_knots;
     float t = clamp(mu, -1.0, 1.0);
     return (t < 0.0) ? mix(k.x, k.y, t + 1.0) : mix(k.y, k.z, t);
 }
 
-// The marginal pdf's normalization: Z = ∫_{-1}^{1} L(μ) dμ (the trapezoid,
-// exact arithmetic, no transcendental).
 float sky_pdf_norm() {
     vec4 k = scene.sky_knots;
     return 0.5 * ((k.x + k.y) + (k.y + k.z));

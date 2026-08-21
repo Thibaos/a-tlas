@@ -1,31 +1,3 @@
-//! Ordered rebuild nodes.
-//!
-//! Rebuilds execute as **ordered taskgraph nodes** between the consuming
-//! trace and the next frame: pool upload → BLAS build → TLAS build (on
-//! residency transitions), so in-place rebuilds are race-free by ordering.
-//! [`RegionStore`](crate::render::region::residency::RegionStore) computes a
-//! CPU-side [`RebuildPlan`] (allocations, tables, packed instances. The
-//! worker keeps only the CPU-side drain/pack) and hands it to
-//! [`RebuildGraph`], which compiles one ordered graph per change cycle over
-//! exactly the buffers involved:
-//!
-//! - an **upload node** writes the pool bytes, the trimmed AABBs, the region
-//!   table and the packed instance prefix through the taskgraph's host-write
-//!   access (at record time);
-//! - a **BLAS-build node** rebuilds every dirty Region's procedural AABB
-//!   BLAS **in place** (device address stable → the TLAS instance stays
-//!   valid, the TLAS untouched); become-resident/replacement BLASes get
-//!   their storage in the plan phase and are built into it in place, so no
-//!   AS object ever moves;
-//! - a **TLAS-build node** rebuilds the stable TLAS **in place** (the
-//!   bindless acceleration-structure id never moves) iff a residency
-//!   transition happened.
-//!
-//! There is **no back-AS double buffer and no flip atomic** in this path:
-//! the store owns exactly one stable TLAS (rebuilt in place), the nodes
-//! only record ordered commands, and the plan is plain data. Startup is a
-//! one-shot pre-loop build from the initial batch through the same graph.
-
 use std::sync::Arc;
 
 use glam::IVec3;
@@ -58,9 +30,6 @@ use crate::{
     },
 };
 
-/// One Region's GPU upload: the pool bytes and the trimmed AABBs the upload
-/// node copies into the Region's buffers at record time. The plan phase
-/// already made every allocation/table decision; the node only records.
 pub struct RegionUpload {
     pub region_index: IVec3,
     pub pool_buffer_id: Id<Buffer>,
@@ -69,53 +38,30 @@ pub struct RegionUpload {
     pub aabbs: Vec<AabbPositions>,
 }
 
-/// One BLAS build. Every build is recorded as an in-place build into known
-/// storage: a become-resident/replacement BLAS gets its storage created by
-/// the plan phase (CPU) and the node builds into it. The AS object and its
-/// device address never move after creation.
 pub struct BlasBuild {
     pub region_index: IVec3,
     pub aabb_buffer_id: Id<Buffer>,
     pub aabb_count: u32,
-    /// The destination AS storage (the Region's BLAS, stable while
-    /// resident). The plan phase asserted the build fits the storage.
     pub blas: Arc<AccelerationStructure>,
-    /// The build's scratch (kept alive by the plan).
     pub scratch: Arc<Buffer>,
-    /// `true` for become-resident and capacity-replacement builds (fresh
-    /// storage); `false` for in-place content-edit rebuilds.
     pub fresh: bool,
 }
 
-/// The TLAS rebuild: rebuild the store's stable TLAS in place over the
-/// packed instance prefix (one instance per resident Region).
 pub struct TlasBuild {
     pub instance_count: u32,
-    /// The build's scratch (kept alive by the plan).
     pub scratch: Arc<Buffer>,
 }
 
-/// The CPU-side plan for one change cycle: what the ordered rebuild nodes
-/// will do. Built by the store's plan phase (CPU-only) and consumed by
-/// [`RebuildGraph`]. Plain data, no double buffer, no flip atomic.
 #[derive(Default)]
 pub struct RebuildPlan {
     pub uploads: Vec<RegionUpload>,
     pub blas_builds: Vec<BlasBuild>,
-    /// The region table rewrite (Region id → pool device address), when
-    /// residency or pool addresses changed.
     pub table: Option<[u64; REGION_COUNT]>,
-    /// The packed instance prefix (one per resident Region; the never-hit
-    /// dummy instance when nothing is resident), when residency changed.
     pub instances: Option<Vec<AccelerationStructureInstance>>,
-    /// The TLAS rebuild, iff a residency transition happened.
     pub tlas: Option<TlasBuild>,
 }
 
 impl RebuildPlan {
-    /// The plan does no GPU work at all (an idle change cycle: dirty regions
-    /// whose mirrors emptied before the cycle. The renderer costs zero, no
-    /// rebuild graph is compiled or submitted).
     pub fn is_empty(&self) -> bool {
         self.uploads.is_empty()
             && self.blas_builds.is_empty()
@@ -124,13 +70,9 @@ impl RebuildPlan {
             && self.tlas.is_none()
     }
 
-    /// The ordered rebuild log for the harness invariants: what
-    /// the nodes will do, in node order (upload → BLAS → TLAS). The
-    /// counters the acceptance criteria check: a content edit logs an
-    /// in-place `BuildBlas` and **no** `BuildTlas`; a residency transition
-    /// logs `RewriteInstances` + `BuildTlas`.
     pub fn log(&self) -> Vec<RebuildLogEntry> {
         let mut log = Vec::new();
+
         for upload in &self.uploads {
             log.push(RebuildLogEntry::Upload {
                 region_index: upload.region_index,
@@ -138,14 +80,17 @@ impl RebuildPlan {
                 aabbs: upload.aabbs.len() as u32,
             });
         }
+
         if self.table.is_some() {
             log.push(RebuildLogEntry::WriteRegionTable);
         }
+
         if let Some(instances) = &self.instances {
             log.push(RebuildLogEntry::RewriteInstances {
                 instance_count: instances.len() as u32,
             });
         }
+
         for build in &self.blas_builds {
             log.push(RebuildLogEntry::BuildBlas {
                 region_index: build.region_index,
@@ -153,49 +98,38 @@ impl RebuildPlan {
                 fresh: build.fresh,
             });
         }
+
         if let Some(tlas) = &self.tlas {
             log.push(RebuildLogEntry::BuildTlas {
                 instance_count: tlas.instance_count,
             });
         }
+
         log
     }
 }
 
-/// One entry of the ordered rebuild log (the harness's counters).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RebuildLogEntry {
-    /// The upload node copied a Region's pool bytes + trimmed AABBs.
     Upload {
         region_index: IVec3,
         pool_bytes: u64,
         aabbs: u32,
     },
-    /// The BLAS node rebuilt a Region's BLAS in place (`fresh: false`, a
-    /// content edit, device address stable, TLAS untouched) or built into
-    /// fresh storage (`fresh: true`, become-resident/replacement).
     BuildBlas {
         region_index: IVec3,
         aabb_count: u32,
         fresh: bool,
     },
-    /// The upload node rewrote the region table (Region id → pool BDA).
     WriteRegionTable,
-    /// The upload node rewrote the packed instance prefix (residency
-    /// changed).
-    RewriteInstances { instance_count: u32 },
-    /// The TLAS node rebuilt the stable TLAS in place.
-    BuildTlas { instance_count: u32 },
+    RewriteInstances {
+        instance_count: u32,
+    },
+    BuildTlas {
+        instance_count: u32,
+    },
 }
 
-// ---------------------------------------------------------------------------
-// The ordered nodes
-// ---------------------------------------------------------------------------
-
-/// The first node: host writes. Copies the plan's pool bytes, trimmed AABBs,
-/// region table and packed instance prefix into the store's buffers at
-/// record time (the taskgraph flushes the host writes before submit, so the
-/// subsequent nodes' declared accesses see them). No GPU commands.
 struct UploadRegionsTask {
     uploads: Vec<RegionUpload>,
     table: Option<[u64; REGION_COUNT]>,
@@ -249,10 +183,6 @@ impl Task for UploadRegionsTask {
     }
 }
 
-/// The second node: rebuild every dirty Region's BLAS **in place** (device
-/// address stable → TLAS untouched). Reads the upload node's host-written
-/// AABB buffers (declared access + the pre-barrier's HOST_WRITE src), writes
-/// the AS storage.
 struct BuildBlasTask {
     builds: Vec<BlasBuild>,
 }
@@ -288,10 +218,6 @@ impl Task for BuildBlasTask {
             build_geometry_info.dst_acceleration_structure = Some(&build.blas);
             build_geometry_info.scratch_data = build.scratch.device_address().get();
 
-            // The pre-barrier: the upload node's host writes (flush + this
-            // dependency) and any prior build's writes are visible to this
-            // build; the post-barrier makes the built BLAS visible to later
-            // rebuilds and traces.
             unsafe {
                 cbf.pipeline_barrier(&DependencyInfo {
                     memory_barriers: &[build_pre_barrier()],
@@ -321,18 +247,6 @@ impl Task for BuildBlasTask {
     }
 }
 
-/// The third node: rebuild the stable TLAS **in place** over the packed
-/// instance prefix, only on residency transitions. Reads the upload node's
-/// host-written instance buffer (declared access), writes the TLAS storage.
-///
-/// The node declares the instance buffer with
-/// `ACCELERATION_STRUCTURE_BUILD_ACCELERATION_STRUCTURE_WRITE`. The build
-/// *reads* it, but the declared write is the ordering proxy (inherited from
-/// the retired async TLAS worker): the render task declares
-/// `RAY_TRACING_SHADER_ACCELERATION_STRUCTURE_READ` on the same buffer, so
-/// the trace waits for this node's submission. The rebuild lands between
-/// the consuming trace and the next frame, and in-place rebuilds are
-/// race-free by ordering.
 struct BuildTlasTask {
     instance_count: u32,
     instance_buffer_id: Id<Buffer>,
@@ -366,6 +280,7 @@ impl Task for BuildTlasTask {
             geometries: &geometries,
             ..AccelerationStructureBuildGeometryInfo::new()
         };
+
         build_geometry_info.dst_acceleration_structure = Some(&self.tlas);
         build_geometry_info.scratch_data = self.scratch.device_address().get();
 
@@ -397,9 +312,6 @@ impl Task for BuildTlasTask {
     }
 }
 
-/// The pre-build memory barrier: the build input (host-written uploads,
-/// prior transfer/shader writes) and any prior build of the same AS are
-/// visible before this build writes it.
 fn build_pre_barrier() -> MemoryBarrier<'static> {
     MemoryBarrier {
         src_access: AccessFlags::TRANSFER_WRITE
@@ -417,8 +329,6 @@ fn build_pre_barrier() -> MemoryBarrier<'static> {
     }
 }
 
-/// The post-build memory barrier: the built AS is visible to later rebuilds
-/// and traces.
 fn build_post_barrier() -> MemoryBarrier<'static> {
     MemoryBarrier {
         src_access: AccessFlags::ACCELERATION_STRUCTURE_WRITE,
@@ -430,44 +340,26 @@ fn build_post_barrier() -> MemoryBarrier<'static> {
     }
 }
 
-// ---------------------------------------------------------------------------
-// The per-cycle ordered graph
-// ---------------------------------------------------------------------------
-
-/// The per-cycle rebuild graph: upload → BLAS build → TLAS build (on
-/// residency), compiled once per change cycle over exactly the buffers
-/// involved, executed on the compute queue and waited before returning. So
-/// the freed memory release in the store is safe (the dropping rebuild
-/// executed). An idle renderer never builds one (zero cost: no pending
-/// rebuilds, no wakeups).
 pub struct RebuildGraph {
     executable: ExecutableTaskGraph<()>,
 }
 
 impl RebuildGraph {
-    /// Compiles the ordered graph for one change cycle. The plan's data is
-    /// moved into the nodes (the graph records from it); the store's stable
-    /// buffers and the stable TLAS are referenced by id/Arc.
     pub fn new(gpu: &GpuStack, store: &RegionStore, plan: RebuildPlan) -> Self {
-        // The BLAS node's declared build-input accesses (collected before
-        // the plan's data moves into the nodes): the taskgraph inserts the
-        // initial barrier making the upload node's host writes visible to
-        // the build stage, and tracks the buffers across graphs.
         let blas_buffers = blas_buffer_ids(&plan);
 
         let mut task_graph = TaskGraph::new(&gpu.resources);
 
-        // The upload node's host writes (recorded at execute time, flushed
-        // before submit; the declared device accesses of the later nodes see
-        // them through the taskgraph's initial barrier).
         for upload in &plan.uploads {
             task_graph.add_host_buffer_access(upload.pool_buffer_id, HostAccessType::Write);
             task_graph.add_host_buffer_access(upload.aabb_buffer_id, HostAccessType::Write);
         }
+
         if plan.table.is_some() {
             task_graph
                 .add_host_buffer_access(store.region_table_buffer_id(), HostAccessType::Write);
         }
+
         if plan.instances.is_some() {
             task_graph.add_host_buffer_access(store.instance_buffer_id, HostAccessType::Write);
         }
@@ -526,7 +418,6 @@ impl RebuildGraph {
             );
         }
 
-        // The ordered chain: upload → BLAS → TLAS (skipping missing nodes).
         let mut previous = Some(upload_node);
         if let Some(blas_node) = blas_node {
             task_graph.add_edge(previous.unwrap(), blas_node).unwrap();
@@ -549,9 +440,6 @@ impl RebuildGraph {
         Self { executable }
     }
 
-    /// Executes the ordered rebuild nodes and waits for the compute flight
-    /// before returning (the rebuild sequence must complete before the
-    /// caller releases the pending frees. The dropping rebuild executed).
     pub fn execute(self, gpu: &GpuStack) {
         let resource_map = resource_map!(&self.executable).unwrap();
 
@@ -564,8 +452,6 @@ impl RebuildGraph {
     }
 }
 
-/// The AABB buffer ids the BLAS node builds from (its declared device
-/// accesses).
 fn blas_buffer_ids(plan: &RebuildPlan) -> Vec<Id<Buffer>> {
     plan.blas_builds
         .iter()
@@ -573,8 +459,6 @@ fn blas_buffer_ids(plan: &RebuildPlan) -> Vec<Id<Buffer>> {
         .collect()
 }
 
-/// Allocates a build scratch buffer of `size` bytes (the plan phase; kept
-/// alive by the plan until the rebuild completes).
 pub(crate) fn allocate_scratch(gpu: &GpuStack, size: DeviceSize) -> Arc<Buffer> {
     Buffer::new_slice::<u8>(
         &gpu.memory_allocator,
@@ -590,9 +474,6 @@ pub(crate) fn allocate_scratch(gpu: &GpuStack, size: DeviceSize) -> Arc<Buffer> 
     .clone()
 }
 
-/// The BLAS build sizes (AS storage + scratch) over `aabb_buffer` with
-/// `aabb_count` AABBs. The plan phase sizes the scratch and asserts the
-/// build fits the Region's storage.
 pub(crate) fn blas_build_sizes(
     gpu: &GpuStack,
     aabb_buffer: &Subbuffer<[AabbPositions]>,
@@ -607,7 +488,6 @@ pub(crate) fn blas_build_sizes(
     )
 }
 
-/// The procedural-AABB geometry list for a BLAS build over `aabb_buffer`.
 pub(crate) fn aabb_geometries(
     aabb_buffer: &Subbuffer<[AabbPositions]>,
 ) -> Vec<AccelerationStructureGeometry<'static>> {
@@ -621,8 +501,6 @@ pub(crate) fn aabb_geometries(
     )]
 }
 
-/// The TLAS build sizes (AS storage + scratch) over the packed instance
-/// prefix.
 pub(crate) fn tlas_build_sizes(
     gpu: &GpuStack,
     instance_buffer: &Subbuffer<[AccelerationStructureInstance]>,
@@ -647,11 +525,6 @@ pub(crate) fn tlas_build_sizes(
 mod tests {
     use super::*;
 
-    /// The empty plan is plain data with no GPU work. The idle invariant's
-    /// shape: no rebuild graph is compiled when nothing changed. (The new
-    /// path carries no back-AS double buffer and no flip atomic: the plan
-    /// has no AS array and no index state, and the store owns exactly one
-    /// stable TLAS. See [`RegionStore::tlas`].)
     #[test]
     fn empty_plan_means_no_rebuild_work() {
         let plan = RebuildPlan::default();
@@ -659,10 +532,6 @@ mod tests {
         assert!(plan.log().is_empty());
     }
 
-    /// The log derives from the plan in node order: uploads, table,
-    /// instances, BLAS builds, TLAS build. The counters the harness checks.
-    /// Content edits (in-place BLAS, no TLAS) and transitions (instances +
-    /// TLAS) are distinguishable by shape.
     #[test]
     fn plan_log_orders_entries_by_node() {
         let mut plan = RebuildPlan {
@@ -690,11 +559,11 @@ mod tests {
             }]
         );
 
-        // A transition plan: instances + TLAS (the build entries need GPU
-        // objects, so the shape is asserted with the data-only parts).
         plan.instances = Some(vec![AccelerationStructureInstance::default()]);
         plan.tlas = None;
+
         let log = plan.log();
+
         assert!(
             log.iter()
                 .any(|e| matches!(e, RebuildLogEntry::RewriteInstances { instance_count: 1 }))

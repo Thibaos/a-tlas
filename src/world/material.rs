@@ -3,40 +3,18 @@
 
 use super::format::get_palette;
 
-/// The default roughness for a palette index with no MATL `_rough` property.
 pub const DEFAULT_ROUGHNESS: f32 = 0.3;
-
-/// The emission radiance scale: a fully emissive voxel (`_emit` 1.0) with
-/// white albedo contributes `EMISSION_SCALE` linear radiance, bright enough
-/// to read clearly through the ACES tonemap (and, later, to act as a real
-/// path-hit light source). Tunable; the firefly-clamp policy stays in the
-/// effort's fog (the map's "Firefly control" item).
 pub const EMISSION_SCALE: f32 = 10.0;
 
-/// The per-palette-index surface properties (CONTEXT.md: **Material**):
-/// albedo (the Palette color), metallic, roughness, and emission (linear RGB
-/// radiance). Loaded from the .vox MATL chunk; one Material per Palette
-/// index (256 max). This is the CPU mirror, the single source of truth
-/// whose packed twin the GPU reads (uploaded once at startup by
-/// `RegionStore`, read by the DDA closest-hit and the production raygen) and
-/// the table the validator's reference tracer shades with.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Material {
-    /// The Palette color for this index (linear RGB; == `get_palette`'s
-    /// entry by construction. The byte-exact capture path depends on it).
     pub albedo: [f32; 3],
-    /// `_metal`, clamped to [0, 1]; 0 = dielectric.
     pub metallic: f32,
-    /// `_rough`, clamped to [0, 1]; 0.3 when the property is absent.
     pub roughness: f32,
-    /// Emissive radiance, linear RGB: `_emit` × albedo × [`EMISSION_SCALE`]
-    /// (0 for non-emissive materials).
     pub emission: [f32; 3],
 }
 
 impl Material {
-    /// The default surface for a palette index with no MATL entry (or no
-    /// property): diffuse, non-metallic, mid roughness, no emission.
     fn default_for(albedo: [f32; 3]) -> Self {
         Self {
             albedo,
@@ -47,18 +25,8 @@ impl Material {
     }
 }
 
-/// The full Material table: one [`Material`] per palette index. The MATL
-/// chunk's material id is the palette index, so the GPU table is indexed by
-/// the 8-bit hitKind (the material index) directly.
 pub type MaterialTable = [Material; 256];
 
-/// Builds the CPU Material table from the .vox data (ADR 0008): every
-/// palette index starts at the [`Material::default_for`] defaults, then the
-/// MATL chunk's entries override the properties they name. VOX property
-/// ranges are 0–1; out-of-range values clamp. `_type` is informational in
-/// v1. All types keep the PBR triad (the map rules `glass` out of scope,
-/// treated as opaque). Malformed material ids (≥ 256) are skipped, not
-/// fatal: a bad MATL entry must not take down the loader.
 pub fn get_material_table(data: &dot_vox::DotVoxData) -> MaterialTable {
     let palette = get_palette(data);
     let mut table: MaterialTable = std::array::from_fn(|i| {

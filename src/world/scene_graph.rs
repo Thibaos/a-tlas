@@ -11,10 +11,6 @@ pub struct SceneGraphTraverser<'a> {
 }
 
 impl SceneGraphTraverser<'_> {
-    /// Walks the scene graph. Scene-less .vox files have their flat model
-    /// voxels inserted directly (returning the number clipped); otherwise the
-    /// transformed models are collected into `models` for the caller to
-    /// insert. Returns the number of voxels clipped by the direct path.
     pub fn traverse(&mut self) -> usize {
         if self.scene.scenes.is_empty() {
             let mut clipped = 0usize;

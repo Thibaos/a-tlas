@@ -7,39 +7,19 @@
 
 layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 
-// The composite node's per-frame state: the swapchain storage image, the
-// radiance source, the manual exposure (EV stops), and the Render mode. The
-// composite is a no-op for the debug modes. Their raygen paints the
-// swapchain directly, and the composite must not overwrite it.
 layout(push_constant) uniform PushConstants {
     StorageImageId image_id;
-    // The radiance source: in this slice the trace pass's noisy diffuse
-    // radiance; from ticket 08 the Denoise pass's output (the composite then
-    // also reads the specular, albedo, roughness and viewZ buffers).
     StorageImageId radiance_id;
-    // The trace pass's specular radiance (raw in this slice. Its
-    // de-modulation factor lands with 06/08) and the albedo+metalness guide
-    // (ADR 0007): the composite re-modulates the de-modulated diffuse by
-    // albedo before exposure so the display shows radiance, not
-    // albedo-less light (Q4, ADR 0010).
     StorageImageId spec_radiance_id;
     StorageImageId albedo_metal_id;
-    // Manual exposure in EV stops (radiance *= 2^ev); adjusted by the app.
     float ev;
-    // Render mode: 0 = Voxel (expose the trace pass's output); anything else
-    // is a debug mode that already painted the swapchain, no-op.
     uint mode;
     uint width;
     uint height;
 };
 
-// The de-modulation guard used by the trace pass (ADR 0010): re-modulation
-// multiplies by the same max(albedo, eps) the raygen divided by, so the
-// round-trip is exact and near-black albedos stay bounded.
 const float ALBEDO_EPS = 1e-3;
 
-// The ACES filmic fit (Narkowicz 2015), the tonemap of the path-tracing
-// output contract (ADR 0007). Linear radiance in, tonemapped to [0, 1].
 vec3 aces_fit(vec3 x) {
     const float a = 2.51;
     const float b = 0.03;
@@ -59,19 +39,12 @@ void main() {
     }
 
     vec4 diff_de_a = imageLoad(vko_image2D_rgba16f(radiance_id), p);
-    // Sky sentinel (ticket 06): the primary-miss pixels write the raw
-    // Procedural sky radiance with alpha (the in-lobe hit distance) 0. No
-    // surface, so no re-modulation (dividing back by max(albedo, eps) would
-    // crush the sky to ~0). The composite adds those pixels raw.
     bool is_sky = diff_de_a.a <= 0.0;
     vec3 diff_de = diff_de_a.rgb;
     vec3 spec = imageLoad(vko_image2D_rgba16f(spec_radiance_id), p).rgb;
     vec3 albedo = imageLoad(vko_image2D_rgba8(albedo_metal_id), p).rgb;
-    // Re-modulate the de-modulated diffuse by the same max(albedo, eps) the
-    // trace pass divided by, then add the raw specular: total radiance.
     vec3 radiance = is_sky ? diff_de : diff_de * max(albedo, vec3(ALBEDO_EPS)) + spec;
     vec3 color = aces_fit(radiance * exp2(ev));
-    // Gamma to the swapchain's sRGB-ish transfer.
     color = pow(color, vec3(1.0 / 2.2));
     imageStore(vko_image2D_rgba8(image_id), p, vec4(color, 1.0));
 }

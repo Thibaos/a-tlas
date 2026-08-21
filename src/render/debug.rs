@@ -1,12 +1,13 @@
 use core::slice;
 use std::sync::Arc;
 use vulkano::{
-    pipeline::{ComputePipeline, PipelineShaderStageCreateInfo, compute::ComputePipelineCreateInfo},
+    pipeline::{
+        ComputePipeline, PipelineShaderStageCreateInfo, compute::ComputePipelineCreateInfo,
+    },
     swapchain::Swapchain,
 };
 use vulkano_taskgraph::{
-    Id, Task, TaskContext, TaskResult,
-    command_buffer::RecordingCommandBuffer,
+    Id, Task, TaskContext, TaskResult, command_buffer::RecordingCommandBuffer,
     descriptor_set::StorageBufferId,
 };
 
@@ -21,9 +22,6 @@ pub mod heatmap {
     }
 }
 
-/// Builds the hull-crossed heatmap compute pipeline: reads the per-pixel count
-/// buffer (bindless) and paints the swapchain storage image (debug builds
-/// only; the hull-crossed mode has no surface in release).
 pub fn create_heatmap_pipeline(gpu: &GpuStack) -> Arc<ComputePipeline> {
     let shader = unsafe {
         heatmap::load(&gpu.device)
@@ -44,10 +42,6 @@ pub fn create_heatmap_pipeline(gpu: &GpuStack) -> Arc<ComputePipeline> {
     .unwrap()
 }
 
-/// The hull-crossed heatmap overlay node: a full-screen compute pass that reads
-/// the per-pixel count buffer and repaints the swapchain image. It runs only
-/// when the Render mode is [`RenderMode::HullCrossed`]; otherwise it is a no-op
-/// and leaves the ray pass's output untouched.
 pub struct DrawHeatmapTask {
     pub swapchain_id: Id<Swapchain>,
     pub hull_count_storage_id: StorageBufferId,

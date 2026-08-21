@@ -15,6 +15,8 @@
 
 use std::sync::Arc;
 
+#[cfg(debug_assertions)]
+use vulkano::shader::SpecializationConstant;
 use vulkano::{
     acceleration_structure::AccelerationStructure,
     buffer::Buffer,
@@ -28,8 +30,6 @@ use vulkano::{
     shader::EntryPoint,
     swapchain::Swapchain,
 };
-#[cfg(debug_assertions)]
-use vulkano::shader::SpecializationConstant;
 use vulkano_taskgraph::{
     Id, Task, TaskContext, TaskResult,
     command_buffer::{DependencyInfo, FillBufferInfo, MemoryBarrier, RecordingCommandBuffer},
@@ -48,9 +48,6 @@ pub(crate) mod capture_raygen {
 }
 
 pub(crate) mod production_raygen {
-    // Debug builds compile the Ray latency branch (clockRealtime); release
-    // builds omit it so the raygen carries no ShaderClock capability and the
-    // device needs no shader_device_clock feature.
     #[cfg(debug_assertions)]
     vulkano_shaders::shader! {
         root_path_env: "CARGO_MANIFEST_DIR",
@@ -86,11 +83,6 @@ pub(crate) mod miss {
     }
 }
 
-/// The production miss shader (ticket 06): the Procedural sky's radiance.
-/// The gradient at the ray's world direction (the disk is the camera's
-/// direct view, added by the raygen's primary-miss branch). The capture
-/// pipeline keeps the black `miss` module, so the byte-exact validator is
-/// unchanged.
 pub(crate) mod miss_sky {
     vulkano_shaders::shader! {
         root_path_env: "CARGO_MANIFEST_DIR",
@@ -109,8 +101,6 @@ pub(crate) mod closest_hit {
     }
 }
 
-/// The Hull hit group's AABB intersection shader (debug builds only. The
-/// Hull mode has no surface in release).
 #[cfg(debug_assertions)]
 pub(crate) mod hull_intersect {
     vulkano_shaders::shader! {
@@ -121,7 +111,6 @@ pub(crate) mod hull_intersect {
     }
 }
 
-/// The Hull hit group's AABB closest-hit shader (debug builds only).
 #[cfg(debug_assertions)]
 pub(crate) mod hull_closest_hit {
     vulkano_shaders::shader! {
@@ -132,93 +121,39 @@ pub(crate) mod hull_closest_hit {
     }
 }
 
-/// The Render mode: what the ray pass paints each pixel with (CONTEXT.md).
-/// Surface identity (Voxel, Hull) or a diagnostic quantity (Ray latency,
-/// hull-crossed). The diagnostic modes are debug-build-only.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum RenderMode {
-    /// The DDA commits the surface voxel, shaded from the Palette. The
-    /// default, and the only mode in release builds.
     #[default]
     Voxel = 0,
-    /// Each Micro-chunk's trimmed AABB is the surface, colored by a
-    /// coordinate hash, with no DDA. Debug builds only.
     #[cfg(debug_assertions)]
     Hull = 1,
-    /// Each pixel is colored by its ray's wall-clock lifetime (a
-    /// `clockRealtime` delta around `traceRayEXT`). Latency, not cost. Debug
-    /// builds only.
     #[cfg(debug_assertions)]
     RayLatency = 2,
-    /// Each pixel is colored by how many Micro-chunk hulls its ray entered.
-    /// Debug builds only.
     #[cfg(debug_assertions)]
     HullCrossed = 3,
-    /// Each pixel is colored by its hit's geometric surface normal (ticket
-    /// 04, ADR 0009): -1..1 mapped to 0..1 per channel, so voxel faces paint
-    /// by their axis (x red, y green, z blue; + side bright, - side dark),
-    /// background gray. Traces the DDA hit group like Voxel (the normal
-    /// rides the payload); Debug builds only.
     #[cfg(debug_assertions)]
     Normal = 4,
 }
 
-/// The per-pixel hull-crossed count buffer (debug builds): one uint per ray
-/// pass pixel, incremented by the DDA intersection shader's atomicAdd at
-/// slab-pass when the hull-crossed mode selects its hit group. Reset with a
-/// fill each frame; read on the GPU by the heatmap overlay node. The count is
-/// a lower bound on traversal work (hulls entered, not rejected AABB tests)
-/// and an upper bound per-pixel (Vulkan may invoke intersection shaders
-/// redundantly). The validator and release paths pass `None` and never attach
-/// it.
 #[derive(Clone, Copy)]
 pub struct HullCrossedCounter {
-    /// The buffer id the render task fills (reset) each frame.
     pub buffer_id: Id<Buffer>,
-    /// The bindless id pushed into the shader's push constants.
     pub storage_id: StorageBufferId,
 }
 
-/// The per-frame world the Region render task reads (shared by the
-/// validator's graph and the app's graph).
 pub struct RegionRenderContext {
     pub camera: capture_raygen::Camera,
-    /// The analytic lights' constants (ticket 06): the Sun (direction +
-    /// illuminance), the Procedural sky's μ-gradient knots, and the disk.
-    /// Written into the Scene buffer every frame (tunable); the capture
-    /// path never reads them (its miss shader is black), so the byte-exact
-    /// validator is unchanged.
     pub scene: capture_raygen::Scene,
     pub swapchain_storage_image_ids: Vec<StorageImageId>,
-    /// Validation only: the capture raygen also writes payload.t
-    /// here; the production raygen passes INVALID and never dereferences it
     pub t_image_storage_id: StorageImageId,
-    /// Path-tracing output contract (ADR 0007): the trace pass's noisy
-    /// radiance pair and auxiliary guide buffers, written by the production
-    /// raygen in Voxel mode (diffuse+specular radiance with in-lobe hit
-    /// distance in alpha, normal+roughness, linear viewZ, backward motion
-    /// vectors, albedo+metalness). The composite node exposes them (and, from
-    /// ticket 08, the Denoise pass consumes them). The validator pushes
-    /// INVALID for all six. The capture raygen never writes them.
     pub diff_radiance_image_id: StorageImageId,
     pub spec_radiance_image_id: StorageImageId,
     pub normal_roughness_image_id: StorageImageId,
     pub viewz_image_id: StorageImageId,
     pub mv_image_id: StorageImageId,
     pub albedo_metal_image_id: StorageImageId,
-    /// Manual exposure in EV stops, applied by the composite node
-    /// (ADR 0007). App-only; the validator leaves it at 0.
     pub ev: f32,
-    /// The Render mode written into the push constants every frame: the
-    /// production raygen's shader-binding-table record offset (0 = Voxel,
-    /// 1 = Hull; Voxel, Ray latency and the normal heatmap all trace the
-    /// DDA hit group 0). Always Voxel in release and in the validator; the
-    /// app toggles it on TAB in debug builds.
     pub mode: RenderMode,
-    /// The path-tracing RNG's per-frame seed (ticket 05, ADR 0010): the app
-    /// increments it every frame so consecutive frames decorrelate for the
-    /// Denoise pass's temporal accumulation. The validator's capture raygen
-    /// never reads it and pushes 0.
     pub frame_seed: u32,
 }
 
@@ -228,51 +163,20 @@ pub struct RegionRenderTask {
     instance_buffer_id: Id<Buffer>,
     camera_storage_id: StorageBufferId,
     palette_storage_id: StorageBufferId,
-    /// The Scene buffer (ticket 06): the analytic lights' constants.
-    /// Updated every frame from the context like the camera; pushed into
-    /// the bindless Scene binding (the production sky miss shader and the
-    /// production raygen read it; the capture path never dereferences it).
     scene_buffer_id: Id<Buffer>,
     scene_storage_id: StorageBufferId,
-    /// The bindless Material table (ADR 0008): pushed every frame; the DDA
-    /// closest-hit reads it for the surface color (albedo == palette, so the
-    /// capture path stays byte-identical) and the production raygen reads it
-    /// through the payload's hit_kind in Voxel mode (real metalness +
-    /// emission-as-albedo-light).
     material_table_storage_id: StorageBufferId,
     region_table_storage_id: StorageBufferId,
-    /// The bindless id of the region -> AABB-buffer table (the DDA's and the
-    /// debug Hull shader's lookup). The push constant carries it every frame.
     aabb_table_storage_id: StorageBufferId,
     acceleration_structure_id: AccelerationStructureId,
     shader_binding_table: ShaderBindingTable,
     pipeline: Arc<RayTracingPipeline>,
-    /// Lifetime anchors: the TLAS instances reference the resident BLASes by
-    /// device address only, so the task keeps them alive for the pass. (The
-    /// store keeps every resident and free-listed BLAS alive regardless; this
-    /// is a build-time snapshot, so a BLAS replaced by capacity growth stays
-    /// alive for the whole pass. Harmless retention.)
     #[allow(dead_code)]
     blases: Vec<Arc<AccelerationStructure>>,
-    /// The per-pixel hull-crossed count buffer (debug builds only): reset with
-    /// a fill, pushed into the intersection shader's push constants, and read
-    /// by the heatmap overlay node. `None` (the validator's and release paths)
-    /// pushes INVALID and never attaches the hull-crossed hit group.
     hull_crossed: Option<HullCrossedCounter>,
 }
 
 impl RegionRenderTask {
-    /// Builds the shared ray tracing pipeline around the given raygen stage
-    /// (capture for the validator, production for the app) and binds the
-    /// store's buffers. The store outlives the task, so its ids stay valid
-    /// for every frame of the pass (residency rebuilds rewrite the buffers
-    /// in place).
-    ///
-    /// `hull_crossed`: the per-pixel hull-crossed count buffer (debug
-    /// builds only). `sky_background` (ticket 06): whether the miss shader
-    /// returns the Procedural sky (the app's production pipeline) or stays
-    /// black (the validator's capture pipeline. Its byte-exact Reference
-    /// comparison is against a constant background).
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         gpu: &GpuStack,
@@ -298,6 +202,7 @@ impl RegionRenderTask {
                         .unwrap()
                 }
             };
+
             let intersection = unsafe {
                 intersect::load(&gpu.device)
                     .unwrap()
@@ -336,39 +241,23 @@ impl RegionRenderTask {
         }
     }
 
-    /// The instance buffer the TLAS reads (declared in the task graph).
     pub fn instance_buffer_id(&self) -> Id<Buffer> {
         self.instance_buffer_id
     }
 
-    /// The bindless id of the region -> AABB-buffer table (the DDA's and the
-    /// debug Hull shader's lookup).
     fn aabb_table_storage_id(&self) -> StorageBufferId {
         self.aabb_table_storage_id
     }
 }
 
-/// The analytic lights' default constants (ticket 06): the Sun's world
-/// direction and illuminance, the Procedural sky's μ-gradient knots, and
-/// the Sun disk. Tunable (the context writes them every frame; the app can
-/// expose them later); the CPU path tracer (07) mirrors the same packed
-/// values as data.
 pub fn default_scene() -> capture_raygen::Scene {
-    // Sun: normalize(0.45, 0.8, 0.35), ~52° elevation, world-fixed. The
-    // packed direction is data; the shader never renormalizes.
     let sun_dir = glam::Vec3::new(0.45, 0.8, 0.35).normalize();
-    // Sky: the piecewise-linear radiance gradient in μ = cos(elevation),
-    // knots at ground (μ = -1) / horizon (0) / zenith (1), all strictly
-    // positive (the marginal pdf stays positive everywhere).
     let knots = [0.15, 0.6, 1.2];
-    // Sun disk: 0.5° angular radius (the real Sun); the disk radiance is
-    // E_sun / Ω_disk, so the disk's integrated radiance equals the Sun's
-    // illuminance, the same source: the disk is the visual (the camera's
-    // direct view), the delta is the transport.
     let e_sun: f32 = 16.0;
     let cos_disk = (0.5_f32 * std::f32::consts::PI / 180.0).cos();
     let omega = 2.0 * std::f32::consts::PI * (1.0 - cos_disk);
     let l_disk = e_sun / omega;
+
     capture_raygen::Scene {
         sun_dir: [sun_dir.x, sun_dir.y, sun_dir.z, 0.0],
         sky_knots: [knots[0], knots[1], knots[2], 0.0],
@@ -376,12 +265,6 @@ pub fn default_scene() -> capture_raygen::Scene {
     }
 }
 
-/// Builds the shared ray tracing pipeline (raygen + miss + procedural hit
-/// group) around the given raygen entry point. The production task and the
-/// validator's capture task differ only in which raygen they pass. The
-/// miss/intersection/closest-hit stages are the Region path's own, so this
-/// is the one pipeline builder for the whole renderer.
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn build_ray_tracing_pipeline(
     gpu: &GpuStack,
     raygen: &EntryPoint,
@@ -391,9 +274,6 @@ pub(crate) fn build_ray_tracing_pipeline(
 ) -> Arc<RayTracingPipeline> {
     let bcx = gpu.resources.bindless_context().unwrap();
 
-    // Debug builds load the Hull hit group's shaders here (function scope, so
-    // the entry points outlive the pipeline create below). Release builds
-    // have no Hull surface: the stages/groups stay the DDA's three groups.
     #[cfg(debug_assertions)]
     let hull_intersection = unsafe {
         hull_intersect::load(&gpu.device)
@@ -401,6 +281,7 @@ pub(crate) fn build_ray_tracing_pipeline(
             .entry_point("main")
             .unwrap()
     };
+
     #[cfg(debug_assertions)]
     let hull_closest_hit = unsafe {
         hull_closest_hit::load(&gpu.device)
@@ -409,9 +290,6 @@ pub(crate) fn build_ray_tracing_pipeline(
             .unwrap()
     };
 
-    // The hull-crossed hit group's intersection stage (debug builds): the DDA
-    // intersection re-specialized with PER_PIXEL_COUNTER = true. Declared at
-    // function scope like the Hull stages so it outlives the pipeline create.
     #[cfg(debug_assertions)]
     let hull_crossed_intersection = unsafe {
         intersect::load(&gpu.device)
@@ -421,8 +299,6 @@ pub(crate) fn build_ray_tracing_pipeline(
             .unwrap()
     };
 
-    // `mut` only because debug builds push the Hull stages/groups; release
-    // builds leave them as the DDA's three groups.
     #[cfg_attr(not(debug_assertions), allow(unused_mut))]
     let mut stages = vec![
         PipelineShaderStageCreateInfo::new(raygen),
@@ -442,10 +318,6 @@ pub(crate) fn build_ray_tracing_pipeline(
         },
     ];
 
-    // The second procedural hit group (index 1; the DDA's is 0): the Hull
-    // AABB intersection + closest-hit shaders, siblings of the DDA's in the
-    // same pipeline. The production raygen selects it via sbtRecordOffset =
-    // mode, so a TAB toggle never rebuilds the pipeline.
     #[cfg(debug_assertions)]
     {
         let hull_intersection_idx = stages.len() as u32;
@@ -458,15 +330,12 @@ pub(crate) fn build_ray_tracing_pipeline(
             intersection_shader: hull_intersection_idx,
         });
 
-        // The third procedural hit group (index 2): the DDA intersection shader
-        // re-specialized with PER_PIXEL_COUNTER = true, sharing the DDA
-        // closest-hit (stage index 3). It runs the same real DDA march, but
-        // also increments the per-pixel hull-crossed count at slab-pass. The
-        // production raygen selects it via sbtRecordOffset = 2 (the third
-        // hit-region index; HullCrossed = 3 is the mode value the raygen maps
-        // to hit-region 2).
         let hull_crossed_idx = stages.len() as u32;
-        stages.push(PipelineShaderStageCreateInfo::new(&hull_crossed_intersection));
+
+        stages.push(PipelineShaderStageCreateInfo::new(
+            &hull_crossed_intersection,
+        ));
+
         groups.push(RayTracingShaderGroupCreateInfo::ProceduralHit {
             closest_hit_shader: Some(3),
             any_hit_shader: None,
@@ -505,13 +374,8 @@ impl Task for RegionRenderTask {
         let extent = swapchain_state.images()[0].extent();
 
         unsafe { cbf.update_buffer(self.camera_buffer_id, 0, &rcx.camera) };
-
-        // The Scene buffer (ticket 06): the analytic lights' constants,
-        // updated per frame like the camera (tunable).
         unsafe { cbf.update_buffer(self.scene_buffer_id, 0, &rcx.scene) };
 
-        // vkCmdUpdateBuffer's writes are not tracked by the taskgraph, so
-        // make them visible to the ray pass explicitly.
         unsafe {
             cbf.pipeline_barrier(&DependencyInfo {
                 memory_barriers: &[MemoryBarrier {
@@ -526,9 +390,6 @@ impl Task for RegionRenderTask {
             })
         };
 
-        // Reset the per-pixel hull-crossed count buffer (fill 0) before the
-        // ray pass. The heatmap overlay reads it after. A fill runs on the
-        // transfer stage, so make it visible to the shader's atomicAdd.
         if let Some(hull_crossed) = self.hull_crossed {
             unsafe {
                 cbf.fill_buffer(&FillBufferInfo {
@@ -564,7 +425,10 @@ impl Task for RegionRenderTask {
                     scene_buffer_id: self.scene_storage_id,
                     region_table_buffer_id: self.region_table_storage_id,
                     aabb_table_buffer_id: self.aabb_table_storage_id(),
-                    hull_count_buffer_id: self.hull_crossed.map(|hull_crossed| hull_crossed.storage_id).unwrap_or(StorageBufferId::INVALID),
+                    hull_count_buffer_id: self
+                        .hull_crossed
+                        .map(|hull_crossed| hull_crossed.storage_id)
+                        .unwrap_or(StorageBufferId::INVALID),
                     mode: rcx.mode as u32,
                     frame_seed: rcx.frame_seed,
                     diff_radiance_image_id: rcx.diff_radiance_image_id,

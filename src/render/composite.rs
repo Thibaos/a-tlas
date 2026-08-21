@@ -1,18 +1,13 @@
-//! The composite node: the taskgraph's last pass before present, exposing
-//! the trace pass's radiance to the swapchain with manual EV exposure and
-//! the ACES tonemap. Part of the path-tracing output contract (ADR 0007);
-//! from ticket 08 the composite consumes the Denoise pass's output instead
-//! of the noisy radiance directly.
-
 use core::slice;
 use std::sync::Arc;
 use vulkano::{
-    pipeline::{ComputePipeline, PipelineShaderStageCreateInfo, compute::ComputePipelineCreateInfo},
+    pipeline::{
+        ComputePipeline, PipelineShaderStageCreateInfo, compute::ComputePipelineCreateInfo,
+    },
     swapchain::Swapchain,
 };
 use vulkano_taskgraph::{
-    Id, Task, TaskContext, TaskResult,
-    command_buffer::RecordingCommandBuffer,
+    Id, Task, TaskContext, TaskResult, command_buffer::RecordingCommandBuffer,
 };
 
 use crate::{core::gpu::GpuStack, render::region::task::RenderMode};
@@ -26,8 +21,6 @@ pub mod composite {
     }
 }
 
-/// Builds the composite compute pipeline: reads the radiance source and
-/// paints the swapchain storage image (exposure + ACES tonemap + gamma).
 pub fn create_composite_pipeline(gpu: &GpuStack) -> Arc<ComputePipeline> {
     let shader = unsafe {
         composite::load(&gpu.device)
@@ -48,10 +41,6 @@ pub fn create_composite_pipeline(gpu: &GpuStack) -> Arc<ComputePipeline> {
     .unwrap()
 }
 
-/// The composite node: a full-screen compute pass exposing the trace pass's
-/// radiance to the swapchain. It runs only when the Render mode is Voxel
-/// (the path-tracing mode); the debug modes paint the swapchain directly
-/// from the raygen, so the composite no-ops for them.
 pub struct CompositeTask {
     pub swapchain_id: Id<Swapchain>,
     pub pipeline: Option<Arc<ComputePipeline>>,

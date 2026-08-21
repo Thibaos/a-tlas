@@ -1,9 +1,3 @@
-//! The correctness validator: renders each test world through the real
-//! renderer, captures the raw frame before any overlay, traces the same
-//! frame with the independent CPU reference tracer, and reports per-pixel
-//! {color, t} mismatches, plus the shading-half diff (the CPU path-tracer
-//! mirror vs the captured GPU radiance pair).
-
 use std::path::{Path, PathBuf};
 
 use winit::event_loop::EventLoop;
@@ -46,7 +40,6 @@ pub struct PassSummary {
     pub mismatches: usize,
     pub hard_mismatches: usize,
     pub out_dir: PathBuf,
-    /// Per-frame outcomes (see [`FrameSummary`]).
     pub frames: Vec<FrameSummary>,
 }
 
@@ -60,7 +53,6 @@ pub struct PathPassSummary {
     pub hard_mismatches: usize,
     pub samples: u32,
 }
-
 
 pub fn run(args: &[String]) -> Result<(), String> {
     let opts = parse_args(args)?;
@@ -89,7 +81,6 @@ pub fn run(args: &[String]) -> Result<(), String> {
         return Ok(());
     }
 
-    // The test worlds are committed assets; regenerate only if missing.
     let suite = all_worlds();
     let missing: Vec<_> = suite
         .iter()
@@ -117,8 +108,6 @@ pub fn run(args: &[String]) -> Result<(), String> {
         None => suite,
     };
 
-    // winit can only create one event loop per process (Windows), so all
-    // worlds run through the same loop + GPU stack.
     let event_loop = EventLoop::new().map_err(|e| format!("event loop: {e}"))?;
     let gpu = GpuStack::new(&event_loop);
 
@@ -172,9 +161,6 @@ pub fn run(args: &[String]) -> Result<(), String> {
             }
         }
 
-        // The shading-half diff (ticket 07): the CPU path-tracer mirror vs
-        // the captured GPU radiance pair (identical RNG seeds, per-pixel
-        // means, tolerance).
         if let Some(path) = path {
             println!(
                 "[{:>15}] PATH {}  (N={}, mismatches: {}, hard: {})",
@@ -196,4 +182,3 @@ pub fn run(args: &[String]) -> Result<(), String> {
         Ok(())
     }
 }
-

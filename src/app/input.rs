@@ -48,17 +48,10 @@ pub enum InputButton {
 /// The app-owned per-frame input state.
 #[derive(Default)]
 pub struct Input {
-    /// Keys held down this frame. Movement polls this (continuous).
     pub down: HashSet<InputKey>,
-    /// Keys pressed this frame (an edge). Close/toggle read this;
-    /// drained by [Input::end_frame].
     pub just_pressed: HashSet<InputKey>,
-    /// This-frame wheel delta (+ = up). Movement reads this for speed.
     pub scroll_delta: f32,
-    /// This-frame mouse-motion delta. Look reads this.
     pub mouse_motion: (f64, f64),
-    /// Mouse buttons held down this frame. Cursor capture toggles on the
-    /// right-button press edge (Right).
     pub buttons_down: HashSet<InputButton>,
 }
 
@@ -87,9 +80,6 @@ pub fn map_key(key: &Key) -> Option<InputKey> {
     }
 }
 
-/// Maps a winit mouse button to its semantic button, or `None` for buttons
-/// the app does not bind. This is the one place winit buttons become
-/// [InputButton].
 pub fn map_button(button: MouseButton) -> Option<InputButton> {
     match button {
         MouseButton::Left => Some(InputButton::Left),

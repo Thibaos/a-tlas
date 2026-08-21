@@ -28,19 +28,18 @@ use winit::{
 
 use crate::{
     core::gpu::GpuStack,
-    core::grid::{MICRO_CHUNK_EDGE, grid_origin},
+    core::grid::{MICRO_CHUNK_LENGTH, grid_origin},
     render::{
         region::{
             feed::RendererInput,
             pack::pack_regions,
             rebuild::RebuildLogEntry,
             residency::RegionStore,
-            task::{
-                RegionRenderContext, RegionRenderTask, RenderMode, default_scene,
-            },
+            task::{RegionRenderContext, RegionRenderTask, RenderMode, default_scene},
         },
         swapchain::window_size_dependent_setup,
         validate::{
+            FrameSummary, PassSummary, PathPassSummary,
             capture::{CaptureTask, PathCaptureTask},
             cli::ValidateOptions,
             compare::{CompareConfig, compare},
@@ -57,14 +56,13 @@ use crate::{
                 write_path_report, write_png, write_report,
             },
             test_worlds::{Camera, WorldSpec},
-            FrameSummary, PassSummary, PathPassSummary,
         },
     },
     world::{
+        World,
         format::{get_palette, open_file},
         material::get_material_table,
         snapshot::{MicroChunkSnapshot, emit_snapshots},
-        World,
     },
 };
 
@@ -324,7 +322,7 @@ impl ValidateRunner {
                             .iter_voxels()
                             .filter(|(p, _)| {
                                 p.cmpge(*mc).all()
-                                    && p.cmplt(*mc + IVec3::splat(MICRO_CHUNK_EDGE)).all()
+                                    && p.cmplt(*mc + IVec3::splat(MICRO_CHUNK_LENGTH)).all()
                             })
                             .map(|(p, _)| p)
                             .collect()
@@ -371,7 +369,7 @@ impl ValidateRunner {
                     let affected: std::collections::HashSet<IVec3> = step
                         .add_voxels
                         .iter()
-                        .map(|(p, _)| grid_origin(*p, MICRO_CHUNK_EDGE))
+                        .map(|(p, _)| grid_origin(*p, MICRO_CHUNK_LENGTH))
                         .collect();
                     let voiced: Vec<_> = emit_snapshots(&world_data)
                         .into_iter()
@@ -476,7 +474,10 @@ impl ValidateRunner {
                 // The rebuild log line (step observability): what the cycle's
                 // nodes did, in node order.
                 if !report.rebuild_log.is_empty() {
-                    println!("              rebuild {}: {:?}", step.label, report.rebuild_log);
+                    println!(
+                        "              rebuild {}: {:?}",
+                        step.label, report.rebuild_log
+                    );
                 }
 
                 let (summary, path) = self.run_frame(
@@ -1192,7 +1193,10 @@ fn build_camera(
     width: u32,
     height: u32,
     camera: Option<Camera>,
-) -> (crate::render::region::task::capture_raygen::Camera, CameraInputs) {
+) -> (
+    crate::render::region::task::capture_raygen::Camera,
+    CameraInputs,
+) {
     let (eye, target, up) = match camera {
         Some(spec) => (
             Vec3::from(spec.eye),

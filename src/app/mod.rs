@@ -60,8 +60,6 @@ use crate::{
 #[cfg(debug_assertions)]
 use crate::render::debug::{DrawHeatmapTask, create_heatmap_pipeline};
 
-/// The per-pixel hull-crossed count buffer's fixed pixel ceiling (4K): debug
-/// builds only. Resizing the window beyond it is unsupported in the heatmap.
 #[cfg(debug_assertions)]
 const HEATMAP_MAX_PIXELS: u64 = 3840 * 2160;
 
@@ -106,12 +104,7 @@ pub struct RenderContext {
     virtual_swapchain_id: Id<Swapchain>,
     recreate_swapchain: bool,
     task_graph: ExecutableTaskGraph<RegionRenderContext>,
-    /// The trace pass's output images (ADR 0007): virtual graph resources
-    /// plus the physical images recreated on resize.
     trace_pass_images: TracePassImages,
-    /// The per-frame world the graph executes with (camera, storage
-    /// images, the app's debug overlay fields. See
-    /// [`RegionRenderContext`]).
     region: RegionRenderContext,
 }
 
@@ -133,19 +126,10 @@ impl App {
         }
         let world = Arc::new(world);
 
-        // The input contract: the world voices its initial
-        // state as one `submit_batch`; the worker drains it into per-Region
-        // mirrors. The minimal snapshot emitter stays as the world side's
-        // seed for feeding the renderer.
         let input = RendererInput::new();
         input.submit_batch(emit_snapshots(&world));
         input.wait_until_idle();
 
-        // The one-shot pre-loop build: every initial Region
-        // becomes resident through the ordered rebuild graph (pool upload →
-        // BLAS build → TLAS build). The startup batch's published dirty set
-        // is consumed here. The frame loop applies only post-startup
-        // change cycles.
         let store = RegionStore::new(&gpu, &voxel_data, input.packed_regions());
         input.take_dirty_regions();
 
@@ -200,7 +184,7 @@ impl App {
     /// context and is written into the push constants every frame, so
     /// toggling is a per-frame flag, never a pipeline rebuild.
     #[cfg(debug_assertions)]
-    fn toggle_render_mode(&mut self) {
+    fn handle_toggle_render_mode(&mut self) {
         if self
             .player_input
             .just_pressed
@@ -233,7 +217,6 @@ impl App {
     fn update_camera(&mut self) {
         let rcx = self.rcx.as_mut().unwrap();
 
-        // Look: this frame's mouse-motion delta (only while cursor-captured).
         if self.focused {
             self.player_controller
                 .rotate(self.player_input.mouse_motion);
@@ -334,11 +317,6 @@ impl ApplicationHandler for App {
 
         let virtual_swapchain_id = task_graph.add_swapchain(&SwapchainCreateInfo::default());
 
-        // The trace pass's output images (ADR 0007): virtual graph resources
-        // first (the nodes' accesses reference them below), physical images
-        // + bindless ids attached right after (sized to the window and
-        // recreated on resize. The per-frame resource map binds the
-        // virtual ids, so recreation needs no graph rebuild).
         let mut trace_pass_images = TracePassImages::add_virtual(&mut task_graph);
         let swapchain_state = self.gpu.resources.swapchain(swapchain_id);
         let extent = swapchain_state.images()[0].extent();
@@ -346,9 +324,6 @@ impl ApplicationHandler for App {
             create_trace_pass_images(&self.gpu.resources, extent[0], extent[1]);
         trace_pass_images.attach_physical(physical_trace_pass_images);
 
-        // The Region render task: ray-passes
-        // the store's stable TLAS with the production raygen (color only;
-        // `t_image_id` stays INVALID and is never dereferenced).
         let raygen = unsafe {
             production_raygen::load(&self.gpu.device)
                 .unwrap()
@@ -356,9 +331,6 @@ impl ApplicationHandler for App {
                 .unwrap()
         };
 
-        // The per-pixel hull-crossed count buffer (debug builds): the heatmap
-        // overlay reads it and the render task resets it each frame. Fixed-size
-        // for the 4K window ceiling. Release and the validator pass None.
         #[cfg(debug_assertions)]
         let hull_crossed = {
             let buffer_id = self
@@ -398,13 +370,10 @@ impl ApplicationHandler for App {
             virtual_swapchain_id,
             &raygen,
             hull_crossed.as_ref(),
-            // The production pipeline's miss shader returns the Procedural
-            // sky (ticket 06).
             true,
         );
         let instance_buffer_id = rt_pass.instance_buffer_id();
 
-        // The render node id is needed only by the heatmap edge below.
         let mut rt_node = task_graph.create_task_node("Render", QueueFamilyType::Graphics, rt_pass);
         rt_node.image_access(
             virtual_swapchain_id.current_image_id(),
@@ -415,10 +384,6 @@ impl ApplicationHandler for App {
             instance_buffer_id,
             AccessTypes::RAY_TRACING_SHADER_ACCELERATION_STRUCTURE_READ,
         );
-        // The count buffer is written by the intersection shader's atomicAdd in
-        // hull-crossed mode (debug only); declaring it here makes the
-        // rt -> heatmap edge insert the memory barrier that makes those
-        // atomics visible to the heatmap's read.
         #[cfg(debug_assertions)]
         {
             rt_node.buffer_access(
@@ -426,10 +391,6 @@ impl ApplicationHandler for App {
                 AccessTypes::RAY_TRACING_SHADER_STORAGE_WRITE,
             );
         }
-        // The trace pass's output images (ADR 0007): written by the
-        // production raygen in Voxel mode, consumed by the composite (and,
-        // from ticket 08, the Denoise pass). Accessed through the virtual
-        // ids, which the per-frame resource map binds to the physical images.
         rt_node.image_access(
             trace_pass_images.diff_radiance.virtual_id,
             AccessTypes::RAY_TRACING_SHADER_STORAGE_WRITE,
@@ -463,9 +424,6 @@ impl ApplicationHandler for App {
         #[cfg_attr(not(debug_assertions), allow(unused_variables))]
         let rt_node_id = rt_node.build();
 
-        // The hull-crossed heatmap overlay node (debug builds): a compute pass
-        // that reads the per-pixel count buffer and repaints the swapchain
-        // image when the mode is hull-crossed. Ordered after the ray pass.
         #[cfg(debug_assertions)]
         let heatmap_node_id = task_graph
             .create_task_node(
@@ -490,9 +448,6 @@ impl ApplicationHandler for App {
         #[cfg(debug_assertions)]
         task_graph.add_edge(rt_node_id, heatmap_node_id).unwrap();
 
-        // The composite node (ADR 0007): exposes the trace pass's radiance to
-        // the swapchain (manual EV + ACES tonemap) in Voxel mode; a no-op for
-        // the debug modes, which paint the swapchain directly from the raygen.
         let composite_node_id = task_graph
             .create_task_node(
                 "Composite",
@@ -511,9 +466,6 @@ impl ApplicationHandler for App {
             )
             .build();
 
-        // The composite follows the heatmap overlay (debug builds) or the
-        // render node directly (release); either way it is the last node
-        // before present.
         #[cfg(debug_assertions)]
         task_graph
             .add_edge(heatmap_node_id, composite_node_id)
@@ -531,11 +483,8 @@ impl ApplicationHandler for App {
         }
         .unwrap();
 
-        // Pipeline injection needs mutable access to the compiled graph.
         let mut task_graph = task_graph;
 
-        // The heatmap compute pipeline is injected into the compiled graph
-        // only in debug builds (the overlay is app-only).
         #[cfg(debug_assertions)]
         {
             let heatmap_pipeline = create_heatmap_pipeline(&self.gpu);
@@ -548,8 +497,6 @@ impl ApplicationHandler for App {
                 .pipeline = Some(heatmap_pipeline);
         }
 
-        // The composite compute pipeline has no subpass, so it is created
-        // from the app only (no task-node reference), like the heatmap's.
         {
             let composite_pipeline = create_composite_pipeline(&self.gpu);
             task_graph
@@ -566,29 +513,17 @@ impl ApplicationHandler for App {
                 proj_inverse: [[0.0; 4]; 4],
                 view_inverse: [[0.0; 4]; 4],
             },
-            // The analytic lights' constants (ticket 06): the defaults,
-            // tunable later (the Scene buffer is written every frame).
             scene: default_scene(),
             swapchain_storage_image_ids,
-            // The production raygen never dereferences `t_image_id`
-            // (shaders/region/production.rgen). It stays INVALID.
             t_image_storage_id: StorageImageId::INVALID,
-            // The trace pass's output set (ADR 0007): the storage ids the
-            // production raygen writes in Voxel mode.
             diff_radiance_image_id: trace_pass_images.diff_radiance.storage_id,
             spec_radiance_image_id: trace_pass_images.spec_radiance.storage_id,
             normal_roughness_image_id: trace_pass_images.normal_roughness.storage_id,
             viewz_image_id: trace_pass_images.viewz.storage_id,
             mv_image_id: trace_pass_images.mv.storage_id,
             albedo_metal_image_id: trace_pass_images.albedo_metal.storage_id,
-            // Manual exposure: 0 EV (radiance unchanged) until adjusted with
-            // [ / ] (ADR 0007).
             ev: 0.0,
-            // Voxel is the default; TAB (debug builds) toggles this in the
-            // render context before each frame.
             mode: RenderMode::default(),
-            // The path-tracing RNG seed starts at 0; the frame loop
-            // increments it before each frame (ticket 05).
             frame_seed: 0,
         };
 
@@ -619,17 +554,10 @@ impl ApplicationHandler for App {
             WindowEvent::RedrawRequested => {
                 self.update_delta_time();
                 self.update_camera();
-                // The path-tracing RNG's per-frame seed (ticket 05):
-                // increment before this frame renders so consecutive frames
-                // decorrelate for the Denoise pass's temporal accumulation.
                 self.frame_seed = self.frame_seed.wrapping_add(1);
                 self.rcx.as_mut().unwrap().region.frame_seed = self.frame_seed;
                 self.request_log();
 
-                // The change cycle: anything the world voiced since the last
-                // frame is applied through the ordered rebuild nodes (pool
-                // upload → BLAS build → TLAS build on residency transitions)
-                // before the consuming trace.
                 if !self.input.take_dirty_regions().is_empty() {
                     self.store.apply(&self.gpu, &self.input);
                 }
@@ -661,11 +589,6 @@ impl ApplicationHandler for App {
                             batch.destroy_storage_image(id);
                         }
 
-                        // The trace pass's output images are window-sized
-                        // too: destroy the physical images and their bindless
-                        // ids, then recreate them. The graph references the
-                        // virtual ids (mapped per frame), so no graph rebuild
-                        // is needed.
                         let t = &rcx.trace_pass_images;
                         for image in [
                             &t.diff_radiance,
@@ -753,8 +676,6 @@ impl ApplicationHandler for App {
                 if let Some(mapped) = input::map_button(button) {
                     match state {
                         ElementState::Pressed => {
-                            // Cursor capture toggles on the right-button
-                            // press edge; the held button is recorded too.
                             if mapped == InputButton::Right {
                                 self.toggle_capture_mouse();
                             }
@@ -790,14 +711,12 @@ impl ApplicationHandler for App {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        // Close (Escape) and the Render-mode toggle (TAB, debug builds) are
-        // edge reads from the input layer's just-pressed set.
         if self.player_input.just_pressed.contains(&InputKey::Close) {
             self.close_requested = true;
         }
 
         #[cfg(debug_assertions)]
-        self.toggle_render_mode();
+        self.handle_toggle_render_mode();
         self.player_input.drain();
 
         if self.close_requested {
@@ -861,11 +780,13 @@ impl TracePassImages {
                 ..Default::default()
             })
         };
+
         let image = |virtual_id| TracePassImage {
             virtual_id,
             physical_id: Id::INVALID,
             storage_id: StorageImageId::INVALID,
         };
+
         Self {
             diff_radiance: image(add(Format::R16G16B16A16_SFLOAT)),
             spec_radiance: image(add(Format::R16G16B16A16_SFLOAT)),
@@ -931,6 +852,7 @@ pub(crate) fn create_trace_pass_images(
             storage_id,
         }
     };
+
     TracePassImages {
         diff_radiance: create(Format::R16G16B16A16_SFLOAT),
         spec_radiance: create(Format::R16G16B16A16_SFLOAT),

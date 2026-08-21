@@ -23,10 +23,7 @@ use vulkano_taskgraph::{
 };
 use winit::event_loop::EventLoop;
 
-/// The in-flight frame count of the graphics flight (taskgraph).
 pub const MAX_FRAMES_IN_FLIGHT: u32 = 2;
-/// The swapchain's minimum image count (one extra image to decouple present
-/// from the in-flight frames).
 pub const MIN_SWAPCHAIN_IMAGES: u32 = MAX_FRAMES_IN_FLIGHT + 1;
 
 /// The shared GPU stack (instance, device, queues, allocator, taskgraph
@@ -87,10 +84,6 @@ impl GpuStack {
             shader_int64: true,
             shader_int8: true,
             shader_subgroup_clock: true,
-            // The device-scope clock for the debug Ray-latency mode (a
-            // clockRealtime delta). Debug-only: the release raygen omits the
-            // clock (ATLAS_RT_RAY_LATENCY undefined), so release needs no
-            // shader_device_clock feature.
             shader_device_clock: cfg!(debug_assertions),
             storage_buffer8_bit_access: true,
             ..BindlessContext::required_features(&instance)

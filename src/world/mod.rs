@@ -1,12 +1,3 @@
-//! The world's sparse voxel storage and the world side of the renderer input
-//! contract boundary.
-//!
-//! A [`World`] is a flat sparse set of occupied voxels (global `IVec3` →
-//! palette index). The world stays region-agnostic: it knows only its voxel
-//! extent (imported from [`crate::core::grid`]) and never a Region/Micro-chunk
-//! constant. Its extent derives from the renderer lattice, so it can never
-//! hold a voxel the renderer cannot represent.
-
 use std::{collections::HashMap, fmt::Display};
 
 use dot_vox::DotVoxData;
@@ -15,17 +6,9 @@ use glam::{IVec3, UVec3, Vec4, Vec4Swizzles};
 use crate::core::grid;
 use crate::world::scene_graph::SceneGraphTraverser;
 
-/// The voxel length in meters (CONTEXT.md "Voxel Scale": 1 voxel = 1/16 m).
-/// Referenced by the domain definition but not yet consumed by physics/player.
-#[allow(dead_code)]
-pub const VOXEL_PHYSICAL_LENGTH: f32 = 1.0 / 16.0;
-
-/// How out-of-lattice voxels are handled at load time.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum BoundsPolicy {
-    /// Reject: an out-of-lattice voxel panics (the production default).
     Panic,
-    /// Clip: an out-of-lattice voxel is dropped whole.
     Clip,
 }
 
@@ -34,14 +17,12 @@ pub mod material;
 pub mod scene_graph;
 pub mod snapshot;
 
-/// The sparse world: one material index per occupied global coordinate.
 #[derive(Debug, Default)]
 pub struct World {
     inner: HashMap<IVec3, u32>,
 }
 
 impl World {
-    /// Panics with the lattice extent in the message.
     fn assert_in_lattice(position: &IVec3) {
         if !grid::in_lattice(*position) {
             panic!(
@@ -51,8 +32,6 @@ impl World {
         }
     }
 
-    /// Inserts a voxel, returning `true` iff it was clipped (dropped) rather
-    /// than inserted.
     pub(crate) fn insert(&mut self, position: IVec3, voxel: u32, policy: BoundsPolicy) -> bool {
         if !grid::in_lattice(position) {
             match policy {
@@ -64,17 +43,12 @@ impl World {
         false
     }
 
-    /// Loads the world, panicking on any voxel outside the renderer lattice.
     pub fn new(voxel_data: &DotVoxData) -> Self {
         let (world, clipped) = Self::load(voxel_data, BoundsPolicy::Panic);
         debug_assert_eq!(clipped, 0);
         world
     }
 
-    /// Loads the world, dropping (clipping) voxels outside the renderer
-    /// lattice. Returns the world and the number of voxels clipped. Clipping
-    /// is voxel-atomic: a voxel with any coordinate outside the lattice is
-    /// dropped whole.
     pub fn new_clipped(voxel_data: &DotVoxData) -> (Self, usize) {
         Self::load(voxel_data, BoundsPolicy::Clip)
     }
@@ -89,9 +63,6 @@ impl World {
             models: vec![],
         };
 
-        // The traverser inserts flat-model voxels directly when the .vox has
-        // no scene graph; otherwise it collects the scene-graph's transformed
-        // models for the loop below.
         let mut clipped = loader.traverse();
 
         for (translation, rotation, size, voxels) in loader.models {
@@ -133,9 +104,6 @@ impl World {
         self.inner.get(position)
     }
 
-    /// Like [`World::get_voxel`] but returns `None` instead of panicking for
-    /// positions outside the world bounds (used by the reference tracer's grid
-    /// walk, which may probe one cell past the occupied set).
     pub(crate) fn try_get_voxel(&self, position: &IVec3) -> Option<&u32> {
         if !grid::in_lattice(*position) {
             return None;
@@ -143,30 +111,22 @@ impl World {
         self.inner.get(position)
     }
 
-    /// Inserts a voxel with the given palette index (test/validate helper).
     pub(crate) fn insert_voxel_at(&mut self, position: IVec3, material_index: u32) {
         Self::assert_in_lattice(&position);
         self.inner.insert(position, material_index);
     }
 
-    /// Removes the voxel at `position` (world-side edit helper used by the
-    /// validator's edit-at-the-seam flow). Returns whether a voxel was present.
     pub(crate) fn remove_voxel_at(&mut self, position: IVec3) -> bool {
         Self::assert_in_lattice(&position);
         self.inner.remove(&position).is_some()
     }
 
-    /// Iterates every occupied voxel as (global position, voxel).
-    ///
-    /// The validator's reference tracer reads the world side of the renderer
-    /// input contract through this iterator (plus `get_voxel` and the palette).
-    /// It never touches renderer state.
     pub fn iter_voxels(&self) -> impl Iterator<Item = (IVec3, &u32)> + '_ {
-        self.inner.iter().map(|(position, voxel)| (*position, voxel))
+        self.inner
+            .iter()
+            .map(|(position, voxel)| (*position, voxel))
     }
 
-    /// The inclusive axis-aligned bounds of the occupied voxel set, or `None`
-    /// for an empty world.
     pub fn voxel_bounds(&self) -> Option<(IVec3, IVec3)> {
         let mut min: Option<IVec3> = None;
         let mut max: Option<IVec3> = None;
@@ -185,7 +145,6 @@ impl World {
         min.zip(max)
     }
 
-    /// The number of occupied voxels in the world.
     pub fn voxel_count(&self) -> usize {
         self.inner.len()
     }
@@ -223,7 +182,6 @@ mod tests {
         );
     }
 
-    /// The world extent is half-open: -2048 is in, 2048 is out.
     #[test]
     fn world_extent_is_half_open() {
         let mut world = World::default();
@@ -233,7 +191,6 @@ mod tests {
         assert!(world.contains(&IVec3::new(2047, 0, 0)));
     }
 
-    /// An out-of-lattice voxel panics at insert (the production boundary).
     #[test]
     #[should_panic(expected = "outside the ±2048 lattice")]
     fn insert_rejects_beyond_lattice() {
@@ -241,8 +198,6 @@ mod tests {
         world.insert_voxel_at(IVec3::new(2048, 0, 0), 1);
     }
 
-    /// The clip path drops out-of-lattice voxels whole, keeping the in-lattice
-    /// subset.
     #[test]
     fn clip_drops_out_of_lattice_voxels() {
         let mut world = World::default();

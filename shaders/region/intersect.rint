@@ -10,45 +10,13 @@
 #include "header.glsl"
 #include "common.glsl"
 
-// Per-pixel hull-crossed count gate: true only for the debug hull-crossed hit
-// group. False (the default and validator pipelines) folds the atomicAdd away
-// so they render byte-identical output.
 layout(constant_id = 1) const bool PER_PIXEL_COUNTER = false;
 
-// The count buffer's fixed 4K pixel ceiling (matches app.rs HEATMAP_MAX_PIXELS);
-// the bounds check below clamps a larger debug window instead of OOB-writing.
 const uint HULL_COUNT_MAX_PIXELS = 3840u * 2160u;
-
-// The lattice DDA: resolve the voxel for the invoking Micro-chunk.
-//
-// The BLAS holds one trimmed AABB per non-empty Micro-chunk. When the ray
-// hits one, this shader reads that AABB back by primitive id (the same read
-// the debug Hull mode does in hull.rint), recovers the Micro-chunk, slab-tests
-// the trimmed hull, and marches the 8^3 lattice within it (Amanatides-Woo,
-// tie-break x, y, z, the same order as the CPU reference tracer in
-// src/validate/reference.rs). The march is bounded to the one chunk (<= 8
-// cells per axis), not the whole Region: the hardware BVH already skipped the
-// empty space between the Region box and this hull, so the DDA no longer
-// re-walks it cell by cell.
-//
-// Occupancy: the 512-bit Occupancy mask defines existence (the mask, not a
-// sentinel material. Palette index 0 is a real color). The material rides
-// the 8-bit hitKind, so closest-hit stays a palette lookup.
-//
-// Ray ranges: gl_RayTminEXT is the ray's constant t_min and gl_RayTmaxEXT the
-// current t_max, NOT the primitive entry/exit (the intersection shader
-// computes its own hit). The ray lives in object space = Region-local space
-// (the instance transform is a translation). A camera inside the hull starts
-// at its own cell (t clamped to t_min), so an in-voxel camera commits the
-// enclosing voxel at t_min.
 
 const uint MC_STRIDE_Y = 32u;
 const uint MC_STRIDE_Z = 1024u;
 
-// The trimmed hull AABB as stored in the BLAS build-input buffer: one per
-// non-empty Micro-chunk, 24-byte stride. `scalar` keeps vec3 at 12 bytes so
-// the stride matches vulkano's #[repr(C)] AabbPositions (min/max vec3 f32).
-// (Mirrors hull.rint.)
 struct HullAabb {
     vec3 min;
     vec3 max;
@@ -58,22 +26,15 @@ layout(buffer_reference, scalar) readonly buffer HullAabbBuffer {
     HullAabb aabbs[];
 };
 
-// Voxel index within a Micro-chunk: idx = x + 8*y + 64*z (the Occupancy
-// mask's bit order; material bytes follow the same order).
 uint voxel_index(ivec3 cell_in_microchunk) {
     return uint(cell_in_microchunk.x) + 8u * uint(cell_in_microchunk.y)
         + 64u * uint(cell_in_microchunk.z);
 }
 
-// Micro-chunk index within a Region: (mc.z * 32 + mc.y) * 32 + mc.x. The
-// offset table's slot order (must match src/region/pack.rs).
 uint microchunk_index(ivec3 mc) {
     return MC_STRIDE_Z * uint(mc.z) + MC_STRIDE_Y * uint(mc.y) + uint(mc.x);
 }
 
-// The number of set Occupancy-mask bits below `idx`, the material byte
-// offset within the block (materials are popcount-compacted, u8, in bit
-// order, after the 64-byte mask).
 uint material_rank(RegionPool pool, uint block_offset, uint idx) {
     uint word = idx >> 5u;
     uint bit = idx & 31u;
@@ -86,15 +47,12 @@ uint material_rank(RegionPool pool, uint block_offset, uint idx) {
     return count;
 }
 
-// Slab test of the ray against [bmin, bmax] over [tmin, tmax]. Returns false
-// if the ray misses the box; on a hit, t0 is the entry t and t1 the exit t.
 bool aabb_slab(vec3 origin, vec3 dir, float tmin, float tmax, vec3 bmin, vec3 bmax, out float t0, out float t1) {
     t0 = tmin;
     t1 = tmax;
     for (int a = 0; a < 3; ++a) {
         float d = dir[a];
         if (d == 0.0) {
-            // Parallel to the axis: the ray must already be inside the slab.
             if (origin[a] < bmin[a] || origin[a] >= bmax[a]) {
                 return false;
             }
@@ -122,45 +80,35 @@ void main() {
     vec3 dir = gl_ObjectRayDirectionEXT;
     float tmin = gl_RayTminEXT;
     float tmax = gl_RayTmaxEXT;
+
     if (tmax <= tmin) {
         return;
     }
 
-    // The instance custom index is the 12-bit Region id; the
-    // Region table maps it to the pool's device address.
     uint region_id = gl_InstanceCustomIndexEXT & 0xFFFu;
     uint64_t pool_bda = region_table.bdas[region_id];
+
     if (pool_bda == 0ul) {
         return;
     }
-    RegionPool pool = RegionPool(pool_bda);
 
-    // The invoking Micro-chunk's trimmed hull, read back by primitive id from
-    // the Region's AABB buffer (the same read the debug Hull mode does).
+    RegionPool pool = RegionPool(pool_bda);
     uint64_t aabb_bda = aabb_table.bdas[region_id];
+
     if (aabb_bda == 0ul) {
         return;
     }
+
     HullAabbBuffer aabbs = HullAabbBuffer(aabb_bda);
     HullAabb b = aabbs.aabbs[gl_PrimitiveID];
 
-    // Slab-test the trimmed hull to find where the ray enters/exits it. A
-    // camera inside the hull starts at its own t (clamped to t_min), so an
-    // in-voxel camera commits the enclosing voxel at t_min.
     float t0;
     float t1;
+
     if (!aabb_slab(origin, dir, tmin, tmax, b.min, b.max, t0, t1)) {
         return;
     }
 
-    // The invocation is committed to marching the chunk.
-
-    // The per-pixel hull-crossed count (debug builds): the slab-passed point
-    // to a per-pixel buffer the heatmap overlay reads. The index is the ray
-    // pass launch coordinate (y-major, matching gl_LaunchSizeEXT). It is a
-    // lower bound on traversal work (hulls entered, not rejected AABB tests)
-    // and an upper bound per-pixel (Vulkan may invoke intersection shaders
-    // redundantly).
     if (PER_PIXEL_COUNTER) {
         uint pixel = gl_LaunchIDEXT.y * gl_LaunchSizeEXT.x + gl_LaunchIDEXT.x;
         if (pixel < HULL_COUNT_MAX_PIXELS) {
@@ -168,19 +116,11 @@ void main() {
         }
     }
 
-    // The Micro-chunk index from the hull min (Region-local, non-negative cell
-    // coords): int-cast = floor, >> 3 = exact divide by 8 (as hull.rint).
     ivec3 mc = ivec3(b.min) >> 3;
-
-    // The chunk's compact block offset, hoisted out of the loop: the march
-    // stays within this one chunk, so it never crosses a chunk boundary.
     uint block_offset = pool.words[microchunk_index(mc)];
-
     vec3 entry = origin + dir * t0;
     ivec3 cell = ivec3(floor(entry));
 
-    // Amanatides-Woo stepping state: per axis, the t of the next crossed
-    // cell boundary and the t to cross one cell.
     ivec3 step = ivec3(0);
     vec3 t_next = vec3(0.0);
     vec3 delta = vec3(0.0);
@@ -207,12 +147,6 @@ void main() {
     ivec3 chunk_origin = mc << 3;
 
     while (true) {
-        // Chunk-local cell, by exact subtraction from the fixed chunk origin.
-        // The march is bounded to the hull, but the entry point can land a
-        // hair outside [min, max) from slab floating point, so guard the cell
-        // against the chunk and skip out-of-chunk cells. The step advances
-        // them past, exactly as the old Region march guarded against the
-        // Region box. (cell & 7 would misread an adjacent-chunk cell here.)
         ivec3 c = cell - chunk_origin;
 
         if (!any(lessThan(c, ivec3(0))) && !any(greaterThanEqual(c, ivec3(8)))) {
@@ -225,8 +159,6 @@ void main() {
                 uint bit_mask = 1u << bit;
 
                 if ((mask_word & bit_mask) != 0u) {
-                    // Occupied: material byte at block + 64 + rank (u8 read
-                    // via the containing u32 word).
                     uint count = material_rank(pool, block_offset, idx);
                     uint byte_off = block_offset + 64u + count;
                     uint byte_word = pool.words[byte_off >> 2u];
@@ -247,7 +179,6 @@ void main() {
         }
         float next_t = t_next[axis];
         if (next_t >= t1) {
-            // Marched the whole hull with no hit.
             return;
         }
         cell[axis] += step[axis];

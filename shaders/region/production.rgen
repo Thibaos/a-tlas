@@ -17,43 +17,17 @@
 
 layout(location = 0) rayPayloadEXT MainPassPayload payload;
 
-// Render-mode selectors (match RenderMode in src/region/render.rs). Hull and
-// the diagnostic modes are debug-build-only; release traces Voxel always.
 const uint MODE_VOXEL = 0u;
 const uint MODE_HULL = 1u;
 const uint MODE_RAY_LATENCY = 2u;
 const uint MODE_HULL_CROSSED = 3u;
-// Ticket 04: the normal heatmap. Paints the payload's geometric surface
-// normal, -1..1 mapped to 0..1 per channel, so each voxel face axis shows
-// red (x) / green (y) / blue (z) with a bright + side and dark - side;
-// background paints gray (0.5). Debug builds only, like the other
-// diagnostic modes.
 const uint MODE_NORMAL = 4u;
 
-// The latency heatmap's log2 span: the clock delta is mapped log2(delta) /
-// this value onto the blue->red ramp, spanning 2^0 .. 2^20 ticks (~1 tick ..
-// ~1 ms at a ~1 GHz clock). clockRealtime2x32EXT ticks at a device rate, so a
-// different rate only shifts the whole map (a log scale is rate-agnostic in
-// shape). This is a tunable debug knob, not a physical duration.
 const float LATENCY_LOG2_TICKS = 20.0;
 
-// ---------------------------------------------------------------------------
-// Path tracing core (ticket 05, ADR 0010). The raygen runs the whole path as
-// a loop. The primary ray, then up to MAX_BOUNCES BSDF-scattered bounces,
-// terminated by Russian roulette on throughput and a depth cap (RR does the
-// real termination; the cap is the safety net). Path state (accumulated
-// radiance, throughput, draw index) lives in raygen locals, so the payload is
-// unchanged and the pipeline's ray recursion depth stays 1 (the charted "bump
-// to max-bounces+1" at render.rs is moot).
-//
-// Every constant below is part of the CPU mirror's contract (ticket 07): the
-// mirror reproduces the GLSL arithmetic exactly, so constants are named here
-// once, not repeated in the mirror.
-const uint MAX_BOUNCES = 4u; // BSDF-scattered secondary rays allowed (depth cap)
-const float LOBE_P = 0.5; // lobe-selection probability (inside NRD's [1/4, 3/4] clamp for AREA_3X3)
-// NEE light pick (ticket 06): the probability of next-event-sampling the Sun
-// vs the Procedural sky at a hit. One light picked per bounce, MIS-weighted
-// (SUN_PICK_P + SKY_PICK_P = 1).
+const uint MAX_BOUNCES = 4u;
+const float LOBE_P = 0.5;
+
 const float SUN_PICK_P = 0.5;
 const float SKY_PICK_P = 1.0 - SUN_PICK_P;
 const float RR_FLOOR = 0.05; // Russian-roulette survival floor (bounded variance)
@@ -123,17 +97,6 @@ vec3 fresnel_schlick(vec3 f0, float cos_theta) {
     return f0 + (1.0 - f0) * pow(clamp(1.0 - cos_theta, 0.0, 1.0), 5.0);
 }
 
-// GGX visible-normal (VNDF) sampling (Heitz 2018): samples the half-vector
-// from the distribution of visible normals about the outgoing direction
-// v_local (the view direction, pointing toward the camera/previous vertex),
-// reflects to the incoming direction. All in the local frame (n = +z).
-// Returns the incoming (light) direction l_local, the sampled half-vector h,
-// and the pdf of l_local (D·G1·(V·H)/(V·N) / (4·(L·H))).
-// The VNDF pdf of the light direction l for the view v (Heitz 2018), at the
-// half-vector h: D(h)·G1(v)·(v·h)/(v·n) / (4·(l·h)), with h the half-vector
-// the reflection identity gives l·h == v·h, so the formula is identical for
-// a sampled pair and an arbitrary direction (ticket 06's NEE/MIS needs the
-// pdf at the light direction, where h = normalize(v + l)).
 float vndf_pdf(vec3 l_local, vec3 v_local, vec3 h, float alpha) {
     float n_dot_h = max(h.z, 0.0);
     float v_dot_h = max(dot(v_local, h), 0.0);
@@ -142,12 +105,6 @@ float vndf_pdf(vec3 l_local, vec3 v_local, vec3 h, float alpha) {
         / (4.0 * max(v_dot_h, COS_EPS));
 }
 
-// GGX visible-normal (VNDF) sampling (Heitz 2018): samples the half-vector
-// from the distribution of visible normals about the outgoing direction
-// v_local (the view direction, pointing toward the camera/previous vertex),
-// reflects to the incoming direction. All in the local frame (n = +z).
-// Returns the incoming (light) direction l_local, the sampled half-vector h,
-// and the pdf of l_local (D·G1·(V·H)/(V·N) / (4·(L·H))).
 vec3 sample_vndf(vec3 v_local, float alpha, float u1, float u2, out vec3 h, out float pdf) {
     vec3 Vh = normalize(vec3(alpha * v_local.x, alpha * v_local.y, v_local.z));
     float len_sq = dot(Vh.xy, Vh.xy);
@@ -166,9 +123,6 @@ vec3 sample_vndf(vec3 v_local, float alpha, float u1, float u2, out vec3 h, out 
     return l;
 }
 
-// The specular lobe's estimator weight (Cook-Torrance with separable Smith
-// G2): f_s · (N·L) / pdf_L, D·G2·F / (4·(N·V)·(N·L)) · (N·L) / pdf_L, at the
-// sampled pair. Uses the same half-vector the pdf was computed from.
 vec3 specular_weight(vec3 l_local, vec3 v_local, vec3 h, vec3 f0, float alpha, float pdf) {
     float n_dot_l = max(l_local.z, 0.0);
     float n_dot_v = max(v_local.z, COS_EPS);
@@ -180,12 +134,6 @@ vec3 specular_weight(vec3 l_local, vec3 v_local, vec3 h, vec3 f0, float alpha, f
     return f * d * g2 / (4.0 * n_dot_v * max(pdf, COS_EPS));
 }
 
-// The specular lobe's f_s·(n·l) at the light direction. The Cook-Torrance
-// term with separable Smith G2 and Schlick Fresnel, the (n·l) factored out:
-// D·G2·F/(4·(n·v)). The NEE estimator multiplies it by the light radiance
-// and divides by the light's pdf (ticket 06). It is NOT the sampled-lobe
-// estimator weight (specular_weight above divides by the BSDF pdf; these
-// differ in rounding, so both are mirrored separately).
 vec3 specular_nl(vec3 l_local, vec3 v_local, vec3 h, vec3 f0, float alpha) {
     float n_dot_l = max(l_local.z, 0.0);
     float n_dot_v = max(v_local.z, COS_EPS);
@@ -197,20 +145,12 @@ vec3 specular_nl(vec3 l_local, vec3 v_local, vec3 h, vec3 f0, float alpha) {
     return f * d * g2 / (4.0 * n_dot_v);
 }
 
-// The full BRDF's f·(n·l) at the light direction (Lambert diffuse +
-// Cook-Torrance specular), the NEE's integrand factor at deeper Bounces
-// (the primary hit evaluates the selected lobe only; the path's 1/lobe_p
-// split keeps that unbiased).
 vec3 brdf_nl(vec3 l_local, vec3 v_local, vec3 f0, float alpha, vec3 albedo, float metallic) {
     vec3 h = normalize(v_local + l_local);
     return (1.0 - metallic) * albedo * (max(l_local.z, 0.0) / PI)
         + specular_nl(l_local, v_local, h, f0, alpha);
 }
 
-// The BSDF technique's output density at the light direction (the bounce
-// sampler's unconditional pdf, the mixture over the lobe pick):
-// LOBE_P·p_vndf + (1-LOBE_P)·p_cos at the primary hit's bounce, 0.5·(p_vndf
-// + p_cos) deeper (ticket 06's MIS weight needs it at arbitrary directions).
 float bsdf_mixture_pdf(vec3 l_local, vec3 v_local, float alpha, int depth) {
     vec3 h = normalize(v_local + l_local);
     float p_v = vndf_pdf(l_local, v_local, h, alpha);
@@ -221,16 +161,10 @@ float bsdf_mixture_pdf(vec3 l_local, vec3 v_local, float alpha, int depth) {
     return 0.5 * (p_v + p_c);
 }
 
-// The sky light technique's direction pdf: the env sampler's output density
-// with the light pick folded in. p_light(ω) = SKY_PICK_P · L(μ)/(2π·Z).
 float sky_light_pdf(vec3 dir) {
     return SKY_PICK_P * sky_mu_pdf(dir.y) * (1.0 / TWO_PI);
 }
 
-// The NEE shadow test: trace toward the light from the nudged origin; any
-// hit occludes (both lights are at infinity, no distance comparison). The
-// trace clobbers the payload. Callers re-initialize before the next real
-// trace. Consumes no RNG draws (the mirror's draw sequence skips it).
 bool shadowed(vec3 hit_point, vec3 normal, vec3 light_dir, uint ray_flags, uint sbt_offset) {
     payload.color = vec4(0.0);
     payload.t = -1.0;
@@ -241,20 +175,6 @@ bool shadowed(vec3 hit_point, vec3 normal, vec3 light_dir, uint ray_flags, uint 
     return payload.t > 0.0;
 }
 
-// Production raygen for the Region path. The ray
-// is built by the shared raygen_common.glsl (byte-identical to the capture
-// raygen), traverses world-space f32 with Opaque over the camera near/far
-// range, and writes the primary-visibility result to the
-// swapchain storage image. Unlike the validation raygen it never
-// dereferences t_image_id (the app pushes INVALID), so the frame is one
-// imageStore per pixel.
-//
-// Deliberately NOT TerminateOnFirstHit: that flag terminates the trace at
-// the first hit found in BVH traversal order, which is not guaranteed to be
-// the closest. With stacked Regions along a ray the first found hit wins
-// and a farther surface shows through a nearer one (the nuke-down
-// validation world caught exactly that). Opaque alone keeps the
-// any-hit-free fast path while preserving closest-hit semantics.
 void main() {
     vec3 origin;
     vec3 direction;
@@ -267,74 +187,32 @@ void main() {
     payload.hit_kind = 0u;
     payload.normal = vec3(0.0);
 
-    // The Render mode selects the hit group through the shader-binding-table
-    // record offset: Hull = 1, hull-crossed = 2; Voxel, Ray latency and the
-    // normal heatmap trace the DDA hit group (0) so the latency measures the
-    // real traversal. mode is a per-frame push-constant flag, so a TAB
-    // toggle never rebuilds the pipeline.
     uint sbt_offset = (mode == MODE_HULL) ? 1u : ((mode == MODE_HULL_CROSSED) ? 2u : 0u);
 
-#ifdef ATLAS_RT_RAY_LATENCY
+    #ifdef ATLAS_RT_RAY_LATENCY
     if (mode == MODE_RAY_LATENCY) {
-        // Ray latency: the wall-clock of the whole trace, warp-contaminated
-        // (CONTEXT.md). The only per-pixel instrument that includes the
-        // hardware BVH traversal. Latency, not cost.
         uvec2 t0 = clockRealtime2x32EXT();
         traceRayEXT(vko_accelerationStructureEXT(acceleration_structure_id), ray_flags, 0xFFu, sbt_offset, 0u, 0u, origin, RAY_T_MIN, direction, RAY_T_MAX, 0);
         uvec2 t1 = clockRealtime2x32EXT();
-        // Low-32-bit delta (u32 wraparound): exact for sub-2^32-tick latencies.
         uint delta = t1.x - t0.x;
-        // Log2 scale: per-ray latency spans orders of magnitude, so a linear
-        // ramp crushes everything into the cold end. Map 2^0 .. 2^20 ticks
-        // onto the ramp; a different clock rate shifts the map, not its shape.
         float t = clamp(log2(float(max(delta, 1u))) / LATENCY_LOG2_TICKS, 0.0, 1.0);
         payload.color = heat_color(t);
         imageStore(vko_image2D_rgba8(image_id), ivec2(gl_LaunchIDEXT.xy), payload.color);
         return;
     }
-#endif
+    #endif
 
     traceRayEXT(vko_accelerationStructureEXT(acceleration_structure_id), ray_flags, 0xFFu, sbt_offset, 0u, 0u, origin, RAY_T_MIN, direction, RAY_T_MAX, 0);
 
     if (mode == MODE_VOXEL) {
-        // Path tracing (ticket 05, ADR 0010): the raygen runs the whole path
-        // as a loop. The primary ray, then up to MAX_BOUNCES BSDF-scattered
-        // Bounces, terminated by Russian roulette on throughput and a depth
-        // cap (RR does the real termination; the cap is the safety net). The
-        // path state (accumulated radiance, throughput, draw index) lives in
-        // raygen locals. The payload is unchanged and the pipeline's ray
-        // recursion depth stays 1 (the charted "bump to max-bounces+1" is
-        // moot).
-        //
-        // Channel split (probabilistic lobe selection, ticket 01 research):
-        // at the primary hit a coin flip picks the diffuse or specular lobe
-        // (p = LOBE_P, inside NRD's [1/4, 3/4] clamp for the AREA_3X3
-        // hit-distance reconstruction mode); the first Bounce samples that
-        // lobe, and the whole path's radiance goes to the selected channel
-        // weighted by 1/p. The other channel gets 0 that frame. The Denoise
-        // pass's temporal accumulation fills both over time. The primary
-        // hit's Emission is diffuse radiance (ADR 0008: emission × albedo ×
-        // EMISSION_SCALE, albedo-light) and is added to the diffuse channel
-        // regardless of the lobe pick (deterministic given the hit, so no
-        // 1/p needed).
-        //
-        // De-modulation (ticket 02 contract, ADR 0007): the diffuse channel
-        // is divided by the primary albedo (eps-guarded) so the Denoise pass
-        // filters pure light at a uniform noise level; the Composite
-        // re-modulates by albedo. Emission is albedo-proportional, so it
-        // de-modulates to the constant _emit × EMISSION_SCALE. The specular
-        // channel stays raw (its BRDF/envBRDF de-modulation factor lands
-        // with 06/08). Alpha carries the in-lobe 1st-bounce hit distance
-        // (the DDA's primary t).
         ivec2 pixel = ivec2(gl_LaunchIDEXT.xy);
         float hit_t = payload.t;
-        // The primary hit's data, saved before the bounce loop overwrites
-        // the payload (the aux writes and the first-bounce shade need them).
         vec3 primary_albedo = vec3(0.0);
         float primary_metallic = 0.0;
         float primary_roughness = 1.0;
         vec3 primary_emission = vec3(0.0);
         vec3 primary_normal = vec3(0.0);
+
         if (hit_t > 0.0) {
             vec4 albedo_metallic = material_table.albedo_metallic[payload.hit_kind];
             vec4 rough_emit = material_table.rough_emit[payload.hit_kind];
@@ -345,20 +223,10 @@ void main() {
             primary_normal = normalize(payload.normal);
         }
 
-        // Path-tracing RNG (Q2): a stateless seed per (pixel, frame).
-        // Every draw is a pure function of (seed, draw index), so the CPU
-        // mirror (07) reproduces each value byte-identically. The frame
-        // counter decorrelates consecutive frames for the Denoise pass's
-        // temporal accumulation.
         uint seed = pcg_hash((frame_seed * 0x9E3779B1u)
-            ^ (uint(gl_LaunchIDEXT.y) * gl_LaunchSizeEXT.x + uint(gl_LaunchIDEXT.x)));
+                    ^ (uint(gl_LaunchIDEXT.y) * gl_LaunchSizeEXT.x + uint(gl_LaunchIDEXT.x)));
         uint draw = 0u;
 
-        // The path's radiance: `radiance` carries the deterministic primary
-        // Emission (diffuse channel, no 1/p, Q3); `path` accumulates the
-        // throughput-weighted Bounce radiance (emission at deeper hits +
-        // background), split to the selected lobe's channel with the 1/p
-        // weight at the end (probabilistic splitting).
         vec3 radiance = vec3(0.0);
         vec3 specular = vec3(0.0);
         vec3 path = vec3(0.0);
@@ -366,10 +234,8 @@ void main() {
         bool specular_lobe = false;
 
         if (hit_t > 0.0) {
-            // Primary-hit Emission → the diffuse channel (Q3, ADR 0008).
             radiance += primary_emission;
 
-            // Probabilistic lobe selection at the primary hit.
             specular_lobe = rand_unit(seed, draw++) < LOBE_P;
             float lobe_p = specular_lobe ? LOBE_P : (1.0 - LOBE_P);
 
@@ -380,30 +246,11 @@ void main() {
             float roughness = primary_roughness;
             vec3 normal = primary_normal;
 
-            // The bounce loop: depth 0 is the primary hit (its payload is
-            // still live); each deeper iteration reads the previous
-            // traceRay's payload, adds the hit's emission to `path`, samples
-            // the next direction (Bounce 0 uses the selected lobe; later
-            // Bounces sample the full BSDF with a 50/50 lobe pick), applies
-            // Russian roulette, and traces.
-            // The last deeper-Bounce 50/50 lobe pick (ticket 06): the miss
-            // case's MIS weight needs the lobe the missed ray was sampled
-            // with (the depth-0 bounce used the selected lobe instead).
             bool last_spec_pick = false;
 
             for (int depth = 0; depth <= int(MAX_BOUNCES); ++depth) {
                 if (depth > 0) {
                     if (payload.t <= 0.0) {
-                        // Miss: the Procedural sky's radiance (the miss
-                        // shader's output, the gradient; the disk is the
-                        // camera's direct view only). This is the BSDF
-                        // technique's sample, MIS-weighted against the sky
-                        // NEE: the throughput's terminal factor used the
-                        // picked lobe's conditional pdf (p_cond) with the
-                        // 1/p_pick split, so the balance-heuristic weight is
-                        // p_cond·p_pick / (p_light + p_mixture). The
-                        // standard f·cosθ/p_mixture form with the splitting
-                        // basis converted (ticket 06).
                         vec3 t_axis;
                         vec3 b_axis;
                         make_frame(normal, t_axis, b_axis);
@@ -416,11 +263,10 @@ void main() {
                         float p_cond = spec ? p_v : p_c;
                         float p_pick = (depth == 1) ? lobe_p : 0.5;
                         float p_mix = (depth == 1)
-                            ? (LOBE_P * p_v + (1.0 - LOBE_P) * p_c)
-                            : 0.5 * (p_v + p_c);
+                            ? (LOBE_P * p_v + (1.0 - LOBE_P) * p_c) : 0.5 * (p_v + p_c);
                         float p_light = sky_light_pdf(rd);
                         path += throughput * payload.color.rgb
-                            * (p_cond * p_pick / (p_light + p_mix));
+                                * (p_cond * p_pick / (p_light + p_mix));
                         break;
                     }
                     vec4 albedo_metallic = material_table.albedo_metallic[payload.hit_kind];
@@ -429,27 +275,12 @@ void main() {
                     metallic = albedo_metallic.a;
                     roughness = rough_emit.a;
                     normal = normalize(payload.normal);
-                    // This hit's Emission, throughput-weighted (the only way
-                    // Emissive voxels light the scene. No emissive NEE,
-                    // map lock).
                     path += throughput * rough_emit.rgb;
                 }
 
-                // NEE (ticket 06): one light picked per bounce. The Sun
-                // (a delta: MIS weight 1, the BSDF technique has zero
-                // probability of producing exactly its direction) or the
-                // Procedural sky (env: balance-heuristic MIS against the
-                // BSDF technique). The estimate joins `path`
-                // (throughput-weighted), so the channel split (1/lobe_p at
-                // the primary) and de-modulation apply downstream. Draw
-                // order, the CPU mirror's contract (07): light pick, then
-                // sky only, the env's (φ, μ) draws; the shadow trace
-                // consumes none.
                 vec3 hit_point = ro + rd * payload.t;
                 vec3 nee_rad = vec3(0.0);
                 if (rand_unit(seed, draw++) < SUN_PICK_P) {
-                    // Sun: E_sun illuminance, pdf = SUN_PICK_P (the delta),
-                    // weight 1. The estimate is f·(n·ω_sun)·E_sun/p_sun.
                     vec3 sun_dir = scene.sun_dir.xyz;
                     float n_dot_l = max(dot(normal, sun_dir), 0.0);
                     if (n_dot_l > 0.0 && !shadowed(hit_point, normal, sun_dir, ray_flags, sbt_offset)) {
@@ -462,16 +293,10 @@ void main() {
                         vec3 l_local = vec3(dot(sun_dir, t_axis), dot(sun_dir, b_axis), n_dot_l);
                         vec3 f_nl = (depth == 0)
                             ? (specular_lobe
-                                ? specular_nl(l_local, v_local, normalize(v_local + l_local), f0, alpha)
-                                : (1.0 - metallic) * albedo * (n_dot_l / PI))
-                            : brdf_nl(l_local, v_local, f0, alpha, albedo, metallic);
+                            ? specular_nl(l_local, v_local, normalize(v_local + l_local), f0, alpha) : (1.0 - metallic) * albedo * (n_dot_l / PI)) : brdf_nl(l_local, v_local, f0, alpha, albedo, metallic);
                         nee_rad = f_nl * scene.sun_disk.x * (1.0 / SUN_PICK_P);
                     }
                 } else {
-                    // Procedural sky: direction from the analytic env pdf
-                    // (sky.glsl), p_light = SKY_PICK_P·L(μ)/(2π·Z), MIS
-                    // weight p_light/(p_light + p_bsdf) with p_bsdf the
-                    // BSDF mixture pdf at the light direction.
                     float u1 = rand_unit(seed, draw++);
                     float u2 = rand_unit(seed, draw++);
                     float phi = TWO_PI * u1;
@@ -492,22 +317,16 @@ void main() {
                         float w = p_light / (p_light + p_bsdf);
                         vec3 f_nl = (depth == 0)
                             ? (specular_lobe
-                                ? specular_nl(l_local, v_local, normalize(v_local + l_local), f0, alpha)
-                                : (1.0 - metallic) * albedo * (n_dot_l / PI))
-                            : brdf_nl(l_local, v_local, f0, alpha, albedo, metallic);
+                            ? specular_nl(l_local, v_local, normalize(v_local + l_local), f0, alpha) : (1.0 - metallic) * albedo * (n_dot_l / PI)) : brdf_nl(l_local, v_local, f0, alpha, albedo, metallic);
                         nee_rad = f_nl * sky_radiance(light_dir) * w / p_light;
                     }
                 }
                 path += throughput * nee_rad;
 
                 if (depth == int(MAX_BOUNCES)) {
-                    break; // depth cap: no further Bounce
+                    break;
                 }
 
-                // Sample the next direction at this hit and update the
-                // throughput. Bounce 0 samples the selected lobe; deeper
-                // Bounces pick a lobe 50/50 (weight × 2 = ÷ the pick
-                // probability) so both lobes stay live on every surface.
                 vec3 t_axis;
                 vec3 b_axis;
                 make_frame(normal, t_axis, b_axis);
@@ -521,13 +340,13 @@ void main() {
                         vec3 h;
                         float pdf;
                         vec3 l_local = sample_vndf(v_local, alpha, rand_unit(seed, draw++),
-                            rand_unit(seed, draw++), h, pdf);
+                                rand_unit(seed, draw++), h, pdf);
                         wi = t_axis * l_local.x + b_axis * l_local.y + normal * l_local.z;
                         weight = specular_weight(l_local, v_local, h, f0, alpha, pdf);
                     } else {
                         float pdf;
                         wi = sample_cosine(normal, t_axis, b_axis, rand_unit(seed, draw++),
-                            rand_unit(seed, draw++), pdf);
+                                rand_unit(seed, draw++), pdf);
                         weight = (1.0 - metallic) * albedo;
                     }
                 } else {
@@ -537,30 +356,24 @@ void main() {
                         vec3 h;
                         float pdf;
                         vec3 l_local = sample_vndf(v_local, alpha, rand_unit(seed, draw++),
-                            rand_unit(seed, draw++), h, pdf);
+                                rand_unit(seed, draw++), h, pdf);
                         wi = t_axis * l_local.x + b_axis * l_local.y + normal * l_local.z;
                         weight = 2.0 * specular_weight(l_local, v_local, h, f0, alpha, pdf);
                     } else {
                         float pdf;
                         wi = sample_cosine(normal, t_axis, b_axis, rand_unit(seed, draw++),
-                            rand_unit(seed, draw++), pdf);
+                                rand_unit(seed, draw++), pdf);
                         weight = 2.0 * (1.0 - metallic) * albedo;
                     }
                 }
                 throughput *= weight;
 
-                // Russian roulette on the throughput (floor RR_FLOOR bounds
-                // variance; the continuation weight divides it back out).
                 float p = clamp(max(max(throughput.r, throughput.g), throughput.b), RR_FLOOR, 1.0);
                 if (rand_unit(seed, draw++) >= p) {
                     break;
                 }
                 throughput /= p;
 
-                // Trace the Bounce: origin nudged off the face along the
-                // normal (the DDA also skips [0, RAY_T_MIN)). hit_point was
-                // computed before the NEE (the shadow trace clobbers the
-                // payload).
                 ro = hit_point + normal * BOUNCE_OFFSET;
                 rd = wi;
                 payload.color = vec4(0.0);
@@ -570,49 +383,21 @@ void main() {
                 traceRayEXT(vko_accelerationStructureEXT(acceleration_structure_id), ray_flags, 0xFFu, sbt_offset, 0u, 0u, ro, RAY_T_MIN, rd, RAY_T_MAX, 0);
             }
 
-            // Channel attribution (probabilistic splitting): the path
-            // radiance goes to the selected lobe's channel with the 1/p
-            // weight; the primary Emission stays in the diffuse channel
-            // untouched.
             if (specular_lobe) {
                 specular = path / lobe_p;
             } else {
                 radiance += path / lobe_p;
             }
         } else {
-            // Primary miss (ticket 06): the Procedural sky's radiance, raw.
-            // No surface, so no de-modulation, no lobe split, and no MIS
-            // (the camera ray is not a BSDF sample). The disk is the Sun's
-            // visual, evaluated only here. The transport techniques (env
-            // NEE, BSDF miss) see the gradient only, so the disk cannot
-            // firefly; the delta Sun light carries the transport.
             radiance = sky_radiance_with_disk(direction);
         }
 
-        // De-modulated diffuse: the diffuse channel divided by the primary
-        // albedo (eps-guarded). NRD's input contract (ADR 0007, Q4). The
-        // specular channel stays raw in this slice. Alpha = the in-lobe
-        // 1st-bounce hit distance (the primary ray's t; 0 on miss). The sky
-        // (primary miss) is written raw. Alpha 0 flags it for the
-        // composite (no re-modulation).
         vec3 diffuse_de = (hit_t > 0.0)
-            ? radiance / max(primary_albedo, vec3(ALBEDO_EPS))
-            : radiance;
+            ? radiance / max(primary_albedo, vec3(ALBEDO_EPS)) : radiance;
         float hitdist = (hit_t > 0.0) ? hit_t : 0.0;
 
-        // Linear view-space Z of the primary hit: the ray's distance along
-        // the view axis (view_inverse column 2 is the world-space backward
-        // axis). Miss (the t == 0.0 sentinel) → 0.0.
         float viewz = (hit_t > 0.0) ? -hit_t * dot(direction, camera.view_inverse[2].xyz) : 0.0;
 
-        // Octahedral encoding of the primary hit's normal (ADR 0007):
-        // n/(|x|+|y|+|z|) folds onto the xy square, with the -z hemisphere
-        // wrapped by the standard reflection; .rg carries the [0,1]^2
-        // coordinates, .a the linear roughness. The normal is unit (±e_face
-        // or the camera-facing ray for the t_min embed), so the fold is
-        // never a divide-by-zero. Miss (background) keeps the +Z
-        // placeholder. The sky's viewZ is the denoiser's mask, not its
-        // normal.
         vec2 normal_oct = vec2(0.5, 0.5);
         if (hit_t > 0.0) {
             vec3 n = primary_normal;
@@ -629,20 +414,14 @@ void main() {
         imageStore(vko_image2D_r32f(viewz_image_id), pixel, vec4(viewz));
         imageStore(vko_image2D_rgba16f(mv_image_id), pixel, vec4(0.0));
         imageStore(vko_image2D_rgba8(albedo_metal_image_id), pixel, vec4(primary_albedo, primary_metallic));
+
         return;
     }
 
     if (mode == MODE_NORMAL) {
-        // Normal heatmap (ticket 04): the payload's geometric surface
-        // normal, -1..1 mapped to 0..1 per channel. Voxel faces paint by
-        // their axis (x red, y green, z blue; + side bright, - side dark);
-        // background (no normal) paints gray. Debug builds only. Mode is
-        // always Voxel in release.
         imageStore(vko_image2D_rgba8(image_id), ivec2(gl_LaunchIDEXT.xy), vec4(payload.normal * 0.5 + 0.5, 1.0));
         return;
     }
 
-    // Debug modes (Hull, hull-crossed) paint the swapchain directly. The
-    // composite node no-ops for them (shaders/region/composite.comp).
     imageStore(vko_image2D_rgba8(image_id), ivec2(gl_LaunchIDEXT.xy), payload.color);
 }

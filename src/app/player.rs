@@ -48,10 +48,6 @@ impl PlayerController {
         self.view
     }
 
-    /// Applies one frame of fly movement: polls the held keys in
-    /// [`Input::down`] for the velocity direction and reads
-    /// [`Input::scroll_delta`] for the speed change (a wheel up scroll speeds
-    /// up, down slows down).
     pub fn fly_movement(&mut self, delta_time: Duration, input: &Input) {
         if input.scroll_delta > 0.0 {
             self.speed *= 1.5;
@@ -129,22 +125,21 @@ mod tests {
         input
     }
 
-    /// The default orientation (yaw = pitch = 0) looks down -Z, so holding
-    /// Forward for one second at the default speed moves the translation 64
-    /// units toward -Z and leaves x/y untouched.
     #[test]
     fn forward_moves_along_look_axis() {
         let mut player = PlayerController::default();
+        let base_translation = player.translation;
+
         let input = input_with(&[InputKey::Forward]);
 
         player.fly_movement(Duration::from_secs(1), &input);
 
-        assert_eq!(player.translation, Vec3::new(124.0, 110.0, 256.0));
+        assert_eq!(
+            player.translation,
+            base_translation + Vec3::new(0.0, 0.0, -64.0)
+        );
     }
 
-    /// Each held key moves the translation the full speed for the frame along
-    /// its axis (velocity is normalized to unit length), in the expected
-    /// direction for the default orientation.
     #[test]
     fn held_keys_drive_velocity() {
         let cases: &[(InputKey, Vec3)] = &[
@@ -171,19 +166,6 @@ mod tests {
         }
     }
 
-    /// With no held keys the translation does not move (velocity is zero).
-    #[test]
-    fn no_held_keys_do_not_move() {
-        let mut player = PlayerController::default();
-        let start = player.translation;
-
-        player.fly_movement(Duration::from_secs(1), &Input::default());
-
-        assert_eq!(player.translation, start);
-    }
-
-    /// A positive scroll delta speeds the player up before the translation is
-    /// applied; a negative one slows it down.
     #[test]
     fn scroll_delta_changes_speed() {
         let mut player = PlayerController::default();

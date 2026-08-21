@@ -14,14 +14,8 @@ use vulkano::{
     memory::allocator::{AllocationCreateInfo, MemoryAllocator},
 };
 
-/// One or more geometry entries for an acceleration structure build (the new
-/// flat-slice geometry API: the data types hold raw device addresses, so the
-/// geometry list borrows nothing and is `'static`).
 pub type BuildGeometries = Vec<AccelerationStructureGeometry<'static>>;
 
-// The build's pre/post memory barriers (shared by every build path): the
-// build input (TRANSFER_WRITE | SHADER_WRITE) must be visible before the
-// build, and the built AS must be visible to later traces/rebuilds.
 fn as_build_barriers(cbf: &mut vulkano_taskgraph::command_buffer::RecordingCommandBuffer<'_>) {
     let pre_memory_barrier = vulkano_taskgraph::command_buffer::MemoryBarrier {
         src_access: vulkano::sync::AccessFlags::TRANSFER_WRITE
@@ -33,10 +27,7 @@ fn as_build_barriers(cbf: &mut vulkano_taskgraph::command_buffer::RecordingComma
         dst_stages: vulkano::sync::PipelineStages::ACCELERATION_STRUCTURE_BUILD,
         ..Default::default()
     };
-    // SAFETY: `pipeline_barrier` is unsafe (synchronization must be
-    // correct); the caller holds the command buffer inside an execute
-    // closure's recording context, and these are the standard pre/post
-    // build barriers from the original build helper.
+
     unsafe {
         cbf.pipeline_barrier(&vulkano_taskgraph::command_buffer::DependencyInfo {
             memory_barriers: &[pre_memory_barrier],
@@ -61,9 +52,6 @@ fn as_build_barriers(cbf: &mut vulkano_taskgraph::command_buffer::RecordingComma
     }
 }
 
-/// The flags for a fresh/in-place build of `ty` (TLAS builds keep
-/// ALLOW_UPDATE so an update-mode build remains possible; BLAS builds do
-/// not need it).
 pub(crate) fn build_flags(ty: AccelerationStructureType) -> BuildAccelerationStructureFlags {
     match ty {
         AccelerationStructureType::TopLevel => {
@@ -77,16 +65,6 @@ pub(crate) fn build_flags(ty: AccelerationStructureType) -> BuildAccelerationStr
     }
 }
 
-/// Builds `geometries` into the existing AS `dst` (mode Build). An
-/// **in-place build**: the AS object and its storage never move, so the
-/// device address (and any TLAS instance referencing it) stays valid. The
-/// storage was sized for `storage_capacity` at creation; the caller asserts
-/// the new build fits.
-///
-/// Used by the fresh-build path (`build_acceleration_structure_fresh`, which
-/// creates the storage sized exactly and builds into it (the dummy BLAS
-/// path). The residency manager's ordered rebuild nodes record the same in-place builds into ordered taskgraph nodes
-/// instead of calling this synchronously.
 #[allow(clippy::too_many_arguments)]
 pub fn build_acceleration_structure_in_place(
     geometries: BuildGeometries,
@@ -161,10 +139,6 @@ pub fn build_acceleration_structure_in_place(
     dst.clone()
 }
 
-/// Computes the build sizes (acceleration-structure storage + scratch) for
-/// `geometries` with `primitive_count` primitives of type `ty`. The
-/// CPU-side sizing the ordered rebuild nodes use
-/// to create fresh storage and scratch buffers before recording.
 pub(crate) fn acceleration_structure_build_sizes(
     device: &Arc<Device>,
     geometries: &[AccelerationStructureGeometry<'static>],
@@ -186,13 +160,6 @@ pub(crate) fn acceleration_structure_build_sizes(
     )
 }
 
-/// Creates the AS storage for a procedural AABB BLAS over `aabb_buffer`,
-/// sized exactly for `primitive_count` AABBs, **without building**. The
-/// ordered rebuild nodes create the storage in the
-/// plan phase (CPU) and record the build later, so a become-resident BLAS
-/// never moves after creation (the node builds into the pre-created storage
-/// in place). Returns the BLAS and its storage size (the residency manager's
-/// free-list reuse unit).
 pub(crate) fn create_blas_aabbs_storage(
     aabb_buffer: &Subbuffer<[AabbPositions]>,
     primitive_count: u32,
@@ -241,9 +208,6 @@ pub(crate) fn create_blas_aabbs_storage(
     )
 }
 
-/// Creates a fresh AS (storage sized exactly for `primitive_count`) and
-/// builds it. Returns the AS and its storage size (the residency manager
-/// tracks it for free-list reuse checks).
 #[allow(clippy::too_many_arguments)]
 pub fn build_acceleration_structure_fresh(
     geometries: BuildGeometries,
@@ -289,9 +253,6 @@ pub fn build_acceleration_structure_fresh(
     let acceleration = unsafe { AccelerationStructure::new(&device, &as_create_info) }.unwrap();
 
     let built = build_acceleration_structure_in_place(
-        // The geometry info is re-derived inside; pass the geometries again.
-        // (The call below re-runs build_sizes with the identical geometry,
-        // so the assertion against the freshly-sized storage holds.)
         geometries,
         primitive_count,
         ty,
@@ -312,10 +273,6 @@ use vulkano_taskgraph::{
     resource::{Flight, Resources},
 };
 
-/// Builds a fresh procedural AABB BLAS over `aabb_buffer` (a taskgraph-owned
-/// build-input buffer) and returns it plus its AS storage size (the residency
-/// manager's free-list reuse unit). Storage is sized exactly for
-/// `primitive_count` AABBs.
 pub fn build_blas_aabbs_fresh(
     aabb_buffer: Subbuffer<[AabbPositions]>,
     primitive_count: u32,
@@ -345,11 +302,6 @@ pub fn build_blas_aabbs_fresh(
     )
 }
 
-/// Creates a TLAS object whose storage is pre-sized for `max_instances`. The residency manager's **stable TLAS**: rebuilt
-/// in place on every residency transition with up to `max_instances`
-/// instances, so the object, its storage, and the bindless
-/// acceleration-structure id never move. Returns the TLAS and its storage
-/// size.
 pub fn create_tlas_storage(
     instance_buffer: &Subbuffer<[AccelerationStructureInstance]>,
     max_instances: u32,

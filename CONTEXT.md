@@ -11,12 +11,6 @@ map keyed by global coordinates) plus a 256-color palette. Worlds are loaded
 once at startup today.
 _Avoid_: Scene, level, map
 
-**Voxel Scale**:
-1 voxel = 1/16 meter (0.0625 m), per VOXEL_PHYSICAL_LENGTH. Physical
-dimensions (player size, speeds) are expressed in meters.
-_Avoid_: Block size, grid resolution
-_Note_: differs from wgpu-rt (1/8 m). Do not assume a shared scale.
-
 **Palette**:
 A 256-entry RGBA8 color table from the .vox file mapping Material indices to
 albedo colors. GPU-side: a bindless vec4[256] storage buffer.
@@ -155,7 +149,7 @@ The renderer's lighting algorithm: per-pixel light transport, a primary ray
 plus up to N BSDF-scattered Bounces, terminated by Russian roulette and a
 depth cap. Path tracing replaces flat palette shading as the default Render
 mode's output.
-_Avoid_: raytracing (that is the *mechanism*; path tracing is the algorithm),
+_Avoid_: raytracing (that is the _mechanism_; path tracing is the algorithm),
 GI (an effect path tracing delivers. Describe what is seen)
 
 **Sample**:

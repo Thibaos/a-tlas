@@ -1,8 +1,3 @@
-//! Allocation: the free lists a Region's pool buffer and (AABB buffer +
-//! BLAS storage) pair are drawn from. Memory freed by a change cycle is not
-//! reusable until the rebuild that dropped its referencing TLAS instance
-//! executes. See `residency`.
-
 use std::sync::Arc;
 
 use vulkano::{
@@ -77,8 +72,6 @@ pub(crate) struct PoolAllocation {
 pub(crate) struct BlasAllocation {
     pub(crate) aabb_buffer_id: Id<Buffer>,
     pub(crate) aabb_capacity: u32,
-    /// `Some((as, storage_size))` when reused from the free list (build in
-    /// place); `None` when fresh (create storage + build).
     pub(crate) as_storage: Option<(Arc<AccelerationStructure>, u64)>,
 }
 
@@ -119,7 +112,6 @@ pub(crate) fn allocate_pool(
     }
 }
 
-/// Allocates a (AABB buffer, BLAS storage) pair (best-fit reuse first).
 pub(crate) fn allocate_blas(
     gpu: &GpuStack,
     free: &mut FreeLists,
@@ -140,9 +132,6 @@ pub(crate) fn allocate_blas(
             .resources
             .create_buffer(
                 &BufferCreateInfo {
-                    // STORAGE_BUFFER lets the debug Hull shader read the
-                    // trimmed hulls back as a buffer_reference; the DDA
-                    // path (AS build input + device address) is unchanged.
                     usage: BufferUsage::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY
                         | BufferUsage::SHADER_DEVICE_ADDRESS
                         | BufferUsage::STORAGE_BUFFER,
@@ -169,8 +158,6 @@ pub(crate) fn allocate_blas(
 mod tests {
     use super::*;
 
-    /// Best-fit: the smallest entry with enough capacity wins; `None` when
-    /// nothing fits.
     #[test]
     fn free_list_best_fit() {
         let mut entries = vec![
@@ -187,17 +174,15 @@ mod tests {
                 capacity: 128,
             },
         ];
+
         let taken = take_best_fit(&mut entries, 100, |f| f.capacity).unwrap();
         assert_eq!(taken.capacity, 128);
         assert_eq!(entries.len(), 2);
 
-        // Nothing fits → None (allocate fresh).
         let none = take_best_fit(&mut entries, 1024, |f| f.capacity);
         assert!(none.is_none());
     }
 
-    /// Pending frees are not reusable until released (the ordering invariant
-    /// at the list level: allocation only sees the released lists).
     #[test]
     fn pending_frees_release_into_reusable_lists() {
         let mut pending = PendingFrees::default();
@@ -206,11 +191,9 @@ mod tests {
             capacity: 64,
         });
 
-        // Not yet released: allocation cannot see it.
         let mut free = FreeLists::default();
         assert!(take_best_fit(&mut free.pools, 64, |f| f.capacity).is_none());
 
-        // Release (after the dropping rebuild executed) → reusable.
         free.pools.append(&mut pending.pools);
         let taken = take_best_fit(&mut free.pools, 64, |f| f.capacity).unwrap();
         assert_eq!(taken.capacity, 64);
