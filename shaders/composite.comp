@@ -47,18 +47,19 @@ void main() {
     vec4 diff_raw = imageLoad(vko_image2D_rgba16f(radiance_id), p);
     vec3 albedo = imageLoad(vko_image2D_rgba8(albedo_metal_id), p).rgb;
 
+    float viewz = imageLoad(vko_image2D_r32f(viewz_id), p).x;
+    bool is_sky = viewz > SKY_VIEWZ;
+
     vec3 radiance;
     if (denoiser == 0u) {
-        bool is_sky = diff_raw.a <= 0.0;
-        vec3 diff_de = diff_raw.rgb;
-        vec3 spec = imageLoad(vko_image2D_rgba16f(spec_radiance_id), p).rgb;
+        vec3 diff_de = nrd_unpack_radiance(diff_raw);
+        vec3 spec = nrd_unpack_radiance(imageLoad(vko_image2D_rgba16f(spec_radiance_id), p));
         radiance = is_sky ? diff_de : diff_de * max(albedo, vec3(ALBEDO_EPS)) + spec;
     } else {
-        float viewz = imageLoad(vko_image2D_r32f(viewz_id), p).x;
         vec3 diffuse = nrd_unpack_radiance(imageLoad(vko_image2D_rgba16f(diff_denoised_id), p));
         vec3 specular = nrd_unpack_radiance(imageLoad(vko_image2D_rgba16f(spec_denoised_id), p));
-        radiance = (viewz > SKY_VIEWZ)
-            ? diff_raw.rgb
+        radiance = is_sky
+            ? nrd_unpack_radiance(diff_raw)
             : diffuse * max(albedo, vec3(ALBEDO_EPS)) + specular;
     }
 
