@@ -14,22 +14,24 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use vulkano::{
     buffer::Buffer,
     descriptor_set::{
-        allocator::StandardDescriptorSetAllocator,
-        layout::{DescriptorSetLayout, DescriptorSetLayoutBinding, DescriptorSetLayoutCreateInfo, DescriptorType},
-        sys::RawDescriptorSet,
         DescriptorBufferInfo, DescriptorImageInfo, WriteDescriptorSet,
+        allocator::StandardDescriptorSetAllocator,
+        layout::{
+            DescriptorSetLayout, DescriptorSetLayoutBinding, DescriptorSetLayoutCreateInfo,
+            DescriptorType,
+        },
+        sys::RawDescriptorSet,
     },
     image::{
-        sampler::{Filter, Sampler, SamplerAddressMode, SamplerCreateInfo},
-        view::ImageView,
         Image, ImageAspects, ImageCreateInfo, ImageLayout, ImageSubresourceRange, ImageType,
         ImageUsage,
+        sampler::{Filter, Sampler, SamplerAddressMode, SamplerCreateInfo},
+        view::ImageView,
     },
     memory::allocator::{AllocationCreateInfo, DeviceLayout},
     pipeline::{
-        compute::ComputePipelineCreateInfo,
-        layout::PipelineLayoutCreateInfo,
         ComputePipeline, PipelineBindPoint, PipelineLayout, PipelineShaderStageCreateInfo,
+        compute::ComputePipelineCreateInfo, layout::PipelineLayoutCreateInfo,
     },
     shader::{ShaderModule, ShaderModuleCreateInfo, ShaderStages},
 };
@@ -38,7 +40,10 @@ use vulkano_taskgraph::{
     command_buffer::{DependencyInfo, ImageMemoryBarrier, MemoryBarrier, RecordingCommandBuffer},
 };
 
-use crate::{core::gpu::GpuStack, render::region::task::{RegionRenderContext, RenderMode}};
+use crate::{
+    core::gpu::GpuStack,
+    render::region::task::{RegionRenderContext, RenderMode},
+};
 
 const CONSTANTS_SLOTS: u64 = 64;
 
@@ -143,7 +148,8 @@ impl NrdInstance {
             return Err(format!("NRD: CreateInstance failed ({result})"));
         }
 
-        let desc = unsafe { sys::GetInstanceDesc(instance).as_ref() }.ok_or("NRD: no instance desc")?;
+        let desc =
+            unsafe { sys::GetInstanceDesc(instance).as_ref() }.ok_or("NRD: no instance desc")?;
 
         let sampler = |filter: Filter| -> Result<Arc<Sampler>, String> {
             Sampler::new(
@@ -161,7 +167,11 @@ impl NrdInstance {
 
         let pool_texture = |texture: &sys::TextureDesc| -> Result<PoolTexture, String> {
             let factor = u32::from(texture.downsample_factor.max(1));
-            let extent = [width.div_ceil(factor).max(1), height.div_ceil(factor).max(1), 1];
+            let extent = [
+                width.div_ceil(factor).max(1),
+                height.div_ceil(factor).max(1),
+                1,
+            ];
             let format = map_format(texture.format)?;
             let id = gpu
                 .resources
@@ -177,21 +187,24 @@ impl NrdInstance {
                 )
                 .map_err(|e| format!("NRD: pool image: {e}"))?;
             let image = gpu.resources.image(id).image().clone();
-            let view = ImageView::new_default(&image).map_err(|e| format!("NRD: pool view: {e}"))?;
+            let view =
+                ImageView::new_default(&image).map_err(|e| format!("NRD: pool view: {e}"))?;
 
             Ok(PoolTexture { id, view })
         };
 
-        let permanent_pool =
-            unsafe { slice::from_raw_parts(desc.permanent_pool, desc.permanent_pool_size as usize) }
-                .iter()
-                .map(&pool_texture)
-                .collect::<Result<Vec<_>, String>>()?;
-        let transient_pool =
-            unsafe { slice::from_raw_parts(desc.transient_pool, desc.transient_pool_size as usize) }
-                .iter()
-                .map(&pool_texture)
-                .collect::<Result<Vec<_>, String>>()?;
+        let permanent_pool = unsafe {
+            slice::from_raw_parts(desc.permanent_pool, desc.permanent_pool_size as usize)
+        }
+        .iter()
+        .map(&pool_texture)
+        .collect::<Result<Vec<_>, String>>()?;
+        let transient_pool = unsafe {
+            slice::from_raw_parts(desc.transient_pool, desc.transient_pool_size as usize)
+        }
+        .iter()
+        .map(&pool_texture)
+        .collect::<Result<Vec<_>, String>>()?;
 
         let set_allocator = Arc::new(StandardDescriptorSetAllocator::new(
             &gpu.device,
@@ -222,12 +235,18 @@ impl NrdInstance {
         let pipelines =
             unsafe { slice::from_raw_parts(desc.pipelines, desc.pipelines_num as usize) }
                 .iter()
-                .map(|pipeline_desc| build_pipeline(gpu, &samplers, &offsets, pipeline_desc, entry_point_name))
+                .map(|pipeline_desc| {
+                    build_pipeline(gpu, &samplers, &offsets, pipeline_desc, entry_point_name)
+                })
                 .collect::<Result<Vec<_>, String>>()?;
 
         let settings = sys::ReblurSettings::default();
         let result = unsafe {
-            sys::SetDenoiserSettings(instance, denoisers[0].identifier, core::ptr::from_ref(&settings).cast())
+            sys::SetDenoiserSettings(
+                instance,
+                denoisers[0].identifier,
+                core::ptr::from_ref(&settings).cast(),
+            )
         };
         if result != sys::result::SUCCESS {
             return Err(format!("NRD: SetDenoiserSettings failed ({result})"));
@@ -317,7 +336,8 @@ impl NrdInstance {
     ) -> Result<(), String> {
         self.record_pool_transitions(cbf);
 
-        let result = unsafe { sys::SetCommonSettings(self.instance, core::ptr::from_ref(settings)) };
+        let result =
+            unsafe { sys::SetCommonSettings(self.instance, core::ptr::from_ref(settings)) };
         if result != sys::result::SUCCESS {
             return Err(format!("NRD: SetCommonSettings failed ({result})"));
         }
@@ -353,7 +373,10 @@ impl NrdInstance {
             }
 
             let data = unsafe {
-                slice::from_raw_parts(dispatch.constant_buffer_data, dispatch.constant_buffer_data_size as usize)
+                slice::from_raw_parts(
+                    dispatch.constant_buffer_data,
+                    dispatch.constant_buffer_data_size as usize,
+                )
             }
             .to_vec();
 
@@ -383,8 +406,9 @@ impl NrdInstance {
                 .get(usize::from(dispatch.pipeline_index))
                 .ok_or("NRD: pipeline index out of range")?;
 
-            let resources =
-                unsafe { slice::from_raw_parts(dispatch.resources, dispatch.resources_num as usize) };
+            let resources = unsafe {
+                slice::from_raw_parts(dispatch.resources, dispatch.resources_num as usize)
+            };
 
             let mut views: Vec<Arc<ImageView>> = Vec::with_capacity(resources.len());
             let mut bindings: Vec<u32> = Vec::with_capacity(resources.len());
@@ -432,7 +456,10 @@ impl NrdInstance {
                     .map_err(|e| format!("NRD: constants set: {e}"))?;
             unsafe {
                 constants_set.update(
-                    &[WriteDescriptorSet::buffer(self.constants_offset, &constants_info)],
+                    &[WriteDescriptorSet::buffer(
+                        self.constants_offset,
+                        &constants_info,
+                    )],
                     &[],
                 )
             };
@@ -495,13 +522,20 @@ impl NrdInstance {
             sys::resource_type::OUT_DIFF_RADIANCE_HITDIST => Ok(inputs.diff_out.clone()),
             sys::resource_type::OUT_SPEC_RADIANCE_HITDIST => Ok(inputs.spec_out.clone()),
             sys::resource_type::TRANSIENT_POOL | sys::resource_type::PERMANENT_POOL => self
-                .pool_view(resource.kind == sys::resource_type::PERMANENT_POOL, resource.index_in_pool),
+                .pool_view(
+                    resource.kind == sys::resource_type::PERMANENT_POOL,
+                    resource.index_in_pool,
+                ),
             _ => Err(format!("NRD: unhandled resource kind {}", resource.kind)),
         }
     }
 
     fn pool_view(&self, permanent: bool, index_in_pool: u16) -> Result<Arc<ImageView>, String> {
-        let pool = if permanent { &self.permanent_pool } else { &self.transient_pool };
+        let pool = if permanent {
+            &self.permanent_pool
+        } else {
+            &self.transient_pool
+        };
 
         pool.get(usize::from(index_in_pool))
             .map(|texture| texture.view.clone())
@@ -538,12 +572,14 @@ fn build_pipeline(
         .map(|word| u32::from_le_bytes([word[0], word[1], word[2], word[3]]))
         .collect();
 
-    let entry_name = entry_point_name.to_str().map_err(|e| format!("NRD: entry point: {e}"))?;
-    let module = unsafe {
-        ShaderModule::new(&gpu.device, &ShaderModuleCreateInfo::new(&words))
-    }
-    .map_err(|e| format!("NRD: shader module: {e}"))?;
-    let entry_point = module.entry_point(entry_name).ok_or("NRD: entry point not found")?;
+    let entry_name = entry_point_name
+        .to_str()
+        .map_err(|e| format!("NRD: entry point: {e}"))?;
+    let module = unsafe { ShaderModule::new(&gpu.device, &ShaderModuleCreateInfo::new(&words)) }
+        .map_err(|e| format!("NRD: shader module: {e}"))?;
+    let entry_point = module
+        .entry_point(entry_name)
+        .ok_or("NRD: entry point not found")?;
     let stage = PipelineShaderStageCreateInfo::new(&entry_point);
 
     let ranges = unsafe {
@@ -651,7 +687,10 @@ pub struct DenoiseTask {
 
 impl DenoiseTask {
     pub fn new() -> Self {
-        Self { instance: None, inputs: None }
+        Self {
+            instance: None,
+            inputs: None,
+        }
     }
 }
 

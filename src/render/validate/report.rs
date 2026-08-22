@@ -220,7 +220,8 @@ pub fn write_path_report(
     ));
     out.push_str(&format!(
         "samples: {} per pixel (frame_seed 0..{}), identical seeds on both sides\n",
-        report.samples, report.samples - 1
+        report.samples,
+        report.samples - 1
     ));
     out.push_str(&format!("cpu trace time: {cpu_seconds:.2}s\n"));
     out.push_str(&format!(

@@ -44,7 +44,7 @@ use crate::{
     core::grid::LATTICE_HALF_EXTENT,
     render::{
         composite::{CompositeTask, create_composite_pipeline},
-        nrd::{DenoiseTask, NrdInstance, NrdInputs},
+        nrd::{DenoiseTask, NrdInputs, NrdInstance},
         region::{
             feed::RendererInput,
             residency::RegionStore,
@@ -510,11 +510,8 @@ impl ApplicationHandler for App {
             )
             .build();
 
-        let mut denoise_node = task_graph.create_task_node(
-            "Denoise",
-            QueueFamilyType::Graphics,
-            DenoiseTask::new(),
-        );
+        let mut denoise_node =
+            task_graph.create_task_node("Denoise", QueueFamilyType::Graphics, DenoiseTask::new());
         for image in [
             &trace_pass_images.diff_radiance,
             &trace_pass_images.spec_radiance,
@@ -528,7 +525,10 @@ impl ApplicationHandler for App {
                 ImageLayoutType::General,
             );
         }
-        for image in [&trace_pass_images.denoised_diff, &trace_pass_images.denoised_spec] {
+        for image in [
+            &trace_pass_images.denoised_diff,
+            &trace_pass_images.denoised_spec,
+        ] {
             denoise_node.image_access(
                 image.virtual_id,
                 AccessTypes::COMPUTE_SHADER_STORAGE_WRITE,
@@ -548,7 +548,9 @@ impl ApplicationHandler for App {
             .unwrap();
         #[cfg(not(debug_assertions))]
         task_graph.add_edge(rt_node_id, denoise_node_id).unwrap();
-        task_graph.add_edge(denoise_node_id, composite_node_id).unwrap();
+        task_graph
+            .add_edge(denoise_node_id, composite_node_id)
+            .unwrap();
 
         let task_graph = unsafe {
             task_graph.compile(&CompileInfo {
@@ -770,7 +772,9 @@ impl ApplicationHandler for App {
                             let inputs = NrdInputs {
                                 diff_radiance: input_view(&rcx.trace_pass_images.diff_radiance),
                                 spec_radiance: input_view(&rcx.trace_pass_images.spec_radiance),
-                                normal_roughness: input_view(&rcx.trace_pass_images.normal_roughness),
+                                normal_roughness: input_view(
+                                    &rcx.trace_pass_images.normal_roughness,
+                                ),
                                 viewz: input_view(&rcx.trace_pass_images.viewz),
                                 mv: input_view(&rcx.trace_pass_images.mv),
                                 diff_out: input_view(&rcx.trace_pass_images.denoised_diff),
@@ -814,7 +818,11 @@ impl ApplicationHandler for App {
                 let rcx = self.rcx.as_mut().unwrap();
                 rcx.region.nrd.clear = clear;
                 rcx.region.nrd.reset = reset;
-                rcx.region.nrd.frame_index = if clear || reset { 0 } else { self.nrd_frame_index };
+                rcx.region.nrd.frame_index = if clear || reset {
+                    0
+                } else {
+                    self.nrd_frame_index
+                };
 
                 let resource_map = resource_map!(
                     &rcx.task_graph,

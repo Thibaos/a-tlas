@@ -162,4 +162,3 @@ pub fn parse_args(args: &[String]) -> Result<ValidateOptions, String> {
 
     Ok(opts)
 }
-

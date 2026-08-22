@@ -10,11 +10,7 @@ use vulkano::{
     memory::allocator::{AllocationCreateInfo, DeviceLayout, MemoryTypeFilter},
     swapchain::{PresentMode, Surface, Swapchain, SwapchainCreateInfo},
 };
-use vulkano_taskgraph::{
-    Id,
-    descriptor_set::StorageImageId,
-    resource::Resources,
-};
+use vulkano_taskgraph::{Id, descriptor_set::StorageImageId, resource::Resources};
 
 use crate::core::gpu::{GpuStack, MIN_SWAPCHAIN_IMAGES};
 
@@ -36,7 +32,6 @@ pub fn read_host_floats(gpu: &GpuStack, id: Id<Buffer>) -> Vec<f32> {
         .expect("host read of capture buffer")
         .to_vec()
 }
-
 
 pub fn create_host_readback(gpu: &GpuStack, bytes: u64) -> Id<Buffer> {
     gpu.resources

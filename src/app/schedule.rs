@@ -3,9 +3,11 @@ use std::{
     time::{Duration, Instant},
 };
 
-use either::Either;
+pub enum Condition {
+    Frames { remaining: usize, total: usize },
+    Every(Duration),
+}
 
-pub type Condition = Either<(usize, usize), Duration>;
 pub struct ScheduleController {
     schedules: HashMap<&'static str, (Instant, Condition)>,
 }
@@ -20,41 +22,51 @@ impl ScheduleController {
     pub fn add_schedule_duration(&mut self, name: &'static str, duration: Duration) {
         let instant = Instant::now();
         self.schedules
-            .insert(name, (instant, Either::Right(duration)));
+            .insert(name, (instant, Condition::Every(duration)));
     }
 
     pub fn add_schedule_frames(&mut self, name: &'static str, frames: usize) {
         let instant = Instant::now();
-        self.schedules
-            .insert(name, (instant, Either::Left((frames, frames))));
+        self.schedules.insert(
+            name,
+            (
+                instant,
+                Condition::Frames {
+                    remaining: frames,
+                    total: frames,
+                },
+            ),
+        );
     }
 
     pub fn check(&mut self, key: &str) -> Option<Duration> {
         if let Some((last_update_instant, condition)) = self.schedules.get_mut(key) {
             match condition {
-                Either::Left((remaining, total_frames)) => {
+                Condition::Frames { remaining, total } => {
                     if *remaining <= 1 {
                         let duration = last_update_instant.elapsed();
                         *last_update_instant = Instant::now();
-                        *remaining = *total_frames;
-                        return Some(duration);
+                        *remaining = *total;
+
+                        Some(duration)
+                    } else {
+                        *remaining -= 1;
+
+                        None
                     }
-
-                    *remaining -= 1;
-
-                    return None;
                 }
-                Either::Right(duration) => {
+                Condition::Every(duration) => {
                     if (*last_update_instant).elapsed() > *duration {
                         *last_update_instant = Instant::now();
-                        return Some(*duration);
+
+                        Some(*duration)
                     } else {
-                        return None;
+                        None
                     }
                 }
             }
+        } else {
+            None
         }
-
-        None
     }
 }

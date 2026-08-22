@@ -31,9 +31,9 @@
 use glam::{IVec3, Vec3};
 
 use crate::{
-    core::grid::{grid_origin, REGION_LENGTH},
+    core::grid::{REGION_LENGTH, grid_origin},
     render::validate::reference::{CameraInputs, T_MAX, T_MIN},
-    world::{material::MaterialTable, World},
+    world::{World, material::MaterialTable},
 };
 
 // ---------------------------------------------------------------------------
@@ -1202,7 +1202,7 @@ mod tests {
     use super::*;
     use crate::{
         render::validate::reference::{T_MAX, T_MIN},
-        world::{material::Material, World},
+        world::{World, material::Material},
     };
 
     fn default_scene() -> Scene {
@@ -1336,7 +1336,9 @@ mod tests {
         // t = 5 on the x = 0 face reports exactly 5.
         let world = single_voxel_world();
         let tracer = PathTracer::new(&world, materials(), default_scene());
-        let snapped = tracer.trace_ray(Vec3::new(-5.0, 0.5, 0.5), Vec3::X).unwrap();
+        let snapped = tracer
+            .trace_ray(Vec3::new(-5.0, 0.5, 0.5), Vec3::X)
+            .unwrap();
         assert_eq!(snapped.t, 5.0);
         assert_eq!(snapped.normal, Vec3::NEG_X);
 

@@ -375,15 +375,24 @@ unsafe extern "system" {
         instance_creation_desc: *const InstanceCreationDesc,
         instance: *mut *mut Instance,
     ) -> u32;
+
     pub fn DestroyInstance(instance: *mut Instance);
+
     pub fn GetLibraryDesc() -> *const LibraryDesc;
+
     pub fn GetInstanceDesc(instance: *const Instance) -> *const InstanceDesc;
-    pub fn SetCommonSettings(instance: *mut Instance, common_settings: *const CommonSettings) -> u32;
+
+    pub fn SetCommonSettings(
+        instance: *mut Instance,
+        common_settings: *const CommonSettings,
+    ) -> u32;
+
     pub fn SetDenoiserSettings(
         instance: *mut Instance,
         identifier: Identifier,
         denoiser_settings: *const c_void,
     ) -> u32;
+
     pub fn GetComputeDispatches(
         instance: *mut Instance,
         identifiers: *const Identifier,

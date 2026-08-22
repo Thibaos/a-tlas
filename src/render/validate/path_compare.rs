@@ -35,7 +35,7 @@
 //! mismatches total ≤ the budget fraction of pixels (matching the byte-exact
 //! compare's posture).
 
-use glam::{Vec2, Vec3};
+use glam::Vec3;
 
 /// The corner-touch material disagreement threshold: the committed voxels'
 /// material differs by more than this (adjacent cells at a material
@@ -53,26 +53,9 @@ pub fn encode_octahedral(n: Vec3) -> glam::Vec2 {
     let mut enc = glam::Vec2::new(n.x / sum, n.y / sum);
     if n.z < 0.0 {
         let s = enc.signum();
-        enc = glam::Vec2::new(
-            (1.0 - enc.y.abs()) * s.x,
-            (1.0 - enc.x.abs()) * s.y,
-        );
+        enc = glam::Vec2::new((1.0 - enc.y.abs()) * s.x, (1.0 - enc.x.abs()) * s.y);
     }
     enc * 0.5 + 0.5
-}
-
-/// Inverts encode_octahedral: the RGBA8-stored octahedral encoding back to
-/// the unit normal (the aux buffer's per-pixel value, the face-tie signal of
-/// the shading diff).
-pub fn decode_octahedral(enc01: glam::Vec2) -> Vec3 {
-    let e = enc01 * 2.0 - 1.0;
-    let mut n = Vec3::new(e.x, e.y, 1.0 - e.x.abs() - e.y.abs());
-    if n.z < 0.0 {
-        let s = Vec2::new(n.x.signum(), n.y.signum());
-        let w = Vec2::new((1.0 - e.y.abs()) * s.x, (1.0 - e.x.abs()) * s.y);
-        n = Vec3::new(w.x, w.y, n.z);
-    }
-    n.normalize_or_zero()
 }
 
 /// Why a mismatching pixel was excused (or not).
@@ -108,8 +91,7 @@ const CATEGORICAL_ERROR: f32 = 0.5;
 fn channel_rel_err(g: Vec3, c: Vec3, abs_floor: f32) -> f32 {
     let denom = g.abs().max(c.abs()).max(Vec3::splat(abs_floor));
     let diff = (g - c).abs();
-    diff.x.max(diff.y).max(diff.z)
-        / denom.x.max(denom.y).max(denom.z).max(1e-9)
+    diff.x.max(diff.y).max(diff.z) / denom.x.max(denom.y).max(denom.z).max(1e-9)
 }
 
 /// Per-seed divergence evidence for one mismatching pixel: how many of the N
@@ -155,8 +137,11 @@ pub fn seed_evidence(
         shifted: 0,
     };
     for s in 0..gpu_diff.len() {
-        let err = channel_rel_err(gpu_diff[s], cpu_diff[s], abs_floor)
-            .max(channel_rel_err(gpu_spec[s], cpu_spec[s], abs_floor));
+        let err = channel_rel_err(gpu_diff[s], cpu_diff[s], abs_floor).max(channel_rel_err(
+            gpu_spec[s],
+            cpu_spec[s],
+            abs_floor,
+        ));
         if err > CATEGORICAL_ERROR {
             ev.diverged += 1;
         } else if err > tolerance {
@@ -356,12 +341,7 @@ pub fn compare_path(
         let x = (i % width as usize) as i64;
         let y = (i / width as usize) as i64;
         let hit = gpu_hit_fraction[i] > 0.0;
-        for (nx, ny) in [
-            (x + 1, y),
-            (x - 1, y),
-            (x, y + 1),
-            (x, y - 1),
-        ] {
+        for (nx, ny) in [(x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)] {
             if nx < 0 || ny < 0 || nx >= width as i64 || ny >= height as i64 {
                 continue;
             }
@@ -604,7 +584,9 @@ mod tests {
         let mut gpu_d_bad = gpu_d.clone();
         gpu_d_bad[8 * w as usize + 7] = Vec3::new(0.0, 0.0, 1.0);
 
-        let report = run_compare(&gpu_d_bad, &spec, &hit, &gpu_disp, &cpu_d, &spec, &cpu_disp, w, h);
+        let report = run_compare(
+            &gpu_d_bad, &spec, &hit, &gpu_disp, &cpu_d, &spec, &cpu_disp, w, h,
+        );
         assert!(report.mismatch_count() >= 1);
         assert_eq!(report.hard_mismatch_count(), 0);
         assert!(report.passes());

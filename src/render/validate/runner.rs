@@ -149,7 +149,13 @@ impl ApplicationHandler for ValidateRunner {
         let mut path_results = Vec::new();
 
         for (i, world) in worlds.iter().enumerate() {
-            println!("[{}/{}] {} \u{00b7} {}", i + 1, total, world.name, world.path);
+            println!(
+                "[{}/{}] {} \u{00b7} {}",
+                i + 1,
+                total,
+                world.name,
+                world.path
+            );
 
             match self.run_world(world, event_loop) {
                 Ok((summary, path)) => {
@@ -241,19 +247,11 @@ fn thousands(mut n: u64) -> String {
 }
 
 pub fn verdict(pass: bool) -> &'static str {
-    if pass {
-        "PASS"
-    } else {
-        "FAIL"
-    }
+    if pass { "PASS" } else { "FAIL" }
 }
 
 fn plural<'a>(n: usize, one: &'a str, many: &'a str) -> &'a str {
-    if n == 1 {
-        one
-    } else {
-        many
-    }
+    if n == 1 { one } else { many }
 }
 
 impl ValidateRunner {
@@ -839,8 +837,11 @@ impl ValidateRunner {
             self.opts.width,
             self.opts.height,
         );
-        let mut path_capture_node = path_graph
-            .create_task_node("PathCapture", QueueFamilyType::Graphics, path_capture_task);
+        let mut path_capture_node = path_graph.create_task_node(
+            "PathCapture",
+            QueueFamilyType::Graphics,
+            path_capture_task,
+        );
         for image in [
             &setup.path_images.diff,
             &setup.path_images.spec,
@@ -1169,7 +1170,8 @@ impl ValidateRunner {
         let gpu_diffuse: Vec<glam::Vec3> = diff_sum.iter().map(|v| *v / n).collect();
         let gpu_specular: Vec<glam::Vec3> = spec_sum.iter().map(|v| *v / n).collect();
         let gpu_albedo: Vec<glam::Vec3> = albedo_sum.iter().map(|v| *v / n).collect();
-        let gpu_normals: Vec<glam::Vec3> = normal_sum.iter().map(|v| v.normalize_or_zero()).collect();
+        let gpu_normals: Vec<glam::Vec3> =
+            normal_sum.iter().map(|v| v.normalize_or_zero()).collect();
         let gpu_hit_fraction: Vec<f32> = hit_sum.iter().map(|h| *h as f32 / n).collect();
         let gpu_hitdist: Vec<f32> = hitdist_sum.iter().map(|h| *h / n).collect();
         // The display radiance (re-modulated like the composite): the sky

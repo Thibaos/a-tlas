@@ -590,7 +590,7 @@ fn materials_world() -> DotVoxData {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::world::{format::open_file, World};
+    use crate::world::{World, format::open_file};
 
     /// Writes a world to a unique temp file (tests run in parallel), loads it
     /// through the real loader, and returns the world.
