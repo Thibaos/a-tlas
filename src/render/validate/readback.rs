@@ -69,6 +69,17 @@ pub fn decode_rgba16f(bytes: &[u8]) -> Vec<glam::Vec4> {
         .collect()
 }
 
+/// NRD REBLUR's YCoCg radiance packing (NRD.hlsli `_NRD_YCoCgToLinear`),
+/// inverted so the shading diff compares linear RGB.
+pub fn ycocg_to_linear(yco_cg: glam::Vec3) -> glam::Vec3 {
+    let t = yco_cg.x - yco_cg.z;
+    let g = yco_cg.x + yco_cg.z;
+    let r = t + yco_cg.y;
+    let b = t - yco_cg.y;
+
+    glam::Vec3::new(r, g, b).max(glam::Vec3::ZERO)
+}
+
 /// IEEE-754 binary16 → f32 (the radiance pair's storage format; the CPU
 /// mirror computes f32 and the tolerance absorbs the quantization).
 pub fn half_to_f32(h: u16) -> f32 {

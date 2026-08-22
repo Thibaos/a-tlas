@@ -9,6 +9,7 @@ pub mod sys;
 use core::ffi::CStr;
 use core::slice;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use vulkano::{
     buffer::Buffer,
@@ -21,7 +22,8 @@ use vulkano::{
     image::{
         sampler::{Filter, Sampler, SamplerAddressMode, SamplerCreateInfo},
         view::ImageView,
-        Image, ImageCreateInfo, ImageLayout, ImageType, ImageUsage,
+        Image, ImageAspects, ImageCreateInfo, ImageLayout, ImageSubresourceRange, ImageType,
+        ImageUsage,
     },
     memory::allocator::{AllocationCreateInfo, DeviceLayout},
     pipeline::{
@@ -33,7 +35,7 @@ use vulkano::{
 };
 use vulkano_taskgraph::{
     Id, Task, TaskContext, TaskResult,
-    command_buffer::{DependencyInfo, MemoryBarrier, RecordingCommandBuffer},
+    command_buffer::{DependencyInfo, ImageMemoryBarrier, MemoryBarrier, RecordingCommandBuffer},
 };
 
 use crate::{core::gpu::GpuStack, render::region::task::{RegionRenderContext, RenderMode}};
@@ -80,6 +82,8 @@ pub struct NrdInstance {
 
     permanent_pool: Vec<PoolTexture>,
     transient_pool: Vec<PoolTexture>,
+
+    pool_transition_pending: AtomicBool,
 
     pub constants_buffer_id: Id<Buffer>,
     constants_buffer: Arc<Buffer>,
@@ -162,7 +166,6 @@ impl NrdInstance {
                         format: map_format(texture.format),
                         extent,
                         usage: ImageUsage::STORAGE | ImageUsage::SAMPLED,
-                        initial_layout: ImageLayout::General,
                         ..Default::default()
                     },
                     &AllocationCreateInfo::default(),
@@ -237,6 +240,7 @@ impl NrdInstance {
             set_allocator,
             samplers,
             permanent_pool,
+            pool_transition_pending: AtomicBool::new(true),
             transient_pool,
             constants_buffer_id,
             constants_buffer,
@@ -261,12 +265,53 @@ impl NrdInstance {
         (images, self.constants_buffer_id)
     }
 
+    /// vulkano only accepts Undefined/Preinitialized as an image's initial
+    /// layout, so the pools start Undefined and get one barrier to GENERAL
+    /// (NRD's layout forever) before their first dispatch.
+    fn record_pool_transitions(&self, cbf: &mut RecordingCommandBuffer<'_>) {
+        if !self.pool_transition_pending.swap(false, Ordering::Relaxed) {
+            return;
+        }
+
+        let barriers: Vec<ImageMemoryBarrier> = self
+            .permanent_pool
+            .iter()
+            .chain(&self.transient_pool)
+            .map(|texture| ImageMemoryBarrier {
+                old_layout: ImageLayout::Undefined,
+                new_layout: ImageLayout::General,
+                image: texture.id,
+                subresource_range: ImageSubresourceRange {
+                    aspects: ImageAspects::COLOR,
+                    ..Default::default()
+                },
+                dst_stages: vulkano::sync::PipelineStages::ALL_COMMANDS,
+                dst_access: vulkano::sync::AccessFlags::SHADER_READ
+                    | vulkano::sync::AccessFlags::SHADER_STORAGE_WRITE,
+                ..Default::default()
+            })
+            .collect();
+
+        if barriers.is_empty() {
+            return;
+        }
+
+        unsafe {
+            cbf.pipeline_barrier(&DependencyInfo {
+                image_memory_barriers: &barriers,
+                ..Default::default()
+            })
+        };
+    }
+
     unsafe fn record(
         &self,
         cbf: &mut RecordingCommandBuffer<'_>,
         settings: &sys::CommonSettings,
         inputs: &NrdInputs,
     ) -> Result<(), String> {
+        self.record_pool_transitions(cbf);
+
         let result = unsafe { sys::SetCommonSettings(self.instance, core::ptr::from_ref(settings)) };
         if result != sys::result::SUCCESS {
             return Err(format!("NRD: SetCommonSettings failed ({result})"));
@@ -483,13 +528,15 @@ fn build_pipeline(
             pipeline_desc.compute_shader_spirv.size as usize,
         )
     };
+    // Blob entries are byte-aligned; SPIR-V wants aligned u32 words.
+    let words: Vec<u32> = bytecode
+        .chunks_exact(4)
+        .map(|word| u32::from_le_bytes([word[0], word[1], word[2], word[3]]))
+        .collect();
 
     let entry_name = entry_point_name.to_str().map_err(|e| format!("NRD: entry point: {e}"))?;
     let module = unsafe {
-        ShaderModule::new(
-            &gpu.device,
-            &ShaderModuleCreateInfo::new(bytemuck::cast_slice::<u8, u32>(bytecode)),
-        )
+        ShaderModule::new(&gpu.device, &ShaderModuleCreateInfo::new(&words))
     }
     .map_err(|e| format!("NRD: shader module: {e}"))?;
     let entry_point = module.entry_point(entry_name).ok_or("NRD: entry point not found")?;
@@ -513,19 +560,24 @@ fn build_pipeline(
         } else {
             DescriptorType::SampledImage
         };
-        let binding = if storage { next_storage } else { next_sampled };
 
-        texture_bindings.push(DescriptorSetLayoutBinding {
-            binding,
-            descriptor_count: range.descriptors_num,
-            stages: ShaderStages::COMPUTE,
-            ..DescriptorSetLayoutBinding::new(descriptor_type)
-        });
+        // dxc emits one binding per resource; a count-N entry would be an
+        // array AT one binding number, not a range.
+        for _ in 0..range.descriptors_num {
+            let binding = if storage { next_storage } else { next_sampled };
 
-        if storage {
-            next_storage += range.descriptors_num;
-        } else {
-            next_sampled += range.descriptors_num;
+            texture_bindings.push(DescriptorSetLayoutBinding {
+                binding,
+                descriptor_count: 1,
+                stages: ShaderStages::COMPUTE,
+                ..DescriptorSetLayoutBinding::new(descriptor_type)
+            });
+
+            if storage {
+                next_storage += 1;
+            } else {
+                next_sampled += 1;
+            }
         }
     }
 

@@ -44,14 +44,13 @@ use crate::{
             cli::ValidateOptions,
             compare::{CompareConfig, compare},
             path_compare::{
-                ExcuseKind, PathCompareConfig, PathCompareReport, compare_path,
-                decode_octahedral, seed_evidence,
+                ExcuseKind, PathCompareConfig, PathCompareReport, compare_path, seed_evidence,
             },
             path_tracer,
             path_tracer::{PathRender, PathTracer, render_path},
             readback::{
                 create_host_readback, create_t_image, create_validate_swapchain, decode_rgba,
-                decode_rgba16f, half_to_f32, read_host_bytes, read_host_floats,
+                decode_rgba16f, half_to_f32, read_host_bytes, read_host_floats, ycocg_to_linear,
             },
             reference::{CameraInputs, ReferenceTracer, VoxelShape, render_reference},
             report::{
@@ -1137,8 +1136,12 @@ impl ValidateRunner {
             frame_diff_f16.push(diff_bytes);
             frame_spec_f16.push(spec_bytes);
             for i in 0..pixel_count {
-                diff_sum[i] += diff_rgba[i].truncate();
-                spec_sum[i] += spec_rgba[i].truncate();
+                // The trace pass packs radiance in NRD's REBLUR front-end
+                // contract: YCoCg rgb + normalized hit distance alpha (08).
+                // Decode back to linear RGB so the compare stays about the
+                // shading, not the transport encoding.
+                diff_sum[i] += ycocg_to_linear(diff_rgba[i].truncate());
+                spec_sum[i] += ycocg_to_linear(spec_rgba[i].truncate());
                 let a = &albedo_bytes[i * 4..i * 4 + 4];
                 albedo_sum[i] += glam::Vec3::new(
                     f32::from(a[0]) / 255.0,
@@ -1146,14 +1149,19 @@ impl ValidateRunner {
                     f32::from(a[2]) / 255.0,
                 );
                 let nr = &nr_bytes[i * 4..i * 4 + 4];
-                normal_sum[i] += decode_octahedral(glam::Vec2::new(
-                    f32::from(nr[0]) / 255.0,
-                    f32::from(nr[1]) / 255.0,
-                ));
-                // The in-lobe hit distance rides the diffuse alpha: 0 is
-                // the sky sentinel (primary miss).
-                hitdist_sum[i] += diff_rgba[i].w;
-                hit_sum[i] += u32::from(diff_rgba[i].w > 0.0);
+                // Best-fit world-space normal, UNORM-offset (the RGBA8_UNORM
+                // NRD normal encoding): direction survives the max-component
+                // normalization, recovered by normalize below.
+                normal_sum[i] += glam::Vec3::new(
+                    f32::from(nr[0]) / 255.0 * 2.0 - 1.0,
+                    f32::from(nr[1]) / 255.0 * 2.0 - 1.0,
+                    f32::from(nr[2]) / 255.0 * 2.0 - 1.0,
+                );
+                // The skipped lobe's normHitDist is 0 by contract; a primary
+                // miss has both at 0.
+                let nhd = diff_rgba[i].w.max(spec_rgba[i].w);
+                hitdist_sum[i] += nhd;
+                hit_sum[i] += u32::from(nhd > 0.0);
             }
         }
 
@@ -1222,11 +1230,11 @@ impl ValidateRunner {
             for f in 0..samples as usize {
                 let b = i * 8;
                 let rgb = |w: &[u8]| {
-                    glam::Vec3::new(
+                    ycocg_to_linear(glam::Vec3::new(
                         half_to_f32(u16::from_le_bytes([w[b], w[b + 1]])),
                         half_to_f32(u16::from_le_bytes([w[b + 2], w[b + 3]])),
                         half_to_f32(u16::from_le_bytes([w[b + 4], w[b + 5]])),
-                    )
+                    ))
                 };
                 gpu_d.push(rgb(&frame_diff_f16[f]));
                 gpu_s.push(rgb(&frame_spec_f16[f]));

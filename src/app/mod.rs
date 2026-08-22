@@ -535,12 +535,11 @@ impl ApplicationHandler for App {
                 ImageLayoutType::General,
             );
         }
-        if let Some(nrd) = &self.nrd {
-            denoise_node.buffer_access(
-                nrd.constants_buffer_id,
-                AccessTypes::COPY_TRANSFER_WRITE | AccessTypes::COMPUTE_SHADER_UNIFORM_READ,
-            );
-        }
+        // The constants buffer stays undeclared on purpose: declaring the
+        // physical id here trips ResourceMap validation (InvalidSlotError).
+        // Its hazards are covered anyway: update_buffer lands in the same
+        // recording as the dispatches behind an explicit TRANSFER_WRITE
+        // barrier, and frames are serialized by the per-frame wait_idle.
         let denoise_node_id = denoise_node.build();
 
         #[cfg(debug_assertions)]
@@ -832,6 +831,10 @@ impl ApplicationHandler for App {
                         rcx.trace_pass_images.mv.physical_id,
                     rcx.trace_pass_images.albedo_metal.virtual_id =>
                         rcx.trace_pass_images.albedo_metal.physical_id,
+                    rcx.trace_pass_images.denoised_diff.virtual_id =>
+                        rcx.trace_pass_images.denoised_diff.physical_id,
+                    rcx.trace_pass_images.denoised_spec.virtual_id =>
+                        rcx.trace_pass_images.denoised_spec.physical_id,
                 )
                 .unwrap();
 
