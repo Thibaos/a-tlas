@@ -34,8 +34,8 @@ pub mod resource_type {
     pub const IN_SPEC_RADIANCE_HITDIST: u32 = 7;
     pub const OUT_DIFF_RADIANCE_HITDIST: u32 = 18;
     pub const OUT_SPEC_RADIANCE_HITDIST: u32 = 19;
-    pub const TRANSIENT_POOL: u32 = 29;
-    pub const PERMANENT_POOL: u32 = 30;
+    pub const TRANSIENT_POOL: u32 = 30;
+    pub const PERMANENT_POOL: u32 = 31;
 }
 
 pub mod descriptor_type {
@@ -44,11 +44,15 @@ pub mod descriptor_type {
 }
 
 pub mod format {
+    pub const R8_UNORM: u32 = 0;
+    pub const RG8_UNORM: u32 = 4;
     pub const RGBA8_UNORM: u32 = 8;
     pub const R16_SFLOAT: u32 = 17;
     pub const RG16_SFLOAT: u32 = 22;
     pub const RGBA16_SFLOAT: u32 = 27;
+    pub const R16_UINT: u32 = 15;
     pub const R32_SFLOAT: u32 = 30;
+    pub const R32_UINT: u32 = 28;
     pub const R10_G10_B10_A2_UNORM: u32 = 40;
     pub const R11_G11_B10_UFLOAT: u32 = 42;
 }

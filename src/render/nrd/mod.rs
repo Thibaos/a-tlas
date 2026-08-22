@@ -103,18 +103,22 @@ impl Drop for NrdInstance {
     }
 }
 
-fn map_format(format: u32) -> vulkano::format::Format {
+fn map_format(format: u32) -> Result<vulkano::format::Format, String> {
     use vulkano::format::Format;
 
     match format {
-        sys::format::RGBA8_UNORM => Format::R8G8B8A8_UNORM,
-        sys::format::R16_SFLOAT => Format::R16_SFLOAT,
-        sys::format::RG16_SFLOAT => Format::R16G16_SFLOAT,
-        sys::format::RGBA16_SFLOAT => Format::R16G16B16A16_SFLOAT,
-        sys::format::R32_SFLOAT => Format::R32_SFLOAT,
-        sys::format::R10_G10_B10_A2_UNORM => Format::A2B10G10R10_UNORM_PACK32,
-        sys::format::R11_G11_B10_UFLOAT => Format::B10G11R11_UFLOAT_PACK32,
-        _ => Format::R16G16B16A16_SFLOAT,
+        sys::format::R8_UNORM => Ok(Format::R8_UNORM),
+        sys::format::RG8_UNORM => Ok(Format::R8G8_UNORM),
+        sys::format::RGBA8_UNORM => Ok(Format::R8G8B8A8_UNORM),
+        sys::format::R16_SFLOAT => Ok(Format::R16_SFLOAT),
+        sys::format::RG16_SFLOAT => Ok(Format::R16G16_SFLOAT),
+        sys::format::RGBA16_SFLOAT => Ok(Format::R16G16B16A16_SFLOAT),
+        sys::format::R32_SFLOAT => Ok(Format::R32_SFLOAT),
+        sys::format::R32_UINT => Ok(Format::R32_UINT),
+        sys::format::R16_UINT => Ok(Format::R16_UINT),
+        sys::format::R10_G10_B10_A2_UNORM => Ok(Format::A2B10G10R10_UNORM_PACK32),
+        sys::format::R11_G11_B10_UFLOAT => Ok(Format::B10G11R11_UFLOAT_PACK32),
+        _ => Err(format!("NRD: unmapped pool format {format}")),
     }
 }
 
@@ -158,12 +162,13 @@ impl NrdInstance {
         let pool_texture = |texture: &sys::TextureDesc| -> Result<PoolTexture, String> {
             let factor = u32::from(texture.downsample_factor.max(1));
             let extent = [width.div_ceil(factor).max(1), height.div_ceil(factor).max(1), 1];
+            let format = map_format(texture.format)?;
             let id = gpu
                 .resources
                 .create_image(
                     &ImageCreateInfo {
                         image_type: ImageType::Dim2d,
-                        format: map_format(texture.format),
+                        format,
                         extent,
                         usage: ImageUsage::STORAGE | ImageUsage::SAMPLED,
                         ..Default::default()
@@ -335,10 +340,9 @@ impl NrdInstance {
         let dispatches = unsafe { slice::from_raw_parts(dispatch_descs, dispatch_num as usize) };
 
         for (index, dispatch) in dispatches.iter().enumerate() {
-            if dispatch.constant_buffer_data_matches_previous_dispatch
-                || dispatch.constant_buffer_data.is_null()
-                || dispatch.constant_buffer_data_size == 0
-            {
+            // Slots are per dispatch, so a "matches previous" dispatch still
+            // needs its slot filled (with identical bytes) or it reads zeros.
+            if dispatch.constant_buffer_data.is_null() || dispatch.constant_buffer_data_size == 0 {
                 continue;
             }
 
