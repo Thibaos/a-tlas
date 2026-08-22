@@ -4,6 +4,7 @@
 #extension GL_EXT_GOOGLE_include_directive : enable
 
 #include <vulkano.glsl>
+#include "common/nrd.glsl"
 
 layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 
@@ -11,14 +12,19 @@ layout(push_constant) uniform PushConstants {
     StorageImageId image_id;
     StorageImageId radiance_id;
     StorageImageId spec_radiance_id;
+    StorageImageId diff_denoised_id;
+    StorageImageId spec_denoised_id;
+    StorageImageId viewz_id;
     StorageImageId albedo_metal_id;
     float ev;
     uint mode;
+    uint denoiser;
     uint width;
     uint height;
 };
 
 const float ALBEDO_EPS = 1e-3;
+const float SKY_VIEWZ = 1.0e5;
 
 vec3 aces_fit(vec3 x) {
     const float a = 2.51;
@@ -38,12 +44,24 @@ void main() {
         return;
     }
 
-    vec4 diff_de_a = imageLoad(vko_image2D_rgba16f(radiance_id), p);
-    bool is_sky = diff_de_a.a <= 0.0;
-    vec3 diff_de = diff_de_a.rgb;
-    vec3 spec = imageLoad(vko_image2D_rgba16f(spec_radiance_id), p).rgb;
+    vec4 diff_raw = imageLoad(vko_image2D_rgba16f(radiance_id), p);
     vec3 albedo = imageLoad(vko_image2D_rgba8(albedo_metal_id), p).rgb;
-    vec3 radiance = is_sky ? diff_de : diff_de * max(albedo, vec3(ALBEDO_EPS)) + spec;
+
+    vec3 radiance;
+    if (denoiser == 0u) {
+        bool is_sky = diff_raw.a <= 0.0;
+        vec3 diff_de = diff_raw.rgb;
+        vec3 spec = imageLoad(vko_image2D_rgba16f(spec_radiance_id), p).rgb;
+        radiance = is_sky ? diff_de : diff_de * max(albedo, vec3(ALBEDO_EPS)) + spec;
+    } else {
+        float viewz = imageLoad(vko_image2D_r32f(viewz_id), p).x;
+        vec3 diffuse = nrd_unpack_radiance(imageLoad(vko_image2D_rgba16f(diff_denoised_id), p));
+        vec3 specular = nrd_unpack_radiance(imageLoad(vko_image2D_rgba16f(spec_denoised_id), p));
+        radiance = (viewz > SKY_VIEWZ)
+            ? diff_raw.rgb
+            : diffuse * max(albedo, vec3(ALBEDO_EPS)) + specular;
+    }
+
     vec3 color = aces_fit(radiance * exp2(ev));
     color = pow(color, vec3(1.0 / 2.2));
     imageStore(vko_image2D_rgba8(image_id), p, vec4(color, 1.0));

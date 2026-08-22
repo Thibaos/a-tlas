@@ -141,6 +141,37 @@ pub struct HullCrossedCounter {
     pub storage_id: StorageBufferId,
 }
 
+/// Per-frame NRD state: the non-jittered matrices ReBLUR consumes
+/// (column-major, columns are vectors) plus temporal-reset bookkeeping.
+#[derive(Clone, Copy)]
+pub struct NrdFrame {
+    pub view_to_clip: [f32; 16],
+    pub view_to_clip_prev: [f32; 16],
+    pub world_to_view: [f32; 16],
+    pub world_to_view_prev: [f32; 16],
+    pub frame_index: u32,
+    pub reset: bool,
+    pub clear: bool,
+}
+
+impl Default for NrdFrame {
+    fn default() -> Self {
+        Self {
+            view_to_clip: [0.0; 16],
+            view_to_clip_prev: [0.0; 16],
+            world_to_view: identity_cols(),
+            world_to_view_prev: identity_cols(),
+            frame_index: 0,
+            reset: false,
+            clear: true,
+        }
+    }
+}
+
+fn identity_cols() -> [f32; 16] {
+    glam::Mat4::IDENTITY.to_cols_array()
+}
+
 pub struct RegionRenderContext {
     pub camera: capture_raygen::Camera,
     pub scene: capture_raygen::Scene,
@@ -151,6 +182,10 @@ pub struct RegionRenderContext {
     pub normal_roughness_image_id: StorageImageId,
     pub viewz_image_id: StorageImageId,
     pub mv_image_id: StorageImageId,
+    pub denoised_diff_image_id: StorageImageId,
+    pub denoised_spec_image_id: StorageImageId,
+    pub denoiser_enabled: bool,
+    pub nrd: NrdFrame,
     pub albedo_metal_image_id: StorageImageId,
     pub ev: f32,
     pub mode: RenderMode,

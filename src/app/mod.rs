@@ -44,11 +44,12 @@ use crate::{
     core::grid::LATTICE_HALF_EXTENT,
     render::{
         composite::{CompositeTask, create_composite_pipeline},
+        nrd::{DenoiseTask, NrdInstance, NrdInputs},
         region::{
             feed::RendererInput,
             residency::RegionStore,
             task::{
-                HullCrossedCounter, RegionRenderContext, RegionRenderTask, RenderMode,
+                HullCrossedCounter, NrdFrame, RegionRenderContext, RegionRenderTask, RenderMode,
                 capture_raygen, default_scene, production_raygen,
             },
         },
@@ -82,6 +83,13 @@ pub struct App {
     input: RendererInput,
     store: RegionStore,
 
+    nrd: Option<Arc<NrdInstance>>,
+    prev_view: glam::Mat4,
+    prev_proj: glam::Mat4,
+    camera_valid: bool,
+    nrd_frame_index: u32,
+    nrd_clear_pending: bool,
+
     rcx: Option<RenderContext>,
 }
 
@@ -92,6 +100,7 @@ pub struct RenderContext {
     recreate_swapchain: bool,
     task_graph: ExecutableTaskGraph<RegionRenderContext>,
     trace_pass_images: TracePassImages,
+    denoise_node_id: vulkano_taskgraph::graph::NodeId,
     region: RegionRenderContext,
 }
 
@@ -140,6 +149,13 @@ impl App {
 
             input,
             store,
+
+            nrd: None,
+            prev_view: glam::Mat4::IDENTITY,
+            prev_proj: glam::Mat4::IDENTITY,
+            camera_valid: false,
+            nrd_frame_index: 0,
+            nrd_clear_pending: true,
 
             rcx: None,
         }
@@ -217,7 +233,23 @@ impl App {
         rcx.region.camera = capture_raygen::Camera {
             proj_inverse: proj.inverse().to_cols_array_2d(),
             view_inverse: view.inverse().to_cols_array_2d(),
+            view_prev: self.prev_view.to_cols_array_2d(),
+            proj_prev: self.prev_proj.to_cols_array_2d(),
         };
+
+        rcx.region.nrd.view_to_clip = proj.to_cols_array();
+        rcx.region.nrd.world_to_view = view.to_cols_array();
+        if self.camera_valid {
+            rcx.region.nrd.view_to_clip_prev = self.prev_proj.to_cols_array();
+            rcx.region.nrd.world_to_view_prev = self.prev_view.to_cols_array();
+        } else {
+            rcx.region.nrd.view_to_clip_prev = rcx.region.nrd.view_to_clip;
+            rcx.region.nrd.world_to_view_prev = rcx.region.nrd.world_to_view;
+        }
+
+        self.prev_view = view;
+        self.prev_proj = proj;
+        self.camera_valid = true;
     }
 }
 
@@ -303,6 +335,23 @@ impl ApplicationHandler for App {
         let physical_trace_pass_images =
             create_trace_pass_images(&self.gpu.resources, extent[0], extent[1]);
         trace_pass_images.attach_physical(physical_trace_pass_images);
+
+        let nrd = match NrdInstance::new(&self.gpu, extent[0], extent[1]) {
+            Ok(instance) => {
+                println!(
+                    "denoiser: NVIDIA NRD v{}.{}.{} ReBLUR (REBLUR_DIFFUSE_SPECULAR)",
+                    crate::render::nrd::sys::NRD_VERSION_MAJOR,
+                    crate::render::nrd::sys::NRD_VERSION_MINOR,
+                    crate::render::nrd::sys::NRD_VERSION_BUILD,
+                );
+                Some(Arc::new(instance))
+            }
+            Err(error) => {
+                eprintln!("denoiser disabled: {error}");
+                None
+            }
+        };
+        self.nrd = nrd;
 
         let raygen = unsafe {
             production_raygen::load(&self.gpu.device)
@@ -444,14 +493,63 @@ impl ApplicationHandler for App {
                 AccessTypes::COMPUTE_SHADER_STORAGE_READ,
                 ImageLayoutType::General,
             )
+            .image_access(
+                trace_pass_images.denoised_diff.virtual_id,
+                AccessTypes::COMPUTE_SHADER_STORAGE_READ,
+                ImageLayoutType::General,
+            )
+            .image_access(
+                trace_pass_images.denoised_spec.virtual_id,
+                AccessTypes::COMPUTE_SHADER_STORAGE_READ,
+                ImageLayoutType::General,
+            )
+            .image_access(
+                trace_pass_images.viewz.virtual_id,
+                AccessTypes::COMPUTE_SHADER_STORAGE_READ,
+                ImageLayoutType::General,
+            )
             .build();
+
+        let mut denoise_node = task_graph.create_task_node(
+            "Denoise",
+            QueueFamilyType::Graphics,
+            DenoiseTask::new(),
+        );
+        for image in [
+            &trace_pass_images.diff_radiance,
+            &trace_pass_images.spec_radiance,
+            &trace_pass_images.normal_roughness,
+            &trace_pass_images.viewz,
+            &trace_pass_images.mv,
+        ] {
+            denoise_node.image_access(
+                image.virtual_id,
+                AccessTypes::COMPUTE_SHADER_SAMPLED_READ,
+                ImageLayoutType::General,
+            );
+        }
+        for image in [&trace_pass_images.denoised_diff, &trace_pass_images.denoised_spec] {
+            denoise_node.image_access(
+                image.virtual_id,
+                AccessTypes::COMPUTE_SHADER_STORAGE_WRITE,
+                ImageLayoutType::General,
+            );
+        }
+        if let Some(nrd) = &self.nrd {
+            denoise_node.buffer_access(
+                nrd.constants_buffer_id,
+                AccessTypes::COPY_TRANSFER_WRITE | AccessTypes::COMPUTE_SHADER_UNIFORM_READ,
+            );
+        }
+        let denoise_node_id = denoise_node.build();
 
         #[cfg(debug_assertions)]
         task_graph
-            .add_edge(heatmap_node_id, composite_node_id)
+            .add_edge(heatmap_node_id, denoise_node_id)
             .unwrap();
         #[cfg(not(debug_assertions))]
-        task_graph.add_edge(rt_node_id, composite_node_id).unwrap();
+        task_graph.add_edge(rt_node_id, denoise_node_id).unwrap();
+        task_graph.add_edge(denoise_node_id, composite_node_id).unwrap();
 
         let task_graph = unsafe {
             task_graph.compile(&CompileInfo {
@@ -488,10 +586,43 @@ impl ApplicationHandler for App {
                 .pipeline = Some(composite_pipeline);
         }
 
+        if let Some(nrd) = self.nrd.clone() {
+            let input_view = |image: &TracePassImage| {
+                ImageView::new_default(&self.gpu.resources.image(image.physical_id).image().clone())
+                    .unwrap()
+            };
+            let inputs = NrdInputs {
+                diff_radiance: input_view(&trace_pass_images.diff_radiance),
+                spec_radiance: input_view(&trace_pass_images.spec_radiance),
+                normal_roughness: input_view(&trace_pass_images.normal_roughness),
+                viewz: input_view(&trace_pass_images.viewz),
+                mv: input_view(&trace_pass_images.mv),
+                diff_out: input_view(&trace_pass_images.denoised_diff),
+                spec_out: input_view(&trace_pass_images.denoised_spec),
+            };
+
+            task_graph
+                .task_node_mut(denoise_node_id)
+                .unwrap()
+                .task_mut()
+                .downcast_mut::<DenoiseTask>()
+                .unwrap()
+                .instance = Some(nrd.clone());
+            task_graph
+                .task_node_mut(denoise_node_id)
+                .unwrap()
+                .task_mut()
+                .downcast_mut::<DenoiseTask>()
+                .unwrap()
+                .inputs = Some(inputs);
+        }
+
         let region = RegionRenderContext {
             camera: capture_raygen::Camera {
                 proj_inverse: [[0.0; 4]; 4],
                 view_inverse: [[0.0; 4]; 4],
+                view_prev: glam::Mat4::IDENTITY.to_cols_array_2d(),
+                proj_prev: glam::Mat4::IDENTITY.to_cols_array_2d(),
             },
             scene: default_scene(),
             swapchain_storage_image_ids,
@@ -502,6 +633,10 @@ impl ApplicationHandler for App {
             viewz_image_id: trace_pass_images.viewz.storage_id,
             mv_image_id: trace_pass_images.mv.storage_id,
             albedo_metal_image_id: trace_pass_images.albedo_metal.storage_id,
+            denoised_diff_image_id: trace_pass_images.denoised_diff.storage_id,
+            denoised_spec_image_id: trace_pass_images.denoised_spec.storage_id,
+            denoiser_enabled: self.nrd.is_some(),
+            nrd: NrdFrame::default(),
             ev: 0.0,
             mode: RenderMode::default(),
             frame_seed: 0,
@@ -514,6 +649,7 @@ impl ApplicationHandler for App {
             recreate_swapchain: false,
             task_graph,
             trace_pass_images,
+            denoise_node_id,
             region,
         });
     }
@@ -573,9 +709,19 @@ impl ApplicationHandler for App {
                             &t.viewz,
                             &t.mv,
                             &t.albedo_metal,
+                            &t.denoised_diff,
+                            &t.denoised_spec,
                         ] {
                             batch.destroy_image(image.physical_id);
                             batch.destroy_storage_image(image.storage_id);
+                        }
+
+                        if let Some(old) = &self.nrd {
+                            let (images, constants) = old.resource_ids();
+                            for id in images {
+                                batch.destroy_image(id);
+                            }
+                            batch.destroy_buffer(constants);
                         }
 
                         batch.enqueue();
@@ -598,6 +744,50 @@ impl ApplicationHandler for App {
                         rcx.region.mv_image_id = rcx.trace_pass_images.mv.storage_id;
                         rcx.region.albedo_metal_image_id =
                             rcx.trace_pass_images.albedo_metal.storage_id;
+                        rcx.region.denoised_diff_image_id =
+                            rcx.trace_pass_images.denoised_diff.storage_id;
+                        rcx.region.denoised_spec_image_id =
+                            rcx.trace_pass_images.denoised_spec.storage_id;
+
+                        self.nrd = match NrdInstance::new(&self.gpu, extent[0], extent[1]) {
+                            Ok(instance) => {
+                                self.nrd_clear_pending = true;
+                                Some(Arc::new(instance))
+                            }
+                            Err(error) => {
+                                eprintln!("denoiser disabled: {error}");
+                                None
+                            }
+                        };
+                        rcx.region.denoiser_enabled = self.nrd.is_some();
+
+                        if let Some(nrd) = &self.nrd {
+                            let input_view = |image: &TracePassImage| {
+                                ImageView::new_default(
+                                    &self.gpu.resources.image(image.physical_id).image().clone(),
+                                )
+                                .unwrap()
+                            };
+                            let inputs = NrdInputs {
+                                diff_radiance: input_view(&rcx.trace_pass_images.diff_radiance),
+                                spec_radiance: input_view(&rcx.trace_pass_images.spec_radiance),
+                                normal_roughness: input_view(&rcx.trace_pass_images.normal_roughness),
+                                viewz: input_view(&rcx.trace_pass_images.viewz),
+                                mv: input_view(&rcx.trace_pass_images.mv),
+                                diff_out: input_view(&rcx.trace_pass_images.denoised_diff),
+                                spec_out: input_view(&rcx.trace_pass_images.denoised_spec),
+                            };
+
+                            if let Some(task) = rcx
+                                .task_graph
+                                .task_node_mut(rcx.denoise_node_id)
+                                .ok()
+                                .and_then(|node| node.task_mut().downcast_mut::<DenoiseTask>())
+                            {
+                                task.instance = Some(nrd.clone());
+                                task.inputs = Some(inputs);
+                            }
+                        }
 
                         rcx.recreate_swapchain = false;
                     }
@@ -609,9 +799,23 @@ impl ApplicationHandler for App {
                     .wait_idle()
                     .unwrap();
 
-                self.store.apply(&self.gpu, &self.input);
+                let apply_report = self.store.apply(&self.gpu, &self.input);
+                let edited = !apply_report.dirty.is_empty();
+
+                let clear = self.nrd_clear_pending && self.nrd.is_some();
+                let reset = edited && !clear;
+
+                self.nrd_frame_index = if clear || reset {
+                    1
+                } else {
+                    self.nrd_frame_index.wrapping_add(1)
+                };
+                self.nrd_clear_pending = false;
 
                 let rcx = self.rcx.as_mut().unwrap();
+                rcx.region.nrd.clear = clear;
+                rcx.region.nrd.reset = reset;
+                rcx.region.nrd.frame_index = if clear || reset { 0 } else { self.nrd_frame_index };
 
                 let resource_map = resource_map!(
                     &rcx.task_graph,
@@ -730,6 +934,8 @@ pub(crate) struct TracePassImages {
     pub viewz: TracePassImage,
     pub mv: TracePassImage,
     pub albedo_metal: TracePassImage,
+    pub denoised_diff: TracePassImage,
+    pub denoised_spec: TracePassImage,
 }
 
 impl TracePassImages {
@@ -756,6 +962,8 @@ impl TracePassImages {
             viewz: image(add(Format::R32_SFLOAT)),
             mv: image(add(Format::R16G16B16A16_SFLOAT)),
             albedo_metal: image(add(Format::R8G8B8A8_UNORM)),
+            denoised_diff: image(add(Format::R16G16B16A16_SFLOAT)),
+            denoised_spec: image(add(Format::R16G16B16A16_SFLOAT)),
         }
     }
 
@@ -772,6 +980,10 @@ impl TracePassImages {
         self.mv.storage_id = physical.mv.storage_id;
         self.albedo_metal.physical_id = physical.albedo_metal.physical_id;
         self.albedo_metal.storage_id = physical.albedo_metal.storage_id;
+        self.denoised_diff.physical_id = physical.denoised_diff.physical_id;
+        self.denoised_diff.storage_id = physical.denoised_diff.storage_id;
+        self.denoised_spec.physical_id = physical.denoised_spec.physical_id;
+        self.denoised_spec.storage_id = physical.denoised_spec.storage_id;
     }
 }
 
@@ -788,7 +1000,32 @@ pub(crate) fn create_trace_pass_images(
                     image_type: ImageType::Dim2d,
                     format,
                     extent: [width, height, 1],
-                    usage: ImageUsage::STORAGE,
+                    usage: ImageUsage::STORAGE | ImageUsage::SAMPLED,
+                    ..Default::default()
+                },
+                &AllocationCreateInfo::default(),
+            )
+            .unwrap();
+        let image = resources.image(physical_id).image().clone();
+        let image_view = ImageView::new_default(&image).unwrap();
+        let storage_id = bcx
+            .global_set()
+            .add_storage_image(image_view, ImageLayout::General);
+        TracePassImage {
+            virtual_id: Id::INVALID,
+            physical_id,
+            storage_id,
+        }
+    };
+
+    let denoised = |format: Format| {
+        let physical_id = resources
+            .create_image(
+                &ImageCreateInfo {
+                    image_type: ImageType::Dim2d,
+                    format,
+                    extent: [width, height, 1],
+                    usage: ImageUsage::STORAGE | ImageUsage::SAMPLED,
                     ..Default::default()
                 },
                 &AllocationCreateInfo::default(),
@@ -813,5 +1050,7 @@ pub(crate) fn create_trace_pass_images(
         viewz: create(Format::R32_SFLOAT),
         mv: create(Format::R16G16B16A16_SFLOAT),
         albedo_metal: create(Format::R8G8B8A8_UNORM),
+        denoised_diff: denoised(Format::R16G16B16A16_SFLOAT),
+        denoised_spec: denoised(Format::R16G16B16A16_SFLOAT),
     }
 }

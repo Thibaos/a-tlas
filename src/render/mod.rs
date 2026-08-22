@@ -1,5 +1,6 @@
 pub mod accel;
 pub mod composite;
+pub mod nrd;
 #[cfg(debug_assertions)]
 pub mod debug;
 pub mod region;

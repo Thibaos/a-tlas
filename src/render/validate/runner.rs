@@ -35,7 +35,7 @@ use crate::{
             pack::pack_regions,
             rebuild::RebuildLogEntry,
             residency::RegionStore,
-            task::{RegionRenderContext, RegionRenderTask, RenderMode, default_scene},
+            task::{NrdFrame, RegionRenderContext, RegionRenderTask, RenderMode, default_scene},
         },
         swapchain::window_size_dependent_setup,
         validate::{
@@ -896,6 +896,10 @@ impl ValidateRunner {
             viewz_image_id: setup.path_images.viewz.storage_id,
             mv_image_id: setup.path_images.mv.storage_id,
             albedo_metal_image_id: setup.path_images.albedo.storage_id,
+            denoised_diff_image_id: StorageImageId::INVALID,
+            denoised_spec_image_id: StorageImageId::INVALID,
+            denoiser_enabled: false,
+            nrd: NrdFrame::default(),
             ev: 0.0,
             // The validator is Voxel-only: the capture raygen hardcodes
             // sbtRecordOffset = 0 and never toggles to Hull; the production
@@ -1415,6 +1419,8 @@ fn build_camera(
     let gpu_camera = crate::render::region::task::capture_raygen::Camera {
         proj_inverse: proj.inverse().to_cols_array_2d(),
         view_inverse: view.inverse().to_cols_array_2d(),
+        view_prev: view.to_cols_array_2d(),
+        proj_prev: proj.to_cols_array_2d(),
     };
 
     let inputs = CameraInputs::new(view, proj, width, height);

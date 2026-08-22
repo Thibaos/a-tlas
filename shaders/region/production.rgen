@@ -13,6 +13,7 @@
 #include "common.glsl"
 #include "../common/raygen_common.glsl"
 #include "../common/heat_ramp.glsl"
+#include "../common/nrd.glsl"
 #include "sky.glsl"
 
 layout(location = 0) rayPayloadEXT MainPassPayload payload;
@@ -35,6 +36,7 @@ const float ALBEDO_EPS = 1e-3; // de-modulation guard: diffuse ÷ max(albedo, AL
 const float BOUNCE_OFFSET = 1e-3; // bounce origin nudged along the normal (self-intersection)
 const float ALPHA_MIN = 1e-4; // GGX alpha floor (perfect-mirror singularity guard)
 const float COS_EPS = 1e-6; // cos-term guard in the G1/pdf denominators (grazing NaN guard)
+const float SKY_VIEWZ_NRD = 1.0e6; // beyond NRD's denoisingRange: sky pixels are excluded
 
 const float PI = 3.14159265358979;
 const float TWO_PI = 6.28318530717959;
@@ -233,6 +235,10 @@ void main() {
         vec3 throughput = vec3(1.0);
         bool specular_lobe = false;
 
+        // Hit distance of the first in-lobe segment after the primary hit
+        // (NRD's noisy-input contract); -1 until observed, meaning "no ray".
+        float bounce_t = -1.0;
+
         if (hit_t > 0.0) {
             radiance += primary_emission;
 
@@ -250,6 +256,9 @@ void main() {
 
             for (int depth = 0; depth <= int(MAX_BOUNCES); ++depth) {
                 if (depth > 0) {
+                    if (depth == 1 && bounce_t < 0.0) {
+                        bounce_t = payload.t;
+                    }
                     if (payload.t <= 0.0) {
                         vec3 t_axis;
                         vec3 b_axis;
@@ -394,25 +403,35 @@ void main() {
 
         vec3 diffuse_de = (hit_t > 0.0)
             ? radiance / max(primary_albedo, vec3(ALBEDO_EPS)) : radiance;
-        float hitdist = (hit_t > 0.0) ? hit_t : 0.0;
 
-        float viewz = (hit_t > 0.0) ? -hit_t * dot(direction, camera.view_inverse[2].xyz) : 0.0;
+        float viewz = (hit_t > 0.0)
+            ? abs(-hit_t * dot(direction, camera.view_inverse[2].xyz)) : SKY_VIEWZ_NRD;
 
-        vec2 normal_oct = vec2(0.5, 0.5);
+        vec3 mv = vec3(0.0);
         if (hit_t > 0.0) {
-            vec3 n = primary_normal;
-            vec2 enc = n.xy / (abs(n.x) + abs(n.y) + abs(n.z));
-            if (n.z < 0.0) {
-                enc = (1.0 - abs(enc.yx)) * sign(enc);
-            }
-            normal_oct = enc * 0.5 + 0.5;
+            vec4 world_prev = camera.view_prev * vec4(origin + direction * hit_t, 1.0);
+            vec4 clip_prev = camera.proj_prev * world_prev;
+            vec2 uv_prev = (clip_prev.xy / clip_prev.w) * 0.5 + 0.5;
+            vec2 uv_cur = (vec2(gl_LaunchIDEXT.xy) + 0.5) / vec2(gl_LaunchSizeEXT.xy);
+            float viewz_prev = abs(-world_prev.z);
+            mv = vec3((uv_prev - uv_cur) * vec2(gl_LaunchSizeEXT.xy), viewz_prev - viewz);
         }
 
-        imageStore(vko_image2D_rgba16f(diff_radiance_image_id), pixel, vec4(diffuse_de, hitdist));
-        imageStore(vko_image2D_rgba16f(spec_radiance_image_id), pixel, vec4(specular, hitdist));
-        imageStore(vko_image2D_rgba8(normal_roughness_image_id), pixel, vec4(normal_oct, 0.0, primary_roughness));
+        vec4 normal_roughness = (hit_t > 0.0)
+            ? nrd_pack_normal_and_roughness(primary_normal, primary_roughness) : vec4(0.0);
+
+        // The lobe that continued past the primary hit carries its segment
+        // length; the skipped lobe reports "no data" (NRD reconstructs it).
+        float norm_hit_dist = (hit_t > 0.0 && bounce_t >= 0.0)
+            ? nrd_get_norm_hit_dist(bounce_t, viewz, primary_roughness) : 0.0;
+        float diff_nhd = specular_lobe ? 0.0 : norm_hit_dist;
+        float spec_nhd = specular_lobe ? norm_hit_dist : 0.0;
+
+        imageStore(vko_image2D_rgba16f(diff_radiance_image_id), pixel, nrd_pack_radiance_and_norm_hit_dist(diffuse_de, diff_nhd));
+        imageStore(vko_image2D_rgba16f(spec_radiance_image_id), pixel, nrd_pack_radiance_and_norm_hit_dist(specular, spec_nhd));
+        imageStore(vko_image2D_rgba8(normal_roughness_image_id), pixel, normal_roughness);
         imageStore(vko_image2D_r32f(viewz_image_id), pixel, vec4(viewz));
-        imageStore(vko_image2D_rgba16f(mv_image_id), pixel, vec4(0.0));
+        imageStore(vko_image2D_rgba16f(mv_image_id), pixel, vec4(mv, 0.0));
         imageStore(vko_image2D_rgba8(albedo_metal_image_id), pixel, vec4(primary_albedo, primary_metallic));
 
         return;
