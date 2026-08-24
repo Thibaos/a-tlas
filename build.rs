@@ -9,9 +9,9 @@ const CMAKE_FLAGS: &[&str] = &[
     "-DNRD_EMBEDS_SPIRV_SHADERS=ON",
     "-DNRD_EMBEDS_DXIL_SHADERS=OFF",
     "-DNRD_EMBEDS_DXBC_SHADERS=OFF",
-    "-DNRD_NORMAL_ENCODING=0", // RGBA8_UNORM world-space normals
+    "-DNRD_NORMAL_ENCODING=0",    // RGBA8_UNORM world-space normals
     "-DNRD_ROUGHNESS_ENCODING=1", // linear roughness
-    "-DSHADERMAKE_FIND_DXC=OFF", // DXC comes from the Vulkan SDK
+    "-DSHADERMAKE_FIND_DXC=OFF",  // DXC comes from the Vulkan SDK
 ];
 
 fn nrd_lib() -> PathBuf {

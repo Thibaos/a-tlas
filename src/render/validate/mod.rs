@@ -14,6 +14,8 @@ use crate::{
 pub mod capture;
 pub mod cli;
 pub mod compare;
+#[cfg(test)]
+mod composite_color;
 pub mod path_compare;
 pub mod path_tracer;
 pub mod readback;

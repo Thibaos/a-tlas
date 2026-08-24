@@ -102,7 +102,7 @@ mod tests {
     }
 
     fn palette_red(i: usize) -> f32 {
-        f32::from(i as u8) / 255.0
+        crate::world::format::srgb_to_linear(f32::from(i as u8) / 255.0)
     }
 
     #[test]

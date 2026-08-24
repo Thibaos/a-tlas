@@ -35,7 +35,10 @@ use crate::{
             pack::pack_regions,
             rebuild::RebuildLogEntry,
             residency::RegionStore,
-            task::{NrdFrame, RegionRenderContext, RegionRenderTask, RenderMode, default_scene},
+            task::{
+                NrdFrame, RegionRenderContext, RegionRenderTask, RenderMode, default_ev,
+                default_scene,
+            },
         },
         swapchain::window_size_dependent_setup,
         validate::{
@@ -900,7 +903,7 @@ impl ValidateRunner {
             denoised_spec_image_id: StorageImageId::INVALID,
             denoiser_enabled: false,
             nrd: NrdFrame::default(),
-            ev: 0.0,
+            ev: default_ev(),
             // The validator is Voxel-only: the capture raygen hardcodes
             // sbtRecordOffset = 0 and never toggles to Hull; the production
             // raygen path-traces (mode 0) and writes the radiance pair.

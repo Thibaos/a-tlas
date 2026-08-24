@@ -50,7 +50,7 @@ use crate::{
             residency::RegionStore,
             task::{
                 HullCrossedCounter, NrdFrame, RegionRenderContext, RegionRenderTask, RenderMode,
-                capture_raygen, default_scene, production_raygen,
+                capture_raygen, default_ev, default_scene, production_raygen,
             },
         },
         swapchain::window_size_dependent_setup,
@@ -63,6 +63,30 @@ use crate::render::debug::{DrawHeatmapTask, create_heatmap_pipeline};
 
 #[cfg(debug_assertions)]
 const HEATMAP_MAX_PIXELS: u64 = 3840 * 2160;
+
+const DENOISE_ENABLED: bool = false;
+
+fn create_nrd(gpu: &GpuStack, extent: [u32; 3]) -> Option<Arc<NrdInstance>> {
+    if !DENOISE_ENABLED {
+        return None;
+    }
+
+    match NrdInstance::new(gpu, extent[0], extent[1]) {
+        Ok(instance) => {
+            println!(
+                "denoiser: NVIDIA NRD v{}.{}.{} ReBLUR (REBLUR_DIFFUSE_SPECULAR)",
+                crate::render::nrd::sys::NRD_VERSION_MAJOR,
+                crate::render::nrd::sys::NRD_VERSION_MINOR,
+                crate::render::nrd::sys::NRD_VERSION_BUILD,
+            );
+            Some(Arc::new(instance))
+        }
+        Err(error) => {
+            eprintln!("denoiser disabled: {error}");
+            None
+        }
+    }
+}
 
 pub struct App {
     close_requested: bool,
@@ -335,23 +359,7 @@ impl ApplicationHandler for App {
         let physical_trace_pass_images =
             create_trace_pass_images(&self.gpu.resources, extent[0], extent[1]);
         trace_pass_images.attach_physical(physical_trace_pass_images);
-
-        let nrd = match NrdInstance::new(&self.gpu, extent[0], extent[1]) {
-            Ok(instance) => {
-                println!(
-                    "denoiser: NVIDIA NRD v{}.{}.{} ReBLUR (REBLUR_DIFFUSE_SPECULAR)",
-                    crate::render::nrd::sys::NRD_VERSION_MAJOR,
-                    crate::render::nrd::sys::NRD_VERSION_MINOR,
-                    crate::render::nrd::sys::NRD_VERSION_BUILD,
-                );
-                Some(Arc::new(instance))
-            }
-            Err(error) => {
-                eprintln!("denoiser disabled: {error}");
-                None
-            }
-        };
-        self.nrd = nrd;
+        self.nrd = create_nrd(&self.gpu, extent);
 
         let raygen = unsafe {
             production_raygen::load(&self.gpu.device)
@@ -638,7 +646,7 @@ impl ApplicationHandler for App {
             denoised_spec_image_id: trace_pass_images.denoised_spec.storage_id,
             denoiser_enabled: self.nrd.is_some(),
             nrd: NrdFrame::default(),
-            ev: 0.0,
+            ev: default_ev(),
             mode: RenderMode::default(),
             frame_seed: 0,
         };
@@ -750,16 +758,11 @@ impl ApplicationHandler for App {
                         rcx.region.denoised_spec_image_id =
                             rcx.trace_pass_images.denoised_spec.storage_id;
 
-                        self.nrd = match NrdInstance::new(&self.gpu, extent[0], extent[1]) {
-                            Ok(instance) => {
-                                self.nrd_clear_pending = true;
-                                Some(Arc::new(instance))
-                            }
-                            Err(error) => {
-                                eprintln!("denoiser disabled: {error}");
-                                None
-                            }
-                        };
+                        self.nrd = create_nrd(&self.gpu, extent);
+
+                        if self.nrd.is_some() {
+                            self.nrd_clear_pending = true;
+                        }
                         rcx.region.denoiser_enabled = self.nrd.is_some();
 
                         if let Some(nrd) = &self.nrd {

@@ -285,18 +285,25 @@ impl RegionRenderTask {
     }
 }
 
+pub const E_SUN: f32 = 16.0;
+
+/// The Composite's default exposure: a full-white diffuse surface facing the
+/// Sun maps to ACES input 1.0, keeping lit albedo off the tonemap shoulder.
+pub fn default_ev() -> f32 {
+    (std::f32::consts::PI / E_SUN).log2()
+}
+
 pub fn default_scene() -> capture_raygen::Scene {
     let sun_dir = glam::Vec3::new(0.45, 0.8, 0.35).normalize();
     let knots = [0.15, 0.6, 1.2];
-    let e_sun: f32 = 16.0;
     let cos_disk = (0.5_f32 * std::f32::consts::PI / 180.0).cos();
     let omega = 2.0 * std::f32::consts::PI * (1.0 - cos_disk);
-    let l_disk = e_sun / omega;
+    let l_disk = E_SUN / omega;
 
     capture_raygen::Scene {
         sun_dir: [sun_dir.x, sun_dir.y, sun_dir.z, 0.0],
         sky_knots: [knots[0], knots[1], knots[2], 0.0],
-        sun_disk: [e_sun, cos_disk, l_disk, 0.0],
+        sun_disk: [E_SUN, cos_disk, l_disk, 0.0],
     }
 }
 

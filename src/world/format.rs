@@ -12,12 +12,20 @@ pub fn get_palette(data: &dot_vox::DotVoxData) -> [glam::Vec4; 256] {
 
     for (i, color) in data.palette.iter().enumerate() {
         array[i] = glam::Vec4::new(
-            f32::from(color.r) / 255.0,
-            f32::from(color.g) / 255.0,
-            f32::from(color.b) / 255.0,
+            srgb_to_linear(f32::from(color.r) / 255.0),
+            srgb_to_linear(f32::from(color.g) / 255.0),
+            srgb_to_linear(f32::from(color.b) / 255.0),
             f32::from(color.a) / 255.0,
         );
     }
 
     array
+}
+
+pub(super) fn srgb_to_linear(c: f32) -> f32 {
+    if c <= 0.04045 {
+        c / 12.92
+    } else {
+        ((c + 0.055) / 1.055).powf(2.4)
+    }
 }
