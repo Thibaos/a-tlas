@@ -12,7 +12,7 @@
 layout(location = 0) rayPayloadInEXT MainPassPayload incoming_payload;
 
 void main() {
-    incoming_payload.color = vec4(material_table.albedo_metallic[gl_HitKindEXT].rgb, 1.0);
+    incoming_payload.color = vec4(palette.colors[gl_HitKindEXT].rgb, 1.0);
     incoming_payload.t = gl_RayTmaxEXT;
     incoming_payload.hit_kind = gl_HitKindEXT;
 

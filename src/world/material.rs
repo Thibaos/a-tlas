@@ -28,10 +28,18 @@ impl Material {
 pub type MaterialTable = [Material; 256];
 
 pub fn get_material_table(data: &dot_vox::DotVoxData) -> MaterialTable {
+    use super::format::srgb_to_linear;
+
     let palette = get_palette(data);
+
     let mut table: MaterialTable = std::array::from_fn(|i| {
         let color = palette[i];
-        Material::default_for([color.x, color.y, color.z])
+
+        Material::default_for([
+            srgb_to_linear(color.x),
+            srgb_to_linear(color.y),
+            srgb_to_linear(color.z),
+        ])
     });
 
     for material in &data.materials {
@@ -114,8 +122,12 @@ mod tests {
         for i in 0..256 {
             assert_eq!(
                 table[i].albedo,
-                [palette[i].x, palette[i].y, palette[i].z],
-                "albedo must equal the palette at index {i}"
+                [
+                    crate::world::format::srgb_to_linear(palette[i].x),
+                    crate::world::format::srgb_to_linear(palette[i].y),
+                    crate::world::format::srgb_to_linear(palette[i].z),
+                ],
+                "albedo must be the palette decoded to linear at index {i}"
             );
             assert_eq!(table[i].metallic, 0.0);
             assert_eq!(table[i].roughness, DEFAULT_ROUGHNESS);
@@ -151,7 +163,8 @@ mod tests {
         let scale = EMISSION_SCALE;
         for (i, emit) in [(6usize, 1.0f32), (7, 0.25)] {
             for channel in 0..3 {
-                let expected = palette[i][channel] * emit * scale;
+                let expected =
+                    crate::world::format::srgb_to_linear(palette[i][channel]) * emit * scale;
                 assert!(
                     (table[i].emission[channel] - expected).abs() < 1e-6,
                     "emission[{i}][{channel}]: expected {expected}, got {}",

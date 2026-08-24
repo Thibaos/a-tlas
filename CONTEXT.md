@@ -13,10 +13,9 @@ _Avoid_: Scene, level, map
 
 **Palette**:
 A 256-entry RGBA8 color table from the .vox file mapping Material indices to
-**Palette**:
-A 256-entry RGBA8 color table from the .vox file mapping Material indices to
-albedo colors; the sRGB-encoded bytes decode to linear reflectance at load.
-GPU-side: a bindless vec4[256] storage buffer.
+display colors; kept sRGB-encoded end to end (the debug paint and the byte
+comparison depend on it). Materials decode it to linear reflectance for
+lighting. GPU-side: a bindless vec4[256] storage buffer.
 _Avoid_: Color table, LUT
 
 **Material**:

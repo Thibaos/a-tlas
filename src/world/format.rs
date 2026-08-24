@@ -12,9 +12,9 @@ pub fn get_palette(data: &dot_vox::DotVoxData) -> [glam::Vec4; 256] {
 
     for (i, color) in data.palette.iter().enumerate() {
         array[i] = glam::Vec4::new(
-            srgb_to_linear(f32::from(color.r) / 255.0),
-            srgb_to_linear(f32::from(color.g) / 255.0),
-            srgb_to_linear(f32::from(color.b) / 255.0),
+            f32::from(color.r) / 255.0,
+            f32::from(color.g) / 255.0,
+            f32::from(color.b) / 255.0,
             f32::from(color.a) / 255.0,
         );
     }

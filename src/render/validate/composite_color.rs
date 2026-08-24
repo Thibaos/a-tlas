@@ -1,7 +1,7 @@
-use super::path_tracer::{PathTracer, Scene, render_path};
+use super::path_tracer::{render_path, PathTracer, Scene};
 use super::reference::CameraInputs;
+use crate::world::material::{get_material_table, MaterialTable};
 use crate::world::World;
-use crate::world::material::{MaterialTable, get_material_table};
 use dot_vox::{Color, DotVoxData, Model, Size, Voxel};
 use glam::Vec3;
 
@@ -86,12 +86,17 @@ fn hsv_saturation(c: Vec3) -> f32 {
     let mx = c.max_element();
     let mn = c.min_element();
 
-    if mx <= 0.0 { 0.0 } else { (mx - mn) / mx }
+    if mx <= 0.0 {
+        0.0
+    } else {
+        (mx - mn) / mx
+    }
 }
 
 /// A lit saturated voxel must render near its authored saturation: the
-/// palette decodes sRGB to linear reflectance and the default Composite
-/// exposure keeps diffuse highlights off the ACES shoulder.
+/// Material table decodes the palette's sRGB bytes to linear reflectance and
+/// the default Composite exposure keeps diffuse highlights off the ACES
+/// shoulder.
 #[test]
 fn lit_voxel_keeps_authored_saturation() {
     let materials: MaterialTable = get_material_table(&data_with_palette());

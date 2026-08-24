@@ -232,7 +232,7 @@ pub fn test_suite() -> Vec<WorldSpec> {
         WorldSpec {
             name: "materials".to_string(),
             path: "assets/test/materials.vox".to_string(),
-            description: "a strip of voxels with known MATL-chunk Material properties (defaults, metallic, roughness, emissive). The Material table (ADR 0008): its albedo column must equal the palette for the byte-exact capture path, so this world doubles as the invariant guard (GPU reads the table, the CPU reference reads the palette. Any divergence fails the diff)".to_string(),
+            description: "a strip of voxels with known MATL-chunk Material properties (defaults, metallic, roughness, emissive). The Material table (ADR 0008): the debug paint reads the raw palette and lighting reads its linear decode, so this world exercises both palette consumers on every hit".to_string(),
             camera: Some(Camera {
                 eye: [-8.0, 2.0, 8.0],
                 target: [4.0, 0.0, 0.0],
@@ -554,9 +554,9 @@ fn residency_world() -> DotVoxData {
 /// - 7: `_type: _emit`, `_emit 0.25` (dim emissive).
 /// - 8: `_emit 0.5` with no `_type`, the properties drive, not the type.
 ///
-/// The albedo column of the resulting table equals the palette by
-/// construction, so this world passes through the byte-exact capture
-/// validator while exercising the GPU table read on every hit.
+/// The debug paint reads the raw palette and lighting reads the table's
+/// linear decode, so this world exercises both palette consumers on every
+/// hit under the byte-exact capture validator.
 fn materials_world() -> DotVoxData {
     let voxels: Vec<(IVec3, u8)> = (1u8..=8)
         .enumerate()

@@ -64,7 +64,7 @@ use crate::render::debug::{DrawHeatmapTask, create_heatmap_pipeline};
 #[cfg(debug_assertions)]
 const HEATMAP_MAX_PIXELS: u64 = 3840 * 2160;
 
-const DENOISE_ENABLED: bool = false;
+const DENOISE_ENABLED: bool = true;
 
 fn create_nrd(gpu: &GpuStack, extent: [u32; 3]) -> Option<Arc<NrdInstance>> {
     if !DENOISE_ENABLED {
