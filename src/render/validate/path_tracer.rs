@@ -52,6 +52,8 @@ const LOBE_P: f32 = 0.5;
 /// vs the Procedural sky at a hit.
 const SUN_PICK_P: f32 = 0.5;
 const SKY_PICK_P: f32 = 1.0 - SUN_PICK_P;
+/// Clear-day blue, unit Rec.709 luminance (sky.glsl's SKY_TINT).
+const SKY_TINT: Vec3 = Vec3::new(0.608, 1.013, 2.026);
 /// Russian-roulette survival floor.
 const RR_FLOOR: f32 = 0.05;
 /// De-modulation guard: diffuse ÷ max(albedo, ALBEDO_EPS).
@@ -1034,7 +1036,7 @@ impl PathTracer<'_> {
     /// The transport radiance at the direction dir: the gradient only (the
     /// disk is not part of the transport).
     fn sky_radiance(&self, dir: Vec3) -> Vec3 {
-        Vec3::splat(self.sky_gradient(dir.y))
+        SKY_TINT * Vec3::splat(self.sky_gradient(dir.y))
     }
 
     /// The camera's direct view of the sky: the gradient plus the Sun disk

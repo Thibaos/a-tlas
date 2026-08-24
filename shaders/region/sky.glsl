@@ -1,3 +1,7 @@
+// Clear-day blue normalized to unit Rec.709 luminance: the knots' scale
+// survives, only the hue shifts.
+const vec3 SKY_TINT = vec3(0.608, 1.013, 2.026);
+
 float sky_gradient(float mu) {
     vec4 k = scene.sky_knots;
     float t = clamp(mu, -1.0, 1.0);
@@ -52,7 +56,7 @@ float sky_sample_mu(float u) {
 // is not part of the transport. See the header comment). Used by the sky
 // miss shader (BSDF-miss samples) and the env NEE.
 vec3 sky_radiance(vec3 dir) {
-    return vec3(sky_gradient(dir.y));
+    return SKY_TINT * vec3(sky_gradient(dir.y));
 }
 
 // The camera's direct view of the sky: the gradient plus the Sun disk, a
