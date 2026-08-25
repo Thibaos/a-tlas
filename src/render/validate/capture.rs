@@ -1,8 +1,8 @@
 //! The capture task: copies the raw ray-pass output into host-readable
 //! buffers before anything else (the debug overlay, when present, runs after
-//! this node on the same image). This is the seam that satisfies "capture
-//! happens before the debug overlay draws." The validation graph orders
-//! Render → Capture and never lets an overlay touch the copied bytes.
+//! this node on the same image). The validation graph orders Render →
+//! Capture and never lets an overlay touch the copied bytes, so capture
+//! happens before any overlay draws.
 
 use vulkano::{
     buffer::Buffer,

@@ -6,12 +6,12 @@
 //! `1e-3 * max(t, 1)`. Two classes of sub-voxel boundary effects are
 //! excused: mismatches that sit on the reference image's edge-silhouette (a
 //! 1-pixel-dilated color discontinuity), and mismatches where both sides
-//! committed the same color within `SUB_VOXEL_T_VOXELS` of each other. A
-//! ray grazing a voxel corner (the reference walks in world space, the
-//! renderer's DDA in Region-local space, so a corner-touch tie-break can
-//! legitimately pick the neighbor voxel while the rendered pixel is
-//! identical). The run passes when there are no mismatches outside those
-//! clusters and the clusters total ≤ 1% of pixels.
+//! committed the same color within `SUB_VOXEL_T_VOXELS` of each other,
+//! because a corner-grazing ray flips the committed voxel: the reference
+//! walks in world space, the renderer's DDA in Region-local space, so the
+//! tie-break can legitimately pick the neighbor voxel while the rendered
+//! pixel is identical. The run passes when there are no mismatches outside
+//! those clusters and the clusters total ≤ 1% of pixels.
 
 /// `CompareConfig::default()`: 1e-3 relative t tolerance, 1% mismatch budget.
 #[derive(Clone, Copy, Debug)]

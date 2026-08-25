@@ -1,13 +1,13 @@
 //! The renderer input contract: the world-facing
 //! enqueue-only API plus the CPU-side change machinery.
 //!
-//! The world hands the renderer **Micro-chunk snapshots**: {global coords,
+//! The world hands the renderer Micro-chunk snapshots: {global coords,
 //! 64-byte Occupancy mask, u8 material indices}. Then create, update, and
 //! removal are the same message: an emptied Micro-chunk re-snapshots with a
 //! zero mask. Submitting never blocks on GPU: it inserts into a
 //! mutex-protected pending set (last-wins per Micro-chunk) and signals a
-//! worker thread via a condvar. The worker drains **everything pending per
-//! cycle**, applies the snapshots into per-Region CPU mirrors
+//! worker thread via a condvar. The worker drains everything pending per
+//! cycle, applies the snapshots into per-Region CPU mirrors
 //! ([`RegionMirror`]). It derives each Region id from the snapshot's global
 //! coords, never from the world, and publishes the dirty-Region set
 //! ([`RendererInput::take_dirty_regions`]). The renderer repacks mirrors

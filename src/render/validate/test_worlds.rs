@@ -2,7 +2,7 @@
 //!
 //! The validator renders each world through the real renderer and compares the
 //! captured frame against the CPU reference tracer. The worlds are chosen to
-//! exercise the renderer input contract's edge case:
+//! exercise the renderer input contract's edge cases:
 //! hull-empty space, Micro-chunk/Region boundaries,
 //! camera-in-voxel, far-plane miss, material index 0 (a real color via the
 //! 8-bit hitKind), and a solid volume with an interior camera (DDA interior
@@ -99,7 +99,7 @@ pub fn test_suite() -> Vec<WorldSpec> {
         // near-vertical axis. The former `TerminateOnFirstHit` traversal
         // committed the first hit found in BVH order, which is not the
         // closest: stacked Regions along the ray let a farther surface win
-        // stably (~2400 hard mismatches before the fix. See
+        // stably (~2400 hard mismatches before the fix; see
         // shaders/region/production.rgen). The reference tracer is
         // closest-hit, so this world guards the ray flags.
         WorldSpec {

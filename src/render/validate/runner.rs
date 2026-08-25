@@ -511,8 +511,8 @@ impl ValidateRunner {
                 );
 
                 // The rebuild logs/counters: a content edit rebuilds the
-                // Region's BLAS **in place** (device address stable → TLAS
-                // untouched. No `BuildTlas` entry); a residency transition
+                // Region's BLAS in place (device address stable → TLAS
+                // untouched, no `BuildTlas` entry); a residency transition
                 // rebuilds the TLAS, adding/removing exactly one instance
                 // (the scripts transition one Region per step).
                 let log = &report.rebuild_log;
@@ -668,8 +668,8 @@ impl ValidateRunner {
     }
 
     /// Builds the compiled task graph over the store's stable buffers.
-    /// The setup's swapchain/images/buffers are shared; the graph is built **once per
-    /// world** and every frame executes it. Residency rebuilds rewrite the
+    /// The setup's swapchain/images/buffers are shared; the graph is built once per
+    /// world and every frame executes it. Residency rebuilds rewrite the
     /// store's buffers in place, so the ids never move.
     fn build_validate_frame(
         &self,
@@ -1221,8 +1221,8 @@ impl ValidateRunner {
         // Per-seed evidence on the hard mismatches: a pixel whose means
         // disagree because a MINORITY of its identical-seed samples took
         // categorically different paths is two f32 engines parting ways on
-        // a marginal shadow/bounce decision deep in a bounce chain — chaos,
-        // not a shading bug. A systematic bug shifts values on every seed
+        // a marginal shadow/bounce decision deep in a bounce chain, chaos rather
+        // than a shading bug. A systematic bug shifts values on every seed
         // that exercises it and stays hard.
         let mut flipped: Vec<(u32, u32)> = Vec::new();
         let mut still_hard = Vec::new();
@@ -1399,9 +1399,6 @@ fn create_path_trace_images(
         albedo: create(Format::R8G8B8A8_UNORM),
     }
 }
-
-/// Creates a host-readable TRANSFER_DST buffer of `bytes` (the capture
-/// readbacks: the copy target the capture node writes, read back per frame).
 
 fn build_camera(
     world: &World,

@@ -1,28 +1,28 @@
 //! The CPU path-tracer mirror (ticket 07): the shading-half validator.
 //!
 //! The GPU's path tracing (shaders/region/production.rgen, ADR 0010/0011) is
-//! mirrored here **sample for sample**: the same stateless PCG-XSH-RR RNG
+//! mirrored here sample for sample: the same stateless PCG-XSH-RR RNG
 //! (same seed per pixel+frame, same draw sequence), the same cosine/GGX
 //! sampling, the same Sun/Procedural-sky pdfs and MIS weights, the same
 //! Russian-roulette decisions, and the same Material table (the CPU mirror,
 //! `get_material_table`, ADR 0008). A divergence between the mirror and the
 //! captured GPU frame points at the GPU shader, never at an assumption both
-//! sides share (the Reference tracer's ethos, ADR 0003).
+//! sides share (the Reference tracer's design rule, ADR 0003).
 //!
-//! Geometry is deliberately *not* mirrored: the mirror traces the world's own
+//! Geometry is deliberately not mirrored: the mirror traces the world's own
 //! sparse storage (like the Reference tracer) with an independent world-space
 //! DDA, sharing only the committed voxel's identity with the GPU path. The DDA
 //! mirrors the GPU's stepping arithmetic (division + accumulation, Amanatides-
 //! Woo with the x,y,z tie-break, the GPU's own preference order) so the
 //! committed t agrees at the f32 level; the entered face is the march's step
 //! axis where one was taken, and the closest-hit's hit-point reconstruction
-//! (mirrored, ADR 0009) where none was — a slab entry that floors into the
+//! (mirrored, ADR 0009) where none was. A slab entry that floors into the
 //! committed voxel has no step yet, and the old -dir fallback there reported
 //! the camera-facing normal the shader never produces on a real surface.
 //!
 //! The mirror produces the trace pass's output contract (ADR 0007): the
 //! de-modulated diffuse radiance and the raw specular radiance per sample.
-//! The validator compares the per-pixel **mean** over N samples (identical
+//! The validator compares the per-pixel mean over N samples (identical
 //! seeds, frame_seed 0..N-1) against the GPU's captured radiance pair, with
 //! a relative tolerance that absorbs the GPU's RGBA16F storage quantization
 //! and the residual f32 transcendental differences (cos/sin/pow may differ
@@ -80,7 +80,7 @@ const PHI32: u32 = 0x9E3779B1;
 // dense real asset (nuke.vox is 31M voxels) the camera-to-geometry air gap
 // is thousands of cells of HashMap lookups per ray. The macro grid adds one
 // occupancy bit per 32³-cell block over the occupied bbox: the march leaps
-// across blocks that contain **no voxels at all** and resumes the per-cell
+// across blocks that contain no voxels and resumes the per-cell
 // fine march inside the first non-empty block. Because a leap only crosses
 // empty blocks, the committed voxel and the entering face are unchanged; the
 // committed t accumulates one rounding per leap instead of per cell, a
@@ -211,8 +211,8 @@ fn rand_unit(seed: u32, index: u32) -> f32 {
 }
 
 // ---------------------------------------------------------------------------
-// The Scene constants (the packed Scene buffer's data, mirrored verbatim.
-// `default_scene()` in src/region/render.rs).
+// The Scene constants (the packed Scene buffer's data, mirrored verbatim
+// from `crate::render::region::task::default_scene`).
 // ---------------------------------------------------------------------------
 
 #[derive(Clone, Copy, Debug)]
@@ -254,7 +254,7 @@ pub struct PathHit {
     pub t: f32,
     /// The material index (the 8-bit hitKind).
     pub material: u32,
-    /// The geometric normal: the entered face's outward normal — the march's
+    /// The geometric normal: the entered face's outward normal, the march's
     /// step axis, or (on start-cell and t_min commits, where no step was
     /// taken) the mirrored closest-hit reconstruction of ADR 0009.
     pub normal: Vec3,
@@ -359,7 +359,7 @@ impl<'a> PathTracer<'a> {
         // The committed entry t; the face is the axis of the step that
         // entered the committed cell. `None` means no step was taken: the
         // start-cell commit (a slab entry that floors into the voxel) or the
-        // camera-in-voxel t_min commit — the reconstruction decides.
+        // camera-in-voxel t_min commit; the reconstruction decides.
         let mut t_entry = t0;
         let mut face: Option<usize> = None;
 
@@ -373,7 +373,7 @@ impl<'a> PathTracer<'a> {
                     // accumulated stepping carries one rounding per step,
                     // and the reported hit must sit on the face for the
                     // closest-hit reconstruction. The face itself is the
-                    // shader's reconstruction over the snapped t — never the
+                    // shader's reconstruction over the snapped t, never the
                     // step axis, whose canonical scan legitimately disagrees
                     // with the shader inside the epsilon window.
                     let t_report = match face {
@@ -420,7 +420,7 @@ impl<'a> PathTracer<'a> {
             // repeat until a non-empty macro cell (or the region exit). The
             // crossed axis advances one macro cell (its entered cell index is
             // derived exactly from the new macro cell, never from the drifted
-            // boundary estimate. A leap cannot overshoot); the other axes'
+            // boundary estimate; a leap cannot overshoot); the other axes'
             // cells come from the position at the exit, so mid-leap boundary
             // crossings on those axes cannot desync the cell index.
             let mut m_cell = self.macro_grid.clamp_macro_cell(cell);
@@ -815,9 +815,9 @@ impl<'a> PathTracer<'a> {
 /// The mirror's own step axis is never consulted: the canonical scan
 /// legitimately disagrees with it inside the epsilon window, and the mirror
 /// must reproduce the shader's choice. The pre-ticket fallback reported the
-/// camera-facing -dir on start-cell commits — a slab entry that floors into
+/// camera-facing -dir on start-cell commits (a slab entry that floors into
 /// the committed voxel, e.g. rays entering the occupied bbox through a voxel
-/// face — where the shader reconstructs the crossed boundary.
+/// face), where the shader reconstructs the crossed boundary.
 fn entered_face_normal(origin: Vec3, direction: Vec3, cell: IVec3, t: f32) -> Vec3 {
     // Object space == world space minus the region translation (the TLAS
     // instance's only transform), so the epsilon sees the same magnitudes.
@@ -1365,7 +1365,7 @@ mod tests {
     }
 
     /// Regression (ticket 07): a ray entering the occupied bbox through its
-    /// top face — the slab entry floors into the committed voxel itself, so
+    /// top face: the slab entry floors into the committed voxel itself, so
     /// the march commits the start cell with no step taken. The normal is
     /// still the crossed +y face (the closest-hit reconstruction), never the
     /// -dir camera fallback. The sweep straddles every ULP of entry height;

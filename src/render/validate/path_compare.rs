@@ -3,7 +3,7 @@
 //!
 //! The GPU runs N frames with frame_seed 0..N-1 (1 path per pixel per frame);
 //! the CPU mirror computes the same N samples from the same seeds. Each side
-//! produces a per-pixel **mean** of the de-modulated diffuse and raw specular
+//! produces a per-pixel mean of the de-modulated diffuse and raw specular
 //! radiance (the trace pass's output contract, ADR 0007). A pixel mismatches
 //! when any channel of either mean's relative error exceeds the tolerance.
 //!
@@ -22,18 +22,18 @@
 //!   legitimately huge radiance at one pixel; with identical seeds both sides
 //!   see the same firefly, so their means agree to quantization, and the
 //!   residual error at a bright pixel is bounded by the firefly/N. A mismatch
-//!   pixel whose mean radiance is bright on *both* sides is excused as a
+//!   pixel whose mean radiance is bright on both sides is excused as a
 //!   firefly outlier (real shading bugs manifest across a region, not as
 //!   isolated bright pixels).
 //! - **Face tie** (ticket 07): same committed cell and material with agreeing
 //!   t, but the two sides' hit-point reconstructions of the entered face land
-//!   on opposite sides of the epsilon window's edge — ADR 0009's canonical
+//!   on opposite sides of the epsilon window's edge, ADR 0009's canonical
 //!   corner tie, reached by independent f32 ray computations. The shading
 //!   differs through the face normal; reported per-run as its own count.
 //!
 //! The run passes when there are no hard mismatches and the excused
 //! mismatches total ≤ the budget fraction of pixels (matching the byte-exact
-//! compare's posture).
+//! compare's budget policy).
 
 use glam::Vec3;
 
@@ -97,7 +97,7 @@ fn channel_rel_err(g: Vec3, c: Vec3, abs_floor: f32) -> f32 {
 /// Per-seed divergence evidence for one mismatching pixel: how many of the N
 /// identical-seed samples disagree categorically (a different path outcome),
 /// how many sit in the moderate band between tolerance and categorical (a
-/// shifted value — the systematic-bug signature), and how many agree.
+/// shifted value, the systematic-bug signature), and how many agree.
 #[derive(Clone, Copy, Debug)]
 pub struct SeedEvidence {
     /// Seeds inside the tolerance.
@@ -110,7 +110,7 @@ pub struct SeedEvidence {
 
 impl SeedEvidence {
     /// The chaos signature: a minority of seeds (at most half, with at most
-    /// a quarter shifted moderately — the milder flip where a path grazed a
+    /// a quarter shifted moderately, the milder flip where a path grazed a
     /// decision) diverge while the rest agree. A systematic bug shifts every
     /// seed that exercises it and trips the shifted or majority bounds.
     pub fn is_minority_flip(&self, samples: u32) -> bool {
@@ -333,7 +333,7 @@ pub fn compare_path(
     // DDA can legitimately commit a different voxel at the outline (the
     // byte-exact compare's corner-touch class) and a NEE shadow test flips
     // on ULP-level t there, leaving knife-edge specular spikes the locally
-    // smooth CPU mean cannot reproduce. Radiance discontinuities are *not*
+    // smooth CPU mean cannot reproduce. Radiance discontinuities are not
     // silhouette signals: a high-frequency surface (the nuke cloud) is
     // radiance-rough everywhere, and the mask must not excuse its interior.
     let mut edge = vec![false; pixel_count];

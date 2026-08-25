@@ -1,8 +1,8 @@
-//! Raw FFI surface of the vendored NRD SDK (third_party/nrd, pinned v4.17.3),
+//! Raw FFI bindings for the vendored NRD SDK (third_party/nrd, pinned v4.17.3),
 //! hand-mirrored from Include/NRD.h + NRDDescs.h + NRDSettings.h. Struct
 //! layouts are asserted against the C++ ABI probed at vendoring time.
 
-// The full ABI surface is mirrored for documentation; not every constant is
+// The full ABI is mirrored for documentation; not every constant is
 // consumed by this integration.
 #![allow(dead_code)]
 

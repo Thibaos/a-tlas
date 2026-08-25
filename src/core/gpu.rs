@@ -1,8 +1,8 @@
 //! The shared GPU stack: instance, device, queues, allocator, and the
 //! taskgraph resources/flights. Constructed once per event loop by the app
 //! and by the validator. Both render through the same stack, so the
-//! device/queue/extension surface the validator validates is the app's.
-//! The foundation every GPU layer builds on (core: no dependencies).
+//! validator validates the app's own device, queues, and extensions.
+//! Every GPU layer builds on this module (core: no dependencies).
 
 use std::sync::Arc;
 
@@ -28,8 +28,7 @@ pub const MIN_SWAPCHAIN_IMAGES: u32 = MAX_FRAMES_IN_FLIGHT + 1;
 
 /// The shared GPU stack (instance, device, queues, allocator, taskgraph
 /// resources and flights). Constructed once per event loop by [`App::new`] and
-/// by the offline validator; the validator renders through the same stack so the
-/// device/queue/extension surface it validates is the app's.
+/// by the offline validator.
 pub struct GpuStack {
     pub instance: Arc<Instance>,
     pub device: Arc<Device>,

@@ -4,13 +4,13 @@
 //! origin-aligned, v1 extent ±2048/axis → 16^3 = 4096 Regions, exactly the
 //! 12-bit region-id budget. [`RegionStore`] is the GPU half of that lattice:
 //! per-Region voxel pools and trimmed-AABB BLASes exist across the lattice;
-//! a Region becomes **Resident** on its first non-empty Micro-chunk (a pool
+//! a Region becomes resident on its first non-empty Micro-chunk (a pool
 //! buffer + a procedural AABB BLAS, allocated from free lists) and leaves
 //! residency on its last (memory returned to the free lists; the CPU mirror
 //! is freed with the Region by the input contract). The TLAS holds one
-//! instance per Resident region. Lattice-static transform, custom index =
+//! instance per resident region. Lattice-static transform, custom index =
 //! region id, mask 0xFF, added on residency, removed on region-empty, and
-//! rebuilt **in place** so the bindless acceleration-structure id never
+//! rebuilt in place so the bindless acceleration-structure id never
 //! moves.
 
 use std::sync::Arc;
