@@ -16,6 +16,7 @@ layout(location = 0) rayPayloadEXT MainPassPayload payload;
 
 const uint MODE_VOXEL = 0u;
 const uint MODE_HULL = 1u;
+const uint MODE_VALIDATION = 2u;
 const uint MODE_NORMAL = 4u;
 
 const uint MAX_BOUNCES = 4u;
@@ -185,7 +186,7 @@ void main() {
 
     traceRayEXT(vko_accelerationStructureEXT(acceleration_structure_id), ray_flags, 0xFFu, sbt_offset, 0u, 0u, origin, RAY_T_MIN, direction, RAY_T_MAX, 0);
 
-    if (mode == MODE_VOXEL) {
+    if (mode == MODE_VOXEL || mode == MODE_VALIDATION) {
         ivec2 pixel = ivec2(gl_LaunchIDEXT.xy);
         float hit_t = payload.t;
         vec3 primary_albedo = vec3(0.0);

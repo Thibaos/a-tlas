@@ -34,6 +34,7 @@ pub mod resource_type {
     pub const IN_SPEC_RADIANCE_HITDIST: u32 = 7;
     pub const OUT_DIFF_RADIANCE_HITDIST: u32 = 18;
     pub const OUT_SPEC_RADIANCE_HITDIST: u32 = 19;
+    pub const OUT_VALIDATION: u32 = 29;
     pub const TRANSIENT_POOL: u32 = 30;
     pub const PERMANENT_POOL: u32 = 31;
 }

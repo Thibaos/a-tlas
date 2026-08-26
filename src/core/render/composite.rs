@@ -67,7 +67,7 @@ impl Task for CompositeTask {
         tcx: &mut TaskContext<'_>,
         rcx: &Self::World,
     ) -> TaskResult {
-        if rcx.mode != RenderMode::Voxel {
+        if rcx.mode != RenderMode::Voxel && !rcx.mode.is_nrd_validation() {
             return Ok(());
         }
 
@@ -90,6 +90,7 @@ impl Task for CompositeTask {
                     spec_denoised_id: rcx.denoised_spec_image_id,
                     viewz_id: rcx.viewz_image_id,
                     albedo_metal_id: rcx.albedo_metal_image_id,
+                    validation_id: rcx.validation_image_id,
                     ev: rcx.ev,
                     mode: rcx.mode as u32,
                     denoiser: u32::from(rcx.denoiser_enabled),

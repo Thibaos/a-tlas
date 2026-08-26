@@ -52,6 +52,7 @@ pub struct NrdInputs {
     pub mv: Arc<ImageView>,
     pub diff_out: Arc<ImageView>,
     pub spec_out: Arc<ImageView>,
+    pub validation: Arc<ImageView>,
 }
 
 struct PipelineData {
@@ -511,6 +512,7 @@ impl NrdInstance {
             sys::resource_type::IN_MV => Ok(inputs.mv.clone()),
             sys::resource_type::OUT_DIFF_RADIANCE_HITDIST => Ok(inputs.diff_out.clone()),
             sys::resource_type::OUT_SPEC_RADIANCE_HITDIST => Ok(inputs.spec_out.clone()),
+            sys::resource_type::OUT_VALIDATION => Ok(inputs.validation.clone()),
             sys::resource_type::TRANSIENT_POOL | sys::resource_type::PERMANENT_POOL => self
                 .pool_view(
                     resource.kind == sys::resource_type::PERMANENT_POOL,
@@ -703,9 +705,11 @@ impl Task for DenoiseTask {
             return Ok(());
         };
 
-        if rcx.mode != RenderMode::Voxel {
+        if rcx.mode != RenderMode::Voxel && !rcx.mode.is_nrd_validation() {
             return Ok(());
         }
+
+        let validation = rcx.mode.is_nrd_validation();
 
         let extent = instance.extent();
         let mut settings = sys::CommonSettings::new([
@@ -724,6 +728,8 @@ impl Task for DenoiseTask {
         } else {
             sys::accumulation_mode::CONTINUE
         };
+
+        settings.enable_validation = validation;
 
         if let Err(error) = unsafe { instance.record(cbf, &settings, inputs) } {
             eprintln!("{error}");

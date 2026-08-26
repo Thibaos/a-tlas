@@ -58,7 +58,7 @@ use crate::{
     },
 };
 
-const DENOISE_ENABLED: bool = false;
+const DENOISE_ENABLED: bool = true;
 
 fn create_nrd(gpu: &GpuDesc, extent: [u32; 3]) -> Option<Arc<NrdInstance>> {
     if !DENOISE_ENABLED {
@@ -206,7 +206,15 @@ impl App {
             rcx.region.mode = match rcx.region.mode {
                 RenderMode::Voxel => RenderMode::Hull,
                 RenderMode::Hull => RenderMode::Normal,
-                RenderMode::Normal => RenderMode::Voxel,
+                RenderMode::Normal => {
+                    if self.nrd.is_some() {
+                        RenderMode::NrdValidation
+                    } else {
+                        eprintln!("render mode: NRD validation unavailable, denoiser inactive");
+                        RenderMode::Voxel
+                    }
+                }
+                RenderMode::NrdValidation => RenderMode::Voxel,
             };
         }
     }
@@ -431,6 +439,11 @@ impl ApplicationHandler for App {
                 ImageLayoutType::General,
             )
             .image_access(
+                trace_pass_images.validation.virtual_id,
+                AccessTypes::COMPUTE_SHADER_STORAGE_READ,
+                ImageLayoutType::General,
+            )
+            .image_access(
                 trace_pass_images.viewz.virtual_id,
                 AccessTypes::COMPUTE_SHADER_STORAGE_READ,
                 ImageLayoutType::General,
@@ -455,6 +468,7 @@ impl ApplicationHandler for App {
         for image in [
             &trace_pass_images.denoised_diff,
             &trace_pass_images.denoised_spec,
+            &trace_pass_images.validation,
         ] {
             denoise_node.image_access(
                 image.virtual_id,
@@ -510,6 +524,7 @@ impl ApplicationHandler for App {
                 mv: input_view(&trace_pass_images.mv),
                 diff_out: input_view(&trace_pass_images.denoised_diff),
                 spec_out: input_view(&trace_pass_images.denoised_spec),
+                validation: input_view(&trace_pass_images.validation),
             };
 
             task_graph
@@ -546,6 +561,7 @@ impl ApplicationHandler for App {
             albedo_metal_image_id: trace_pass_images.albedo_metal.storage_id,
             denoised_diff_image_id: trace_pass_images.denoised_diff.storage_id,
             denoised_spec_image_id: trace_pass_images.denoised_spec.storage_id,
+            validation_image_id: trace_pass_images.validation.storage_id,
             denoiser_enabled: self.nrd.is_some(),
             nrd: NrdFrame::default(),
             ev: default_ev(),
@@ -622,6 +638,7 @@ impl ApplicationHandler for App {
                             &t.albedo_metal,
                             &t.denoised_diff,
                             &t.denoised_spec,
+                            &t.validation,
                         ] {
                             batch.destroy_image(image.physical_id);
                             batch.destroy_storage_image(image.storage_id);
@@ -659,6 +676,8 @@ impl ApplicationHandler for App {
                             rcx.trace_pass_images.denoised_diff.storage_id;
                         rcx.region.denoised_spec_image_id =
                             rcx.trace_pass_images.denoised_spec.storage_id;
+                        rcx.region.validation_image_id =
+                            rcx.trace_pass_images.validation.storage_id;
 
                         self.nrd = create_nrd(&self.gpu, extent);
 
@@ -684,6 +703,7 @@ impl ApplicationHandler for App {
                                 mv: input_view(&rcx.trace_pass_images.mv),
                                 diff_out: input_view(&rcx.trace_pass_images.denoised_diff),
                                 spec_out: input_view(&rcx.trace_pass_images.denoised_spec),
+                                validation: input_view(&rcx.trace_pass_images.validation),
                             };
 
                             if let Some(task) = rcx
@@ -748,6 +768,8 @@ impl ApplicationHandler for App {
                         rcx.trace_pass_images.denoised_diff.physical_id,
                     rcx.trace_pass_images.denoised_spec.virtual_id =>
                         rcx.trace_pass_images.denoised_spec.physical_id,
+                    rcx.trace_pass_images.validation.virtual_id =>
+                        rcx.trace_pass_images.validation.physical_id,
                 )
                 .unwrap();
 
@@ -852,6 +874,7 @@ pub(crate) struct TracePassImages {
     pub albedo_metal: TracePassImage,
     pub denoised_diff: TracePassImage,
     pub denoised_spec: TracePassImage,
+    pub validation: TracePassImage,
 }
 
 impl TracePassImages {
@@ -880,6 +903,7 @@ impl TracePassImages {
             albedo_metal: image(add(Format::R8G8B8A8_UNORM)),
             denoised_diff: image(add(Format::R16G16B16A16_SFLOAT)),
             denoised_spec: image(add(Format::R16G16B16A16_SFLOAT)),
+            validation: image(add(Format::R8G8B8A8_UNORM)),
         }
     }
 
@@ -900,6 +924,8 @@ impl TracePassImages {
         self.denoised_diff.storage_id = physical.denoised_diff.storage_id;
         self.denoised_spec.physical_id = physical.denoised_spec.physical_id;
         self.denoised_spec.storage_id = physical.denoised_spec.storage_id;
+        self.validation.physical_id = physical.validation.physical_id;
+        self.validation.storage_id = physical.validation.storage_id;
     }
 }
 
@@ -968,5 +994,6 @@ pub(crate) fn create_trace_pass_images(
         albedo_metal: create(Format::R8G8B8A8_UNORM),
         denoised_diff: denoised(Format::R16G16B16A16_SFLOAT),
         denoised_spec: denoised(Format::R16G16B16A16_SFLOAT),
+        validation: denoised(Format::R8G8B8A8_UNORM),
     }
 }

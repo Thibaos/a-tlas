@@ -117,7 +117,19 @@ pub enum RenderMode {
     #[cfg(debug_assertions)]
     Hull = 1,
     #[cfg(debug_assertions)]
+    NrdValidation = 2,
+    #[cfg(debug_assertions)]
     Normal = 4,
+}
+
+impl RenderMode {
+    pub fn is_nrd_validation(self) -> bool {
+        match self {
+            #[cfg(debug_assertions)]
+            RenderMode::NrdValidation => true,
+            _ => false,
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -161,6 +173,7 @@ pub struct RegionRenderContext {
     pub mv_image_id: StorageImageId,
     pub denoised_diff_image_id: StorageImageId,
     pub denoised_spec_image_id: StorageImageId,
+    pub validation_image_id: StorageImageId,
     pub denoiser_enabled: bool,
     pub nrd: NrdFrame,
     pub albedo_metal_image_id: StorageImageId,

@@ -16,12 +16,16 @@ layout(push_constant) uniform PushConstants {
     StorageImageId spec_denoised_id;
     StorageImageId viewz_id;
     StorageImageId albedo_metal_id;
+    StorageImageId validation_id;
     float ev;
     uint mode;
     uint denoiser;
     uint width;
     uint height;
 };
+
+const uint MODE_VOXEL = 0u;
+const uint MODE_VALIDATION = 2u;
 
 const float ALBEDO_EPS = 1e-3;
 const float SKY_VIEWZ = 1.0e5;
@@ -36,13 +40,21 @@ vec3 aces_fit(vec3 x) {
 }
 
 void main() {
-    if (mode != 0u) {
-        return;
-    }
     ivec2 p = ivec2(gl_GlobalInvocationID.xy);
     if (uint(p.x) >= width || uint(p.y) >= height) {
         return;
     }
+
+    if (mode == MODE_VALIDATION) {
+        vec4 overlay = imageLoad(vko_image2D_rgba8(validation_id), p);
+        imageStore(vko_image2D_rgba8(image_id), p, vec4(overlay.rgb, 1.0));
+        return;
+    }
+
+    if (mode != MODE_VOXEL) {
+        return;
+    }
+
 
     vec4 diff_raw = imageLoad(vko_image2D_rgba16f(radiance_id), p);
     vec3 albedo = imageLoad(vko_image2D_rgba8(albedo_metal_id), p).rgb;
@@ -59,8 +71,7 @@ void main() {
         vec3 diffuse = nrd_unpack_radiance(imageLoad(vko_image2D_rgba16f(diff_denoised_id), p));
         vec3 specular = nrd_unpack_radiance(imageLoad(vko_image2D_rgba16f(spec_denoised_id), p));
         radiance = is_sky
-            ? nrd_unpack_radiance(diff_raw)
-            : diffuse * max(albedo, vec3(ALBEDO_EPS)) + specular;
+            ? nrd_unpack_radiance(diff_raw) : diffuse * max(albedo, vec3(ALBEDO_EPS)) + specular;
     }
 
     vec3 color = aces_fit(radiance * exp2(ev));

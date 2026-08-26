@@ -1,8 +1,3 @@
-// REBLUR front-end contract of the vendored NRD SDK (third_party/nrd,
-// v4.17.3), built with NRD_NORMAL_ENCODING = RGBA8_UNORM (0) and
-// NRD_ROUGHNESS_ENCODING = LINEAR (1). Mirrors NRD.hlsli; keep in sync when
-// bumping the SDK pin.
-
 const float NRD_FP16_MAX = 65504.0;
 const float NRD_EPS = 1e-6;
 
@@ -15,7 +10,7 @@ float nrd_spec_magic_curve(float roughness) {
 float nrd_get_norm_hit_dist(float hit_dist, float view_z, float roughness) {
     float smc = nrd_spec_magic_curve(roughness);
     float f = (NRD_HIT_DISTANCE_PARAMETERS.x + abs(view_z) * NRD_HIT_DISTANCE_PARAMETERS.y)
-        * mix(NRD_HIT_DISTANCE_PARAMETERS.z, 1.0, smc);
+            * mix(NRD_HIT_DISTANCE_PARAMETERS.z, 1.0, smc);
     return max(clamp(hit_dist / f, 0.0, 1.0), NRD_EPS);
 }
 
