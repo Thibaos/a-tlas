@@ -17,17 +17,16 @@ use std::collections::HashMap;
 use glam::IVec3;
 use vulkano::acceleration_structure::AabbPositions;
 
-use crate::core::grid::{MICRO_CHUNK_LENGTH, REGION_LENGTH, region_id, region_index_of};
-use crate::world::snapshot::MicroChunkSnapshot;
+use crate::core::world::{
+    grid::{MICRO_CHUNK_LENGTH, REGION_LENGTH, region_id, region_index_of},
+    snapshot::MicroChunkSnapshot,
+};
 
 pub const MICRO_CHUNKS_PER_REGION: usize = 32 * 32 * 32;
 pub const OFFSET_TABLE_SIZE: usize = MICRO_CHUNKS_PER_REGION * 4;
 pub const OFFSET_SENTINEL: u32 = u32::MAX;
 pub const REGION_COUNT: usize = 4096;
 
-/// The CPU-side mirror of one Region: the packed pool (offset table +
-/// blocks) and the trimmed hull AABBs, everything in Region-local
-/// coordinates. This is the source of truth for the wholesale pool rebuild.
 pub struct RegionData {
     pub region_index: IVec3,
     #[cfg_attr(not(test), allow(dead_code))]
@@ -150,12 +149,9 @@ fn occupied_cell_bounds(mask: &[u8; 64]) -> (IVec3, IVec3) {
 
 #[cfg(test)]
 mod tests {
+    use crate::core::world::{World, snapshot::emit_snapshots};
+
     use super::*;
-    use crate::{
-        core::grid::{MICRO_CHUNK_LENGTH, region_index_of},
-        world::World,
-        world::snapshot::emit_snapshots,
-    };
 
     #[test]
     fn packs_across_region_boundary() {

@@ -2,8 +2,10 @@ use std::collections::HashMap;
 
 use glam::IVec3;
 
-use crate::core::grid::{MICRO_CHUNK_LENGTH, grid_origin};
-use crate::world::World;
+use crate::core::world::{
+    World,
+    grid::{MICRO_CHUNK_LENGTH, grid_origin},
+};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MicroChunkSnapshot {
@@ -69,7 +71,6 @@ pub fn emit_snapshots(world: &World) -> Vec<MicroChunkSnapshot> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::world::World;
 
     #[test]
     fn mask_bit_convention() {

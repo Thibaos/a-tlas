@@ -3,8 +3,7 @@ use std::{collections::HashMap, fmt::Display};
 use dot_vox::DotVoxData;
 use glam::{IVec3, UVec3, Vec4, Vec4Swizzles};
 
-use crate::core::grid;
-use crate::world::scene_graph::SceneGraphTraverser;
+use crate::core::world::scene_graph::SceneGraphTraverser;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum BoundsPolicy {
@@ -13,6 +12,7 @@ pub enum BoundsPolicy {
 }
 
 pub mod format;
+pub mod grid;
 pub mod material;
 pub mod scene_graph;
 pub mod snapshot;

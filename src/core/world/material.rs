@@ -1,10 +1,7 @@
-//! Materials: the per-palette-index surface properties and the CPU Material
-//! table (ADR 0008). Loaded from the .vox MATL chunk (see `format`).
-
 use super::format::get_palette;
 
-pub const DEFAULT_ROUGHNESS: f32 = 0.3;
-pub const EMISSION_SCALE: f32 = 10.0;
+pub const DEFAULT_ROUGHNESS: f32 = 1.0;
+pub const EMISSION_SCALE: f32 = 1000.0;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Material {
@@ -44,16 +41,21 @@ pub fn get_material_table(data: &dot_vox::DotVoxData) -> MaterialTable {
 
     for material in &data.materials {
         let id = material.id as usize;
+
         if id >= 256 {
             continue;
         }
+
         let entry = &mut table[id];
+
         if let Some(metallic) = material.metalness() {
             entry.metallic = metallic.clamp(0.0, 1.0);
         }
+
         if let Some(roughness) = material.roughness() {
             entry.roughness = roughness.clamp(0.0, 1.0);
         }
+
         if let Some(emit) = material.emission() {
             let emit = emit.clamp(0.0, 1.0);
             entry.emission = [
@@ -69,6 +71,8 @@ pub fn get_material_table(data: &dot_vox::DotVoxData) -> MaterialTable {
 
 #[cfg(test)]
 mod tests {
+    use crate::core::world::format::srgb_to_linear;
+
     use super::*;
     use dot_vox::{Color, DotVoxData, Material as VoxMaterial, Model, Size, Voxel};
 
@@ -110,7 +114,7 @@ mod tests {
     }
 
     fn palette_red(i: usize) -> f32 {
-        crate::world::format::srgb_to_linear(f32::from(i as u8) / 255.0)
+        srgb_to_linear(f32::from(i as u8) / 255.0)
     }
 
     #[test]
@@ -123,9 +127,9 @@ mod tests {
             assert_eq!(
                 table[i].albedo,
                 [
-                    crate::world::format::srgb_to_linear(palette[i].x),
-                    crate::world::format::srgb_to_linear(palette[i].y),
-                    crate::world::format::srgb_to_linear(palette[i].z),
+                    srgb_to_linear(palette[i].x),
+                    srgb_to_linear(palette[i].y),
+                    srgb_to_linear(palette[i].z),
                 ],
                 "albedo must be the palette decoded to linear at index {i}"
             );
@@ -163,8 +167,7 @@ mod tests {
         let scale = EMISSION_SCALE;
         for (i, emit) in [(6usize, 1.0f32), (7, 0.25)] {
             for channel in 0..3 {
-                let expected =
-                    crate::world::format::srgb_to_linear(palette[i][channel]) * emit * scale;
+                let expected = srgb_to_linear(palette[i][channel]) * emit * scale;
                 assert!(
                     (table[i].emission[channel] - expected).abs() < 1e-6,
                     "emission[{i}][{channel}]: expected {expected}, got {}",

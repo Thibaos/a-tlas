@@ -1,9 +1,3 @@
-//! NRD ReBLUR denoiser: instance lifecycle (pools, pipelines, descriptor
-//! machinery) and the per-frame recording of the dispatch list the library
-//! returns. The library makes no GPU calls itself; this module executes its
-//! compute dispatches on the graphics flight between the trace pass and the
-//! composite.
-
 pub mod sys;
 
 use core::ffi::CStr;
@@ -40,10 +34,8 @@ use vulkano_taskgraph::{
     command_buffer::{DependencyInfo, ImageMemoryBarrier, MemoryBarrier, RecordingCommandBuffer},
 };
 
-use crate::{
-    core::gpu::GpuStack,
-    render::region::task::{RegionRenderContext, RenderMode},
-};
+use crate::core::render::gpu::GpuDesc;
+use crate::core::render::region::task::{RegionRenderContext, RenderMode};
 
 const CONSTANTS_SLOTS: u64 = 64;
 
@@ -80,8 +72,6 @@ pub struct NrdInstance {
 
     pipelines: Vec<PipelineData>,
     set_allocator: Arc<StandardDescriptorSetAllocator>,
-    // Immutable samplers are cloned into the constants set layouts; the Vec
-    // only documents ownership.
     #[allow(dead_code)]
     samplers: Vec<Arc<Sampler>>,
 
@@ -128,7 +118,7 @@ fn map_format(format: u32) -> Result<vulkano::format::Format, String> {
 }
 
 impl NrdInstance {
-    pub fn new(gpu: &GpuStack, width: u32, height: u32) -> Result<Self, String> {
+    pub fn new(gpu: &GpuDesc, width: u32, height: u32) -> Result<Self, String> {
         let library = unsafe { sys::GetLibraryDesc().as_ref() }.ok_or("NRD: no library desc")?;
         let offsets = library.spirv_binding_offsets;
 
@@ -554,7 +544,7 @@ impl NrdInstance {
 unsafe impl Sync for NrdInstance {}
 
 fn build_pipeline(
-    gpu: &GpuStack,
+    gpu: &GpuDesc,
     samplers: &[Arc<Sampler>],
     offsets: &sys::SpirvBindingOffsets,
     pipeline_desc: &sys::PipelineDesc,

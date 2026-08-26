@@ -29,11 +29,10 @@ use vulkano_taskgraph::{
     resource::HostAccessType,
 };
 
-use crate::{
-    core::gpu::GpuStack,
-    core::grid::{REGION_LENGTH, region_id},
+use crate::core::{
     render::{
         accel,
+        gpu::GpuDesc,
         region::{
             alloc::{
                 AllocStats, BlasAllocation, FreeLists, FreedBlas, FreedPool, PendingFrees,
@@ -45,10 +44,14 @@ use crate::{
                 BlasBuild, RebuildGraph, RebuildLogEntry, RebuildPlan, RegionUpload, TlasBuild,
                 allocate_scratch, blas_build_sizes, tlas_build_sizes,
             },
-            task::capture_raygen,
+            task::{capture_raygen, default_scene},
         },
     },
-    world::{format::get_palette, material::get_material_table},
+    world::{
+        format::get_palette,
+        grid::{REGION_LENGTH, region_id},
+        material::get_material_table,
+    },
 };
 
 struct ResidentRegion {
@@ -99,7 +102,7 @@ pub struct RegionStore {
 }
 
 impl RegionStore {
-    pub fn new(gpu: &GpuStack, voxel_data: &DotVoxData, input: &RendererInput) -> Self {
+    pub fn new(gpu: &GpuDesc, voxel_data: &DotVoxData, input: &RendererInput) -> Self {
         input.wait_until_idle();
         let initial = input.packed_regions();
 
@@ -256,7 +259,7 @@ impl RegionStore {
                         rough_emit,
                     };
                     *tcx.write_buffer::<capture_raygen::Scene>(scene_buffer_id, ..) =
-                        crate::render::region::task::default_scene();
+                        default_scene();
                     Ok(())
                 },
                 [
@@ -403,7 +406,7 @@ impl RegionStore {
         store
     }
 
-    fn write_aabb_table(&self, gpu: &GpuStack, aabb_table_buffer_id: Id<Buffer>) {
+    fn write_aabb_table(&self, gpu: &GpuDesc, aabb_table_buffer_id: Id<Buffer>) {
         let mut bdas = [0u64; REGION_COUNT];
 
         for (id, region) in self.regions.iter().enumerate() {
@@ -439,7 +442,7 @@ impl RegionStore {
             .unwrap();
     }
 
-    pub fn apply(&mut self, gpu: &GpuStack, input: &RendererInput) -> ApplyReport {
+    pub fn apply(&mut self, gpu: &GpuDesc, input: &RendererInput) -> ApplyReport {
         let dirty = input.take_dirty_regions();
         if dirty.is_empty() {
             return ApplyReport::default();
@@ -476,7 +479,7 @@ impl RegionStore {
         self.tlas.clone()
     }
 
-    fn rebuild(&mut self, gpu: &GpuStack, packs: Vec<(IVec3, Option<RegionData>)>) -> ApplyReport {
+    fn rebuild(&mut self, gpu: &GpuDesc, packs: Vec<(IVec3, Option<RegionData>)>) -> ApplyReport {
         let mut report = ApplyReport {
             instance_count_before: self.resident_ids.len(),
             ..Default::default()
@@ -775,7 +778,7 @@ impl RegionStore {
         report
     }
 
-    fn rebuild_with_plan(&mut self, gpu: &GpuStack, plan: RebuildPlan) {
+    fn rebuild_with_plan(&mut self, gpu: &GpuDesc, plan: RebuildPlan) {
         let tlas_rebuilds = plan.tlas.is_some();
         let graph = RebuildGraph::new(gpu, self, plan);
         graph.execute(gpu);
@@ -821,7 +824,7 @@ impl RegionStore {
 }
 
 fn resolve_blas_storage(
-    gpu: &GpuStack,
+    gpu: &GpuDesc,
     aabb_buffer: &Subbuffer<[AabbPositions]>,
     aabb_count: u32,
     alloc: &BlasAllocation,
@@ -839,7 +842,7 @@ fn resolve_blas_storage(
 
 #[allow(clippy::too_many_arguments)]
 fn plan_blas_build(
-    gpu: &GpuStack,
+    gpu: &GpuDesc,
     region_index: IVec3,
     aabb_buffer_id: Id<Buffer>,
     aabb_buffer: &Subbuffer<[AabbPositions]>,
@@ -905,7 +908,7 @@ fn static_instances() -> Vec<AccelerationStructureInstance> {
     out
 }
 
-fn create_dummy_blas(gpu: &GpuStack) -> Arc<AccelerationStructure> {
+fn create_dummy_blas(gpu: &GpuDesc) -> Arc<AccelerationStructure> {
     let aabb = AabbPositions {
         min: [1.0e9; 3],
         max: [1.0e9 + 1.0; 3],

@@ -34,7 +34,7 @@ use vulkano_taskgraph::{
     descriptor_set::{AccelerationStructureId, StorageBufferId, StorageImageId},
 };
 
-use crate::{core::gpu::GpuStack, render::region::residency::RegionStore};
+use crate::core::{render::gpu::GpuDesc, render::region::residency::RegionStore};
 
 pub(crate) mod capture_raygen {
     vulkano_shaders::shader! {
@@ -120,8 +120,6 @@ pub enum RenderMode {
     Normal = 4,
 }
 
-/// Per-frame NRD state: the non-jittered matrices ReBLUR consumes
-/// (column-major, columns are vectors) plus temporal-reset bookkeeping.
 #[derive(Clone, Copy)]
 pub struct NrdFrame {
     pub view_to_clip: [f32; 16],
@@ -192,7 +190,7 @@ pub struct RegionRenderTask {
 impl RegionRenderTask {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        gpu: &GpuStack,
+        gpu: &GpuDesc,
         store: &RegionStore,
         virtual_swapchain_id: Id<Swapchain>,
         raygen: &EntryPoint,
@@ -263,8 +261,6 @@ impl RegionRenderTask {
 
 pub const E_SUN: f32 = 16.0;
 
-/// The Composite's default exposure: a full-white diffuse surface facing the
-/// Sun maps to ACES input 1.0, keeping lit albedo off the tonemap shoulder.
 pub fn default_ev() -> f32 {
     (std::f32::consts::PI / E_SUN).log2()
 }
@@ -284,7 +280,7 @@ pub fn default_scene() -> capture_raygen::Scene {
 }
 
 pub(crate) fn build_ray_tracing_pipeline(
-    gpu: &GpuStack,
+    gpu: &GpuDesc,
     raygen: &EntryPoint,
     miss: &EntryPoint,
     intersection: &EntryPoint,

@@ -34,7 +34,7 @@ pub struct Input {
 }
 
 impl Input {
-    pub fn drain(&mut self) {
+    pub fn clear(&mut self) {
         self.just_pressed.clear();
         self.scroll_delta = 0.0;
         self.mouse_motion = (0.0, 0.0);
@@ -58,7 +58,7 @@ pub fn map_key(key: &Key) -> Option<InputKey> {
     }
 }
 
-pub fn map_button(button: MouseButton) -> Option<InputButton> {
+pub fn map_mouse_button(button: MouseButton) -> Option<InputButton> {
     match button {
         MouseButton::Left => Some(InputButton::Left),
         MouseButton::Middle => Some(InputButton::Middle),
@@ -81,7 +81,7 @@ mod tests {
         assert!(input.down.contains(&InputKey::Forward));
         assert!(input.just_pressed.contains(&InputKey::Forward));
 
-        input.drain();
+        input.clear();
         assert!(input.down.contains(&InputKey::Forward));
         assert!(!input.just_pressed.contains(&InputKey::Forward));
 
@@ -90,7 +90,7 @@ mod tests {
     }
 
     #[test]
-    fn end_frame_drains_per_frame_state() {
+    fn end_frame_clears_per_frame_state() {
         let mut input = Input::default();
         input.down.insert(InputKey::Forward);
         input.just_pressed.insert(InputKey::Close);
@@ -98,7 +98,7 @@ mod tests {
         input.mouse_motion = (10.0, -5.0);
         input.buttons_down.insert(InputButton::Right);
 
-        input.drain();
+        input.clear();
 
         assert!(input.just_pressed.is_empty());
         assert_eq!(input.scroll_delta, 0.0);
@@ -137,11 +137,17 @@ mod tests {
 
     #[test]
     fn maps_winit_buttons_to_actions() {
-        assert_eq!(map_button(MouseButton::Left), Some(InputButton::Left));
-        assert_eq!(map_button(MouseButton::Middle), Some(InputButton::Middle));
-        assert_eq!(map_button(MouseButton::Right), Some(InputButton::Right));
-        assert_eq!(map_button(MouseButton::Back), None);
-        assert_eq!(map_button(MouseButton::Forward), None);
-        assert_eq!(map_button(MouseButton::Other(1)), None);
+        assert_eq!(map_mouse_button(MouseButton::Left), Some(InputButton::Left));
+        assert_eq!(
+            map_mouse_button(MouseButton::Middle),
+            Some(InputButton::Middle)
+        );
+        assert_eq!(
+            map_mouse_button(MouseButton::Right),
+            Some(InputButton::Right)
+        );
+        assert_eq!(map_mouse_button(MouseButton::Back), None);
+        assert_eq!(map_mouse_button(MouseButton::Forward), None);
+        assert_eq!(map_mouse_button(MouseButton::Other(1)), None);
     }
 }

@@ -1,7 +1,3 @@
-//! The shared GPU stack: instance, device, queues, allocator, and the
-//! taskgraph resources/flights. Constructed once per event loop by the app.
-//! Every GPU layer builds on this module (core: no dependencies).
-
 use std::sync::Arc;
 
 use vulkano::{
@@ -24,10 +20,7 @@ use winit::event_loop::EventLoop;
 pub const MAX_FRAMES_IN_FLIGHT: u32 = 2;
 pub const MIN_SWAPCHAIN_IMAGES: u32 = MAX_FRAMES_IN_FLIGHT + 1;
 
-/// The shared GPU stack (instance, device, queues, allocator, taskgraph
-/// resources and flights). Constructed once per event loop by [`App::new`] and
-/// by the offline validator.
-pub struct GpuStack {
+pub struct GpuDesc {
     pub instance: Arc<Instance>,
     pub device: Arc<Device>,
 
@@ -42,7 +35,7 @@ pub struct GpuStack {
     pub compute_flight_id: Id<Flight>,
 }
 
-impl GpuStack {
+impl GpuDesc {
     pub fn new(event_loop: &EventLoop<()>) -> Self {
         let required_extensions = Surface::required_extensions(event_loop);
 

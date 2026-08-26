@@ -1,2 +1,2 @@
-pub mod gpu;
-pub mod grid;
+pub mod render;
+pub mod world;

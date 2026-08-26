@@ -10,7 +10,10 @@ use vulkano_taskgraph::{
     Id, Task, TaskContext, TaskResult, command_buffer::RecordingCommandBuffer,
 };
 
-use crate::{core::gpu::GpuStack, render::region::task::RenderMode};
+use crate::core::render::{
+    gpu::GpuDesc,
+    region::task::{RegionRenderContext, RenderMode},
+};
 
 pub mod composite {
     vulkano_shaders::shader! {
@@ -21,7 +24,7 @@ pub mod composite {
     }
 }
 
-pub fn create_composite_pipeline(gpu: &GpuStack) -> Arc<ComputePipeline> {
+pub fn create_composite_pipeline(gpu: &GpuDesc) -> Arc<ComputePipeline> {
     let shader = unsafe {
         composite::load(&gpu.device)
             .unwrap()
@@ -56,7 +59,7 @@ impl CompositeTask {
 }
 
 impl Task for CompositeTask {
-    type World = crate::render::region::task::RegionRenderContext;
+    type World = RegionRenderContext;
 
     unsafe fn execute(
         &self,

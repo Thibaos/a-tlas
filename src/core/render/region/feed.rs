@@ -25,9 +25,13 @@ use std::{
 
 use glam::IVec3;
 
-use super::pack::{RegionData, pack_region};
-use crate::core::grid::{assert_region_index_in_lattice, region_index_of};
-use crate::world::snapshot::MicroChunkSnapshot;
+use crate::core::{
+    render::region::pack::{RegionData, pack_region},
+    world::{
+        grid::{assert_region_index_in_lattice, region_index_of},
+        snapshot::MicroChunkSnapshot,
+    },
+};
 
 /// One Region's CPU-side mirror: the authoritative per-Micro-chunk
 /// snapshot state, the source for wholesale pool re-packing. Empty
@@ -77,7 +81,6 @@ impl RegionMirror {
     }
 }
 
-/// The shared change state behind [`ChangeQueue`] and [`RendererInput`].
 struct ChangeQueueInner {
     pending: Mutex<HashMap<IVec3, MicroChunkSnapshot>>,
     wake_worker: Condvar,
@@ -104,9 +107,6 @@ impl ChangeQueueInner {
     }
 }
 
-/// The world-facing, enqueue-only half of the input contract. Clone to share
-/// across threads; submitting never blocks on GPU. It inserts into the
-/// pending set (a short mutex hold at most) and signals the worker.
 #[derive(Clone)]
 pub struct ChangeQueue {
     inner: Arc<ChangeQueueInner>,
@@ -167,9 +167,6 @@ impl ChangeQueue {
     }
 }
 
-/// The renderer's end of the input contract: owns the worker thread and the
-/// per-Region mirrors. The renderer drains dirty regions each cycle and feeds
-/// the packed mirrors to the Region pipeline.
 pub struct RendererInput {
     queue: ChangeQueue,
     worker: Option<JoinHandle<()>>,
@@ -213,8 +210,7 @@ impl RendererInput {
         }
     }
 
-    /// Consumed only by `RegionStore` (`new`/`apply`): the drain is single-owner.
-    pub(in crate::render) fn take_dirty_regions(&self) -> Vec<IVec3> {
+    pub(in crate::core::render) fn take_dirty_regions(&self) -> Vec<IVec3> {
         let mut dirty = std::mem::take(&mut *self.queue.inner.applied_regions.lock().unwrap());
         dirty.sort_unstable_by_key(|region| region.to_array());
         dirty
@@ -317,11 +313,13 @@ pub fn apply_snapshots(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        core::grid::{MICRO_CHUNK_LENGTH, region_index_of},
+    use crate::core::{
         render::region::pack::pack_regions,
-        world::World,
-        world::snapshot::emit_snapshots,
+        world::{
+            World,
+            grid::{MICRO_CHUNK_LENGTH, region_index_of},
+            snapshot::emit_snapshots,
+        },
     };
 
     fn snapshot(coords: IVec3, cells: &[(u32, u8)]) -> MicroChunkSnapshot {

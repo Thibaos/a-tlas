@@ -36,27 +36,31 @@ use crate::{
         player::PlayerController,
         schedule::ScheduleController,
     },
-    core::gpu::{GpuStack, MIN_SWAPCHAIN_IMAGES},
-    core::grid::LATTICE_HALF_EXTENT,
-    render::{
-        composite::{CompositeTask, create_composite_pipeline},
-        nrd::{DenoiseTask, NrdInputs, NrdInstance},
-        region::{
-            feed::RendererInput,
-            residency::RegionStore,
-            task::{
-                NrdFrame, RegionRenderContext, RegionRenderTask, RenderMode,
-                capture_raygen, default_ev, default_scene, production_raygen,
+    core::{
+        render::{
+            composite::{CompositeTask, create_composite_pipeline},
+            gpu::{GpuDesc, MIN_SWAPCHAIN_IMAGES},
+            nrd::{
+                DenoiseTask, NrdInputs, NrdInstance,
+                sys::{NRD_VERSION_BUILD, NRD_VERSION_MAJOR, NRD_VERSION_MINOR},
             },
+            region::{
+                feed::RendererInput,
+                residency::RegionStore,
+                task::{
+                    NrdFrame, RegionRenderContext, RegionRenderTask, RenderMode, capture_raygen,
+                    default_ev, default_scene, production_raygen,
+                },
+            },
+            swapchain::window_size_dependent_setup,
         },
-        swapchain::window_size_dependent_setup,
+        world::{World, format::open_file, grid::LATTICE_HALF_EXTENT, snapshot::emit_snapshots},
     },
-    world::{World, format::open_file, snapshot::emit_snapshots},
 };
 
-const DENOISE_ENABLED: bool = true;
+const DENOISE_ENABLED: bool = false;
 
-fn create_nrd(gpu: &GpuStack, extent: [u32; 3]) -> Option<Arc<NrdInstance>> {
+fn create_nrd(gpu: &GpuDesc, extent: [u32; 3]) -> Option<Arc<NrdInstance>> {
     if !DENOISE_ENABLED {
         return None;
     }
@@ -65,9 +69,7 @@ fn create_nrd(gpu: &GpuStack, extent: [u32; 3]) -> Option<Arc<NrdInstance>> {
         Ok(instance) => {
             println!(
                 "denoiser: NVIDIA NRD v{}.{}.{} ReBLUR (REBLUR_DIFFUSE_SPECULAR)",
-                crate::render::nrd::sys::NRD_VERSION_MAJOR,
-                crate::render::nrd::sys::NRD_VERSION_MINOR,
-                crate::render::nrd::sys::NRD_VERSION_BUILD,
+                NRD_VERSION_MAJOR, NRD_VERSION_MINOR, NRD_VERSION_BUILD,
             );
             Some(Arc::new(instance))
         }
@@ -81,7 +83,7 @@ fn create_nrd(gpu: &GpuStack, extent: [u32; 3]) -> Option<Arc<NrdInstance>> {
 pub struct App {
     close_requested: bool,
 
-    pub gpu: GpuStack,
+    pub gpu: GpuDesc,
 
     delta_time: Duration,
     focused: bool,
@@ -120,7 +122,7 @@ pub struct RenderContext {
 
 impl App {
     pub fn new(event_loop: &EventLoop<()>, world_path: &str, clip_oob: bool) -> Self {
-        let gpu = GpuStack::new(event_loop);
+        let gpu = GpuDesc::new(event_loop);
 
         let voxel_data = open_file(world_path);
         let (world, clipped) = if clip_oob {
@@ -356,13 +358,8 @@ impl ApplicationHandler for App {
                 .unwrap()
         };
 
-        let rt_pass = RegionRenderTask::new(
-            &self.gpu,
-            &self.store,
-            virtual_swapchain_id,
-            &raygen,
-            true,
-        );
+        let rt_pass =
+            RegionRenderTask::new(&self.gpu, &self.store, virtual_swapchain_id, &raygen, true);
         let instance_buffer_id = rt_pass.instance_buffer_id();
 
         let mut rt_node = task_graph.create_task_node("Render", QueueFamilyType::Graphics, rt_pass);
@@ -774,7 +771,7 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::MouseInput { state, button, .. } => {
-                if let Some(mapped) = input::map_button(button) {
+                if let Some(mapped) = input::map_mouse_button(button) {
                     match state {
                         ElementState::Pressed => {
                             if mapped == InputButton::Right {
@@ -818,7 +815,7 @@ impl ApplicationHandler for App {
 
         #[cfg(debug_assertions)]
         self.handle_toggle_render_mode();
-        self.player_input.drain();
+        self.player_input.clear();
 
         if self.close_requested {
             event_loop.exit();

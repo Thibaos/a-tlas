@@ -7,15 +7,13 @@ use vulkano::{
 };
 use vulkano_taskgraph::Id;
 
-use crate::core::gpu::GpuStack;
+use crate::core::render::gpu::GpuDesc;
 
-/// A freed pool buffer awaiting reuse (capacity = allocation size).
 pub(crate) struct FreedPool {
     pub(crate) buffer_id: Id<Buffer>,
     pub(crate) capacity: u64,
 }
 
-/// A freed (AABB buffer + BLAS storage) pair awaiting reuse.
 pub(crate) struct FreedBlas {
     pub(crate) aabb_buffer_id: Id<Buffer>,
     pub(crate) aabb_capacity: u32,
@@ -23,23 +21,18 @@ pub(crate) struct FreedBlas {
     pub(crate) blas_storage_size: u64,
 }
 
-/// The reusable free lists: memory whose referencing TLAS instance was
-/// dropped by an executed rebuild.
 #[derive(Default)]
 pub(crate) struct FreeLists {
     pub(crate) pools: Vec<FreedPool>,
     pub(crate) blas: Vec<FreedBlas>,
 }
 
-/// Memory freed by the current change cycle, not yet reusable: the rebuild
-/// that dropped the referencing instance must execute.
 #[derive(Default)]
 pub(crate) struct PendingFrees {
     pub(crate) pools: Vec<FreedPool>,
     pub(crate) blas: Vec<FreedBlas>,
 }
 
-/// Allocation probes (harness/tests): fresh allocations vs free-list reuse.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct AllocStats {
     pub pool_allocations: u64,
@@ -48,8 +41,6 @@ pub struct AllocStats {
     pub blas_reuses: u64,
 }
 
-/// Best-fit allocation: removes the smallest entry with capacity ≥ `needed`
-/// (pure; unit-tested). `None` means allocate fresh.
 fn take_best_fit<T>(entries: &mut Vec<T>, needed: u64, capacity: impl Fn(&T) -> u64) -> Option<T> {
     let mut best: Option<(usize, u64)> = None;
     for (i, entry) in entries.iter().enumerate() {
@@ -61,23 +52,19 @@ fn take_best_fit<T>(entries: &mut Vec<T>, needed: u64, capacity: impl Fn(&T) -> 
     best.map(|(i, _)| entries.swap_remove(i))
 }
 
-/// The pool allocation for one Region (fresh or free-list reused).
 pub(crate) struct PoolAllocation {
     pub(crate) buffer_id: Id<Buffer>,
     pub(crate) capacity: u64,
 }
 
-/// The BLAS allocation for one Region: the AABB build-input buffer plus,
-/// when reused, the existing AS storage to build into.
 pub(crate) struct BlasAllocation {
     pub(crate) aabb_buffer_id: Id<Buffer>,
     pub(crate) aabb_capacity: u32,
     pub(crate) as_storage: Option<(Arc<AccelerationStructure>, u64)>,
 }
 
-/// Allocates a pool buffer (best-fit from the free lists, else fresh).
 pub(crate) fn allocate_pool(
-    gpu: &GpuStack,
+    gpu: &GpuDesc,
     free: &mut FreeLists,
     stats: &mut AllocStats,
     needed: u64,
@@ -113,7 +100,7 @@ pub(crate) fn allocate_pool(
 }
 
 pub(crate) fn allocate_blas(
-    gpu: &GpuStack,
+    gpu: &GpuDesc,
     free: &mut FreeLists,
     stats: &mut AllocStats,
     aabb_count: u32,
@@ -122,6 +109,7 @@ pub(crate) fn allocate_blas(
         f.aabb_capacity as u64
     }) {
         stats.blas_reuses += 1;
+
         BlasAllocation {
             aabb_buffer_id: freed.aabb_buffer_id,
             aabb_capacity: freed.aabb_capacity,
@@ -145,7 +133,9 @@ pub(crate) fn allocate_blas(
                 DeviceLayout::new_unsized::<[AabbPositions]>(aabb_count as u64).unwrap(),
             )
             .unwrap();
+
         stats.blas_allocations += 1;
+
         BlasAllocation {
             aabb_buffer_id,
             aabb_capacity: aabb_count,

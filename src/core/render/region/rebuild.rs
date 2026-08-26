@@ -22,12 +22,10 @@ use vulkano_taskgraph::{
     resource_map,
 };
 
-use crate::{
-    core::gpu::GpuStack,
-    render::{
-        accel,
-        region::{pack::REGION_COUNT, residency::RegionStore, task::capture_raygen},
-    },
+use crate::core::render::{
+    accel,
+    gpu::GpuDesc,
+    region::{pack::REGION_COUNT, residency::RegionStore, task::capture_raygen},
 };
 
 pub struct RegionUpload {
@@ -345,7 +343,7 @@ pub struct RebuildGraph {
 }
 
 impl RebuildGraph {
-    pub fn new(gpu: &GpuStack, store: &RegionStore, plan: RebuildPlan) -> Self {
+    pub fn new(gpu: &GpuDesc, store: &RegionStore, plan: RebuildPlan) -> Self {
         let blas_buffers = blas_buffer_ids(&plan);
 
         let mut task_graph = TaskGraph::new(&gpu.resources);
@@ -440,7 +438,7 @@ impl RebuildGraph {
         Self { executable }
     }
 
-    pub fn execute(self, gpu: &GpuStack) {
+    pub fn execute(self, gpu: &GpuDesc) {
         let resource_map = resource_map!(&self.executable).unwrap();
 
         unsafe { self.executable.execute(resource_map, &(), || {}) }.unwrap();
@@ -459,7 +457,7 @@ fn blas_buffer_ids(plan: &RebuildPlan) -> Vec<Id<Buffer>> {
         .collect()
 }
 
-pub(crate) fn allocate_scratch(gpu: &GpuStack, size: DeviceSize) -> Arc<Buffer> {
+pub(crate) fn allocate_scratch(gpu: &GpuDesc, size: DeviceSize) -> Arc<Buffer> {
     Buffer::new_slice::<u8>(
         &gpu.memory_allocator,
         &BufferCreateInfo {
@@ -475,7 +473,7 @@ pub(crate) fn allocate_scratch(gpu: &GpuStack, size: DeviceSize) -> Arc<Buffer> 
 }
 
 pub(crate) fn blas_build_sizes(
-    gpu: &GpuStack,
+    gpu: &GpuDesc,
     aabb_buffer: &Subbuffer<[AabbPositions]>,
     aabb_count: u32,
 ) -> vulkano::acceleration_structure::AccelerationStructureBuildSizesInfo {
@@ -502,7 +500,7 @@ pub(crate) fn aabb_geometries(
 }
 
 pub(crate) fn tlas_build_sizes(
-    gpu: &GpuStack,
+    gpu: &GpuDesc,
     instance_buffer: &Subbuffer<[AccelerationStructureInstance]>,
     instance_count: u32,
 ) -> vulkano::acceleration_structure::AccelerationStructureBuildSizesInfo {
