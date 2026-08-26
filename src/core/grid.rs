@@ -6,9 +6,9 @@
 //! or Micro-chunk constant.
 //!
 //! Before this module, floor-division of a possibly-negative coord into an
-//! origin-aligned cell was written four ways (a hand-rolled `+1` trick in
-//! `world/chunk.rs`, `div_euclid` in `region/pack.rs`,
-//! `region/snapshot.rs`, and `validate/mod.rs`), and the world's extent
+//! origin-aligned cell was written three ways (a hand-rolled `+1` trick in
+//! `world/chunk.rs`, `div_euclid` in `region/pack.rs`, and
+//! `region/snapshot.rs`), and the world's extent
 //! (±4096) disagreed with the renderer lattice (±2048). These primitives
 //! concentrate the math and pin the extent to one constant.
 

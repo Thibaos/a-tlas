@@ -47,6 +47,7 @@ impl RegionData {
     }
 }
 
+#[allow(dead_code)]
 pub fn pack_regions(snapshots: &[MicroChunkSnapshot]) -> Vec<RegionData> {
     let mut by_region: HashMap<IVec3, Vec<&MicroChunkSnapshot>> = HashMap::new();
     for snapshot in snapshots {

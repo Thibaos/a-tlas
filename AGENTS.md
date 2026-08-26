@@ -3,7 +3,7 @@
 ## When writing code
 
 - Keep documentation as minimal as possible
-- Avoid in-code documentation, avoid per-field documentation
+- Do not write in-code (within functions) documentation nor per-field documentation
 - Always prefer a self-descriptive code rather than documentation
 - Documentation should be as semantically dense and clear as possible, use the unslop skill preferably
 - Separate blocks with a new line, before and after a "for", "if", "match", etc.

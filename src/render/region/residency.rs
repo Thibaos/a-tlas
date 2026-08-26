@@ -451,10 +451,12 @@ impl RegionStore {
         self.rebuild(gpu, packs)
     }
 
+    #[allow(dead_code)]
     pub fn resident_count(&self) -> usize {
         self.resident_ids.len()
     }
 
+    #[allow(dead_code)]
     pub fn resident_ids(&self) -> &[u32] {
         &self.resident_ids
     }

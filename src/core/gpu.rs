@@ -1,7 +1,5 @@
 //! The shared GPU stack: instance, device, queues, allocator, and the
-//! taskgraph resources/flights. Constructed once per event loop by the app
-//! and by the validator. Both render through the same stack, so the
-//! validator validates the app's own device, queues, and extensions.
+//! taskgraph resources/flights. Constructed once per event loop by the app.
 //! Every GPU layer builds on this module (core: no dependencies).
 
 use std::sync::Arc;

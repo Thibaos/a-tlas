@@ -12,8 +12,6 @@ vulkano-taskgraph = { git = "https://github.com/vulkano-rs/vulkano" }
 winit = "0.30"
 dot_vox = "*"
 glam = { version = "*", features = ["bytemuck"] }
-bytemuck = { version = "*", features = ["extern_crate_alloc"] }
-png = "*"
 
 [profile.release]
 codegen-units = 1

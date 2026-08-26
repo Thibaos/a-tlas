@@ -119,6 +119,7 @@ impl ChangeQueue {
         }
     }
 
+    #[allow(dead_code)]
     pub fn submit_microchunk(&self, snapshot: MicroChunkSnapshot) {
         assert_region_index_in_lattice(region_index_of(snapshot.global_coords));
         self.inner
@@ -193,6 +194,7 @@ impl RendererInput {
         self.queue.clone()
     }
 
+    #[allow(dead_code)]
     pub fn submit_microchunk(&self, snapshot: MicroChunkSnapshot) {
         self.queue.submit_microchunk(snapshot);
     }
