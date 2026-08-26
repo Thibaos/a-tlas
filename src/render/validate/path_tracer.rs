@@ -558,7 +558,7 @@ impl<'a> PathTracer<'a> {
             let mut metallic = primary_metallic;
             let mut roughness = primary_roughness;
             let mut normal = primary_normal;
-            let mut last_spec_pick = false;
+            let mut next_p_bsdf = 0.0f32;
             // The payload the loop reads: the primary hit at depth 0, the
             // previous Bounce's trace result at depth > 0 (the GLSL's
             // payload struct. The mirror carries it in locals).
@@ -571,35 +571,18 @@ impl<'a> PathTracer<'a> {
                         None => {
                             // The Bounce missed: the Procedural sky's
                             // radiance (the miss shader's output, the
-                            // gradient only), MIS-weighted against the sky
-                            // NEE: the throughput's terminal factor used the
-                            // picked lobe's conditional pdf (p_cond) with
-                            // the 1/p_pick split, so the balance-heuristic
-                            // weight is p_cond·p_pick/(p_light + p_mixture).
-                            let (t_axis, b_axis) = make_frame(normal);
-                            let v_local =
-                                -Vec3::new(rd.dot(t_axis), rd.dot(b_axis), rd.dot(normal));
-                            let alpha = (roughness * roughness).max(ALPHA_MIN);
-                            let l_local = Vec3::new(rd.dot(t_axis), rd.dot(b_axis), rd.dot(normal));
-                            let p_v =
-                                vndf_pdf(l_local, v_local, (v_local + l_local).normalize(), alpha);
-                            let p_c = l_local.z.max(0.0) * (1.0 / PI);
-                            let spec = if depth == 1 {
-                                specular_lobe
-                            } else {
-                                last_spec_pick
-                            };
-                            let p_cond = if spec { p_v } else { p_c };
-                            let p_pick = if depth == 1 { lobe_p } else { 0.5 };
-                            let p_mix = if depth == 1 {
-                                LOBE_P * p_v + (1.0 - LOBE_P) * p_c
-                            } else {
-                                0.5 * (p_v + p_c)
-                            };
+                            // gradient only), MIS-weighted against the
+                            // sky NEE: the BSDF technique's density is the
+                            // mixture evaluated where the direction was
+                            // drawn (carried here in next_p_bsdf), so the
+                            // balance weight is
+                            // next_p_bsdf/(p_light + next_p_bsdf),
+                            // applied to the throughput that carries the
+                            // 1/p_pick split.
                             let p_light = self.sky_light_pdf(rd);
                             path += throughput
                                 * self.sky_radiance(rd)
-                                * (p_cond * p_pick / (p_light + p_mix));
+                                * (next_p_bsdf / (p_light + next_p_bsdf));
                             break;
                         }
                         Some(hit) => {
@@ -726,7 +709,6 @@ impl<'a> PathTracer<'a> {
                 } else {
                     let spec_pick = rand_unit(seed, draw) < 0.5;
                     draw += 1;
-                    last_spec_pick = spec_pick;
                     if spec_pick {
                         let u1 = rand_unit(seed, draw);
                         draw += 1;
@@ -746,6 +728,8 @@ impl<'a> PathTracer<'a> {
                         (wi, 2.0 * (1.0 - metallic) * albedo)
                     }
                 };
+                let wi_local = Vec3::new(wi.dot(t_axis), wi.dot(b_axis), wi.dot(normal));
+                next_p_bsdf = bsdf_mixture_pdf(wi_local, v_local, alpha, depth);
                 throughput *= weight;
 
                 // Russian roulette on the throughput (floor bounds variance;
@@ -1431,12 +1415,188 @@ mod tests {
         assert_eq!(a.specular, b.specular);
     }
 
+    /// Regression: the BSDF-miss escape term must carry the balance weight
+    /// p_mixture/(p_light + p_mixture) — the BSDF technique's
+    /// lobe-pick-independent output density — not the picked-lobe conditional
+    /// product p_cond·p_pick, which under-weights indirect skylight by up to
+    /// 2x on matte surfaces. The oracle is a textbook unbiased path tracer
+    /// sharing only leaf helpers with the mirror: one technique per light
+    /// (the sky enters only through the weight-1 escape, the delta Sun only
+    /// through NEE — a second technique would double-count), continuation
+    /// weighted f·cos/pdf, depth cap 2, no Russian roulette, no channel
+    /// split. On a flat matte slab every diffuse-pick bounce escapes, so the
+    /// pixels' indirect signal is the escape term alone.
+    #[test]
+    fn bsdf_miss_matches_unbiased_bsdf_only_reference() {
+        fn oracle_diffuse_de(
+            tracer: &PathTracer<'_>,
+            seed: u32,
+            origin: Vec3,
+            direction: Vec3,
+        ) -> Vec3 {
+            let mut draw = 0u32;
+            let Some(primary) = tracer.trace_ray(origin, direction) else {
+                return tracer.sky_radiance(direction);
+            };
+            let mat = &tracer.materials[primary.material as usize];
+            let mut albedo = Vec3::from_array(mat.albedo);
+            let mut metallic = mat.metallic;
+            let mut roughness = mat.roughness;
+            let mut normal = primary.normal.normalize();
+            let primary_albedo = albedo;
+            let mut radiance = Vec3::from_array(mat.emission);
+
+            let mut hit_point = origin + direction * primary.t;
+            let mut view_dir = direction;
+            let mut throughput = Vec3::ONE;
+
+            for depth in 0..=2usize {
+                if depth == 2 {
+                    break;
+                }
+
+                // Single technique per light keeps the oracle unbiased: the
+                // sky is sampled by the BSDF only (the escape below), so its
+                // radiance enters at weight 1 with no NEE pairing.
+
+                let (t_axis, b_axis) = make_frame(normal);
+                let v_local =
+                    -Vec3::new(view_dir.dot(t_axis), view_dir.dot(b_axis), view_dir.dot(normal));
+                let alpha = (roughness * roughness).max(ALPHA_MIN);
+                let f0 = mix_vec(Vec3::splat(0.04), albedo, metallic);
+
+                let wi;
+                let l_local;
+                if depth == 0 {
+                    let u1 = rand_unit(seed, draw);
+                    draw += 1;
+                    let u2 = rand_unit(seed, draw);
+                    draw += 1;
+                    let (dir, _pdf) = sample_cosine(normal, t_axis, b_axis, u1, u2);
+                    wi = dir;
+                    throughput *= (1.0 - metallic) * albedo;
+                } else {
+                    let spec_pick = rand_unit(seed, draw) < 0.5;
+                    draw += 1;
+                    if spec_pick {
+                        let u1 = rand_unit(seed, draw);
+                        draw += 1;
+                        let u2 = rand_unit(seed, draw);
+                        draw += 1;
+                        let (l, _h, _pdf) = sample_vndf(v_local, alpha, u1, u2);
+                        l_local = l;
+                        wi = t_axis * l.x + b_axis * l.y + normal * l.z;
+                        throughput *= specular_nl(
+                            l_local,
+                            v_local,
+                            (v_local + l_local).normalize(),
+                            f0,
+                            alpha,
+                        ) / bsdf_mixture_pdf(l_local, v_local, alpha, depth);
+                    } else {
+                        let u1 = rand_unit(seed, draw);
+                        draw += 1;
+                        let u2 = rand_unit(seed, draw);
+                        draw += 1;
+                        let (dir, _pdf) = sample_cosine(normal, t_axis, b_axis, u1, u2);
+                        l_local = Vec3::new(dir.dot(t_axis), dir.dot(b_axis), dir.dot(normal));
+                        wi = dir;
+                        throughput *= (1.0 - metallic) * albedo * (l_local.z * (1.0 / PI))
+                            / bsdf_mixture_pdf(l_local, v_local, alpha, depth);
+                    }
+                }
+
+                let bounce_origin = hit_point + normal * BOUNCE_OFFSET;
+                view_dir = wi;
+                match tracer.trace_ray(bounce_origin, wi) {
+                    None => {
+                        radiance += throughput * tracer.sky_radiance(wi);
+                        break;
+                    }
+                    Some(next) => {
+                        let mat = &tracer.materials[next.material as usize];
+                        radiance += throughput * Vec3::from_array(mat.emission);
+                        albedo = Vec3::from_array(mat.albedo);
+                        metallic = mat.metallic;
+                        roughness = mat.roughness;
+                        normal = next.normal.normalize();
+                        hit_point = bounce_origin + wi * next.t;
+                    }
+                }
+            }
+
+            radiance / primary_albedo.max(Vec3::splat(ALBEDO_EPS))
+        }
+
+        let mut world = World::default();
+        for x in 0..32 {
+            for z in 0..32 {
+                world.insert_voxel_at(IVec3::new(x, 0, z), 1);
+            }
+        }
+        let mut materials = [Material {
+            albedo: [0.0; 3],
+            metallic: 0.0,
+            roughness: 1.0,
+            emission: [0.0; 3],
+        }; 256];
+        materials[1] = Material {
+            albedo: [0.8; 3],
+            metallic: 0.0,
+            roughness: 1.0,
+            emission: [0.0; 3],
+        };
+        // Sun off: the escape term is then the only indirect signal.
+        let scene = Scene {
+            e_sun: 0.0,
+            ..default_scene()
+        };
+        let tracer = PathTracer::new(&world, materials, scene);
+        let camera = CameraInputs::new(
+            glam::camera::lh::view::look_to_mat4(
+                Vec3::new(17.5, 19.0, 13.5),
+                Vec3::new(-2.0, -18.0, 2.0).normalize(),
+                Vec3::Z,
+            ),
+            glam::camera::lh::proj::vulkan::perspective(1.0, 1.0, T_MIN, T_MAX),
+            9,
+            9,
+        );
+
+        const SAMPLES: u32 = 20_000;
+        for y in 3..6 {
+            for x in 3..6 {
+                let (origin, direction) = camera.ray(x, y);
+                let primary = tracer.trace_ray(origin, direction).expect("slab hit");
+                assert_eq!(primary.normal, Vec3::Y, "pixel ({x}, {y}) must hit the top face");
+
+                let mut mirror_mean = Vec3::ZERO;
+                let mut oracle_mean = Vec3::ZERO;
+                for frame in 0..SAMPLES {
+                    let seed = pcg_hash(frame.wrapping_mul(PHI32) ^ (y * camera.width + x));
+                    mirror_mean += tracer.sample(&camera, x, y, frame).diffuse_de;
+                    oracle_mean += oracle_diffuse_de(&tracer, seed, origin, direction);
+                }
+                mirror_mean /= SAMPLES as f32;
+                oracle_mean /= SAMPLES as f32;
+
+                let rel =
+                    (mirror_mean - oracle_mean).abs() / oracle_mean.abs().max(Vec3::splat(1e-3));
+                assert!(
+                    rel.max_element() < 0.02,
+                    "pixel ({x}, {y}): mirror {mirror_mean:?} vs oracle {oracle_mean:?} (rel {rel:?})"
+                );
+            }
+        }
+    }
+
     /// The pre-acceleration march, the mirror's own world-space DDA without
     /// the macro-grid skip. The accelerated march must agree with it exactly
     /// (same voxel and face; t within the ULP-level leap drift).
     fn naive_trace(world: &World, origin: Vec3, direction: Vec3) -> Option<PathHit> {
         let (min, max) = world.voxel_bounds()?;
         let region_min = min.as_vec3();
+
         let region_max = max.as_vec3() + Vec3::ONE;
         let mut t0 = T_MIN;
         let mut t1 = T_MAX;
@@ -1636,4 +1796,229 @@ mod tests {
         }
         assert!(hits > 100, "the ray set must hit the world, hits: {hits}");
     }
+
+    /// Multi-bounce interior fill: a closed room lit only through a small
+    /// window (delta Sun via weight-1 NEE, sky via BSDF-only escape in the
+    /// oracle, depth cap matching MAX_BOUNCES). The mirror must match the
+    /// oracle on unlit wall pixels — the transport that lights interiors.
+    #[test]
+    fn interior_fill_matches_unbiased_reference() {
+        fn oracle_diffuse_de(
+            tracer: &PathTracer<'_>,
+            seed: u32,
+            origin: Vec3,
+            direction: Vec3,
+        ) -> Vec3 {
+            let mut draw = 0u32;
+            let Some(primary) = tracer.trace_ray(origin, direction) else {
+                return tracer.sky_radiance(direction);
+            };
+            let mat = &tracer.materials[primary.material as usize];
+            let mut albedo = Vec3::from_array(mat.albedo);
+            let mut metallic = mat.metallic;
+            let mut roughness = mat.roughness;
+            let mut normal = primary.normal.normalize();
+            let primary_albedo = albedo;
+            let mut radiance = Vec3::from_array(mat.emission);
+
+            let mut hit_point = origin + direction * primary.t;
+            let mut view_dir = direction;
+            let mut throughput = Vec3::ONE;
+
+            for depth in 0..=4usize {
+                let sun_dir = tracer.scene.sun_dir;
+                let n_dot_l = normal.dot(sun_dir).max(0.0);
+                if n_dot_l > 0.0 && !tracer.shadowed(hit_point, normal, sun_dir) {
+                    let (t_axis, b_axis) = make_frame(normal);
+                    let v_local =
+                        -Vec3::new(view_dir.dot(t_axis), view_dir.dot(b_axis), view_dir.dot(normal));
+                    let alpha = (roughness * roughness).max(ALPHA_MIN);
+                    let f0 = mix_vec(Vec3::splat(0.04), albedo, metallic);
+                    let l_local = Vec3::new(sun_dir.dot(t_axis), sun_dir.dot(b_axis), n_dot_l);
+                    let f_nl = if depth == 0 {
+                        (1.0 - metallic) * albedo * (n_dot_l / PI)
+                    } else {
+                        brdf_nl(l_local, v_local, f0, alpha, albedo, metallic)
+                    };
+                    radiance += throughput * f_nl * tracer.scene.e_sun;
+                }
+
+                if depth == 4 {
+                    break;
+                }
+
+                let (t_axis, b_axis) = make_frame(normal);
+                let v_local =
+                    -Vec3::new(view_dir.dot(t_axis), view_dir.dot(b_axis), view_dir.dot(normal));
+                let alpha = (roughness * roughness).max(ALPHA_MIN);
+                let f0 = mix_vec(Vec3::splat(0.04), albedo, metallic);
+
+                let wi;
+                if depth == 0 {
+                    let u1 = rand_unit(seed, draw);
+                    draw += 1;
+                    let u2 = rand_unit(seed, draw);
+                    draw += 1;
+                    let (dir, _pdf) = sample_cosine(normal, t_axis, b_axis, u1, u2);
+                    wi = dir;
+                    throughput *= (1.0 - metallic) * albedo;
+                } else {
+                    let spec_pick = rand_unit(seed, draw) < 0.5;
+                    draw += 1;
+                    let l_local;
+                    if spec_pick {
+                        let u1 = rand_unit(seed, draw);
+                        draw += 1;
+                        let u2 = rand_unit(seed, draw);
+                        draw += 1;
+                        let (l, _h, _pdf) = sample_vndf(v_local, alpha, u1, u2);
+                        l_local = l;
+                        wi = t_axis * l.x + b_axis * l.y + normal * l.z;
+                    } else {
+                        let u1 = rand_unit(seed, draw);
+                        draw += 1;
+                        let u2 = rand_unit(seed, draw);
+                        draw += 1;
+                        let (dir, _pdf) = sample_cosine(normal, t_axis, b_axis, u1, u2);
+                        l_local = Vec3::new(dir.dot(t_axis), dir.dot(b_axis), dir.dot(normal));
+                        wi = dir;
+                    }
+
+                    // The mixture sampler is one technique: whichever lobe
+                    // drew the direction, the weight is the full BRDF over
+                    // the mixture pdf.
+                    throughput *= brdf_nl(l_local, v_local, f0, alpha, albedo, metallic)
+                        / bsdf_mixture_pdf(l_local, v_local, alpha, depth);
+                }
+
+                let bounce_origin = hit_point + normal * BOUNCE_OFFSET;
+                view_dir = wi;
+                match tracer.trace_ray(bounce_origin, wi) {
+                    None => {
+                        radiance += throughput * tracer.sky_radiance(wi);
+                        break;
+                    }
+                    Some(next) => {
+                        let m = &tracer.materials[next.material as usize];
+                        radiance += throughput * Vec3::from_array(m.emission);
+                        albedo = Vec3::from_array(m.albedo);
+                        metallic = m.metallic;
+                        roughness = m.roughness;
+                        normal = next.normal.normalize();
+                        hit_point = bounce_origin + wi * next.t;
+                    }
+                }
+            }
+
+            radiance / primary_albedo.max(Vec3::splat(ALBEDO_EPS))
+        }
+
+        let mut world = World::default();
+        for x in 0..9 {
+            for z in 0..9 {
+                world.insert_voxel_at(IVec3::new(x, 0, z), 1);
+                world.insert_voxel_at(IVec3::new(x, 5, z), 1);
+            }
+        }
+        for y in 0..6 {
+            for z in 0..9 {
+                world.insert_voxel_at(IVec3::new(0, y, z), 1);
+                if !(y >= 2 && y <= 3 && z >= 3 && z <= 4) {
+                    world.insert_voxel_at(IVec3::new(8, y, z), 1);
+                }
+                world.insert_voxel_at(IVec3::new(z, y, 0), 1);
+                world.insert_voxel_at(IVec3::new(z, y, 8), 1);
+            }
+        }
+        let mut materials = [Material {
+            albedo: [0.0; 3],
+            metallic: 0.0,
+            roughness: 1.0,
+            emission: [0.0; 3],
+        }; 256];
+        materials[1] = Material {
+            albedo: [0.6; 3],
+            metallic: 0.0,
+            roughness: 1.0,
+            emission: [0.0; 3],
+        };
+        let scene = Scene {
+            sun_dir: Vec3::new(1.0, 0.35, 0.1).normalize(),
+            ..default_scene()
+        };
+        let tracer = PathTracer::new(&world, materials, scene);
+        let camera = CameraInputs::new(
+            glam::camera::lh::view::look_to_mat4(
+                Vec3::new(1.2, 2.0, 4.0),
+                Vec3::new(6.8, 0.0, 0.0).normalize(),
+                Vec3::Y,
+            ),
+            glam::camera::lh::proj::vulkan::perspective(1.2, 1.0, T_MIN, T_MAX),
+            16,
+            16,
+        );
+
+        const SAMPLES: u32 = 80_000;
+        let mut checked_wall = 0;
+        let mut mirror_sum = Vec3::ZERO;
+        let mut oracle_sum = Vec3::ZERO;
+        for y in 0..16 {
+            for x in 0..16 {
+                let (origin, direction) = camera.ray(x, y);
+                let Some(primary) = tracer.trace_ray(origin, direction) else {
+                    continue;
+                };
+                let p = origin + direction * primary.t;
+                let on_window_wall = primary.normal == Vec3::NEG_X && (p.x - 8.0).abs() < 1e-3;
+                let on_floor = primary.normal == Vec3::Y && (p.y - 1.0).abs() < 1e-3;
+                if !on_window_wall && !on_floor {
+                    continue;
+                }
+                let sun_lit = on_floor && !tracer.shadowed(p, primary.normal, tracer.scene.sun_dir);
+
+                let mut mirror_mean = Vec3::ZERO;
+                let mut oracle_mean = Vec3::ZERO;
+                for frame in 0..SAMPLES {
+                    let seed = pcg_hash(frame.wrapping_mul(PHI32) ^ (y * camera.width + x));
+                    mirror_mean += tracer.sample(&camera, x, y, frame).diffuse_de;
+                    oracle_mean += oracle_diffuse_de(&tracer, seed, origin, direction);
+                }
+                mirror_mean /= SAMPLES as f32;
+                oracle_mean /= SAMPLES as f32;
+                let rel = (mirror_mean - oracle_mean).abs()
+                    / oracle_mean.abs().max(Vec3::splat(1e-4));
+
+                let rel_max = rel.max_element();
+                if on_window_wall {
+                    eprintln!(
+                        "[diag] wall   ({x:2},{y:2}) mirror {mirror_mean:?} oracle {oracle_mean:?} rel {rel:?}"
+                    );
+                    assert!(
+                        rel_max < 0.15,
+                        "pixel ({x}, {y}): mirror {mirror_mean:?} vs oracle {oracle_mean:?} (rel {rel:?})"
+                    );
+                    mirror_sum += mirror_mean;
+                    oracle_sum += oracle_mean;
+                    checked_wall += 1;
+                } else if sun_lit && (p.z - 4.0).abs() < 0.6 {
+                    eprintln!(
+                        "[diag] sunlit ({x:2},{y:2}) mirror {mirror_mean:?} oracle {oracle_mean:?} rel {rel:?}"
+                    );
+                }
+            }
+        }
+
+        assert!(checked_wall >= 3, "wall pixels found: {checked_wall}");
+
+        // Signed aggregate: per-pixel firefly noise cancels, a transport
+        // bias cannot.
+        let rel_signed =
+            (mirror_sum - oracle_sum).abs() / oracle_sum.abs().max(Vec3::splat(1e-4));
+        eprintln!("[diag] signed aggregate rel {rel_signed:?} over {checked_wall} wall pixels");
+        assert!(
+            rel_signed.max_element() < 0.02,
+            "aggregate mirror-vs-oracle rel {rel_signed:?} over {checked_wall} wall pixels"
+        );
+    }
+
 }
