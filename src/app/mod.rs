@@ -14,10 +14,6 @@ use vulkano::{
     swapchain::{PresentMode, Surface, Swapchain, SwapchainCreateInfo},
 };
 
-#[cfg(debug_assertions)]
-use vulkano::buffer::{BufferCreateInfo, BufferUsage};
-#[cfg(debug_assertions)]
-use vulkano::memory::allocator::{DeviceLayout, MemoryTypeFilter};
 use vulkano_taskgraph::{
     Id, QueueFamilyType,
     descriptor_set::StorageImageId,
@@ -49,7 +45,7 @@ use crate::{
             feed::RendererInput,
             residency::RegionStore,
             task::{
-                HullCrossedCounter, NrdFrame, RegionRenderContext, RegionRenderTask, RenderMode,
+                NrdFrame, RegionRenderContext, RegionRenderTask, RenderMode,
                 capture_raygen, default_ev, default_scene, production_raygen,
             },
         },
@@ -57,12 +53,6 @@ use crate::{
     },
     world::{World, format::open_file, snapshot::emit_snapshots},
 };
-
-#[cfg(debug_assertions)]
-use crate::render::debug::{DrawHeatmapTask, create_heatmap_pipeline};
-
-#[cfg(debug_assertions)]
-const HEATMAP_MAX_PIXELS: u64 = 3840 * 2160;
 
 const DENOISE_ENABLED: bool = true;
 
@@ -213,9 +203,7 @@ impl App {
             let rcx = self.rcx.as_mut().unwrap();
             rcx.region.mode = match rcx.region.mode {
                 RenderMode::Voxel => RenderMode::Hull,
-                RenderMode::Hull => RenderMode::RayLatency,
-                RenderMode::RayLatency => RenderMode::HullCrossed,
-                RenderMode::HullCrossed => RenderMode::Normal,
+                RenderMode::Hull => RenderMode::Normal,
                 RenderMode::Normal => RenderMode::Voxel,
             };
         }
@@ -368,45 +356,11 @@ impl ApplicationHandler for App {
                 .unwrap()
         };
 
-        #[cfg(debug_assertions)]
-        let hull_crossed = {
-            let buffer_id = self
-                .gpu
-                .resources
-                .create_buffer(
-                    &BufferCreateInfo {
-                        usage: BufferUsage::STORAGE_BUFFER | BufferUsage::TRANSFER_DST,
-                        ..Default::default()
-                    },
-                    &AllocationCreateInfo {
-                        memory_type_filter: MemoryTypeFilter::PREFER_DEVICE,
-                        ..Default::default()
-                    },
-                    DeviceLayout::new_unsized::<[u32]>(HEATMAP_MAX_PIXELS).unwrap(),
-                )
-                .unwrap();
-            let storage_id = self
-                .gpu
-                .resources
-                .bindless_context()
-                .unwrap()
-                .global_set()
-                .create_storage_buffer(buffer_id, 0, Some(HEATMAP_MAX_PIXELS * 4))
-                .unwrap();
-            Some(HullCrossedCounter {
-                buffer_id,
-                storage_id,
-            })
-        };
-        #[cfg(not(debug_assertions))]
-        let hull_crossed: Option<HullCrossedCounter> = None;
-
         let rt_pass = RegionRenderTask::new(
             &self.gpu,
             &self.store,
             virtual_swapchain_id,
             &raygen,
-            hull_crossed.as_ref(),
             true,
         );
         let instance_buffer_id = rt_pass.instance_buffer_id();
@@ -421,13 +375,6 @@ impl ApplicationHandler for App {
             instance_buffer_id,
             AccessTypes::RAY_TRACING_SHADER_ACCELERATION_STRUCTURE_READ,
         );
-        #[cfg(debug_assertions)]
-        {
-            rt_node.buffer_access(
-                hull_crossed.as_ref().unwrap().buffer_id,
-                AccessTypes::RAY_TRACING_SHADER_STORAGE_WRITE,
-            );
-        }
         rt_node.image_access(
             trace_pass_images.diff_radiance.virtual_id,
             AccessTypes::RAY_TRACING_SHADER_STORAGE_WRITE,
@@ -458,32 +405,7 @@ impl ApplicationHandler for App {
             AccessTypes::RAY_TRACING_SHADER_STORAGE_WRITE,
             ImageLayoutType::General,
         );
-        #[cfg_attr(not(debug_assertions), allow(unused_variables))]
         let rt_node_id = rt_node.build();
-
-        #[cfg(debug_assertions)]
-        let heatmap_node_id = task_graph
-            .create_task_node(
-                "Heatmap",
-                QueueFamilyType::Graphics,
-                DrawHeatmapTask::new(
-                    virtual_swapchain_id,
-                    hull_crossed.as_ref().unwrap().storage_id,
-                ),
-            )
-            .image_access(
-                virtual_swapchain_id.current_image_id(),
-                AccessTypes::COMPUTE_SHADER_STORAGE_WRITE,
-                ImageLayoutType::General,
-            )
-            .buffer_access(
-                hull_crossed.as_ref().unwrap().buffer_id,
-                AccessTypes::COMPUTE_SHADER_STORAGE_READ,
-            )
-            .build();
-
-        #[cfg(debug_assertions)]
-        task_graph.add_edge(rt_node_id, heatmap_node_id).unwrap();
 
         let composite_node_id = task_graph
             .create_task_node(
@@ -550,11 +472,6 @@ impl ApplicationHandler for App {
         // barrier, and frames are serialized by the per-frame wait_idle.
         let denoise_node_id = denoise_node.build();
 
-        #[cfg(debug_assertions)]
-        task_graph
-            .add_edge(heatmap_node_id, denoise_node_id)
-            .unwrap();
-        #[cfg(not(debug_assertions))]
         task_graph.add_edge(rt_node_id, denoise_node_id).unwrap();
         task_graph
             .add_edge(denoise_node_id, composite_node_id)
@@ -571,18 +488,6 @@ impl ApplicationHandler for App {
         .unwrap();
 
         let mut task_graph = task_graph;
-
-        #[cfg(debug_assertions)]
-        {
-            let heatmap_pipeline = create_heatmap_pipeline(&self.gpu);
-            task_graph
-                .task_node_mut(heatmap_node_id)
-                .unwrap()
-                .task_mut()
-                .downcast_mut::<DrawHeatmapTask>()
-                .unwrap()
-                .pipeline = Some(heatmap_pipeline);
-        }
 
         {
             let composite_pipeline = create_composite_pipeline(&self.gpu);

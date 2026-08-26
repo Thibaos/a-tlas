@@ -10,10 +10,6 @@
 #include "header.glsl"
 #include "common.glsl"
 
-layout(constant_id = 1) const bool PER_PIXEL_COUNTER = false;
-
-const uint HULL_COUNT_MAX_PIXELS = 3840u * 2160u;
-
 const uint MC_STRIDE_Y = 32u;
 const uint MC_STRIDE_Z = 1024u;
 
@@ -107,13 +103,6 @@ void main() {
 
     if (!aabb_slab(origin, dir, tmin, tmax, b.min, b.max, t0, t1)) {
         return;
-    }
-
-    if (PER_PIXEL_COUNTER) {
-        uint pixel = gl_LaunchIDEXT.y * gl_LaunchSizeEXT.x + gl_LaunchIDEXT.x;
-        if (pixel < HULL_COUNT_MAX_PIXELS) {
-            atomicAdd(hull_count.pixels[pixel], 1u);
-        }
     }
 
     ivec3 mc = ivec3(b.min) >> 3;

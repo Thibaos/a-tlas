@@ -20,12 +20,6 @@ VKO_DECLARE_STORAGE_BUFFER(aabb_table, AabbTable {
 
 #define aabb_table vko_buffer(aabb_table, aabb_table_buffer_id)
 
-VKO_DECLARE_STORAGE_BUFFER(hull_count, HullCountBuffer {
-    uint pixels[];
-})
-
-#define hull_count vko_buffer(hull_count, hull_count_buffer_id)
-
 layout(push_constant) uniform RegionPushConstants {
     StorageImageId image_id;
     StorageImageId t_image_id;
@@ -36,7 +30,6 @@ layout(push_constant) uniform RegionPushConstants {
     StorageBufferId scene_buffer_id;
     StorageBufferId region_table_buffer_id;
     StorageBufferId aabb_table_buffer_id;
-    StorageBufferId hull_count_buffer_id;
     uint mode;
     uint frame_seed;
     StorageImageId diff_radiance_image_id;

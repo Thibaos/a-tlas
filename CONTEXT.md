@@ -260,31 +260,13 @@ pass
 
 **Render mode**:
 What the ray pass paints each pixel with: surface identity (`Voxel`, `Hull`) or
-a diagnostic quantity (`Ray latency`, `hull-crossed`, the `Normal` heatmap).
+a diagnostic quantity (the `Normal` heatmap).
 `Voxel` (default): the
 DDA commits the surface voxel, shaded by Path tracing from the surface's
 Material. `Hull`: each
 Micro-chunk's trimmed AABB is the surface, colored by a coordinate hash, with
 no DDA. The diagnostic modes are debug-build-only.
 _Avoid_: shading mode, visualization mode
-
-**Ray latency**:
-A diagnostic Render mode (debug builds): each pixel is colored by its ray's
-wall-clock lifetime, read as a `clockRealtime` delta around `traceRayEXT` in
-the raygen. Latency, not cost. It includes stalls, occupancy contention, and
-the slowest warp lane, and is not reproducible frame-to-frame; it is the only
-per-pixel instrument that sees the hardware BVH traversal, which no
-shader-side counter observes.
-_Avoid_: traversal time
-
-**hull-crossed**:
-The count of Micro-chunk hulls a ray enters (slab-passed, march begun) before
-committing or missing. A diagnostic Render mode (debug builds)
-paints each pixel by this count. A lower bound on traversal work (hulls
-entered, not the close-but-rejected AABB tests the hardware performs before
-any shader runs) and an upper bound per-pixel (Vulkan may invoke intersection
-shaders redundantly).
-_Avoid_: traversal count
 
 **Normal (Render mode)**:
 A diagnostic Render mode (debug builds): each pixel is colored by its hit's

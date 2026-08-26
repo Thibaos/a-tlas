@@ -15,8 +15,6 @@
 
 use std::sync::Arc;
 
-#[cfg(debug_assertions)]
-use vulkano::shader::SpecializationConstant;
 use vulkano::{
     acceleration_structure::AccelerationStructure,
     buffer::Buffer,
@@ -32,7 +30,7 @@ use vulkano::{
 };
 use vulkano_taskgraph::{
     Id, Task, TaskContext, TaskResult,
-    command_buffer::{DependencyInfo, FillBufferInfo, MemoryBarrier, RecordingCommandBuffer},
+    command_buffer::{DependencyInfo, MemoryBarrier, RecordingCommandBuffer},
     descriptor_set::{AccelerationStructureId, StorageBufferId, StorageImageId},
 };
 
@@ -48,15 +46,6 @@ pub(crate) mod capture_raygen {
 }
 
 pub(crate) mod production_raygen {
-    #[cfg(debug_assertions)]
-    vulkano_shaders::shader! {
-        root_path_env: "CARGO_MANIFEST_DIR",
-        ty: "raygen",
-        path: "shaders/region/production.rgen",
-        define: [("ATLAS_RT_RAY_LATENCY", "1")],
-        vulkan_version: "1.3"
-    }
-    #[cfg(not(debug_assertions))]
     vulkano_shaders::shader! {
         root_path_env: "CARGO_MANIFEST_DIR",
         ty: "raygen",
@@ -128,17 +117,7 @@ pub enum RenderMode {
     #[cfg(debug_assertions)]
     Hull = 1,
     #[cfg(debug_assertions)]
-    RayLatency = 2,
-    #[cfg(debug_assertions)]
-    HullCrossed = 3,
-    #[cfg(debug_assertions)]
     Normal = 4,
-}
-
-#[derive(Clone, Copy)]
-pub struct HullCrossedCounter {
-    pub buffer_id: Id<Buffer>,
-    pub storage_id: StorageBufferId,
 }
 
 /// Per-frame NRD state: the non-jittered matrices ReBLUR consumes
@@ -208,7 +187,6 @@ pub struct RegionRenderTask {
     pipeline: Arc<RayTracingPipeline>,
     #[allow(dead_code)]
     blases: Vec<Arc<AccelerationStructure>>,
-    hull_crossed: Option<HullCrossedCounter>,
 }
 
 impl RegionRenderTask {
@@ -218,7 +196,6 @@ impl RegionRenderTask {
         store: &RegionStore,
         virtual_swapchain_id: Id<Swapchain>,
         raygen: &EntryPoint,
-        hull_crossed: Option<&HullCrossedCounter>,
         sky_background: bool,
     ) -> Self {
         let pipeline = {
@@ -272,7 +249,6 @@ impl RegionRenderTask {
             shader_binding_table,
             pipeline,
             blases: store.blases(),
-            hull_crossed: hull_crossed.copied(),
         }
     }
 
@@ -332,15 +308,6 @@ pub(crate) fn build_ray_tracing_pipeline(
             .unwrap()
     };
 
-    #[cfg(debug_assertions)]
-    let hull_crossed_intersection = unsafe {
-        intersect::load(&gpu.device)
-            .unwrap()
-            .specialize(&[(1, SpecializationConstant::Bool(true))])
-            .entry_point("main")
-            .unwrap()
-    };
-
     #[cfg_attr(not(debug_assertions), allow(unused_mut))]
     let mut stages = vec![
         PipelineShaderStageCreateInfo::new(raygen),
@@ -370,18 +337,6 @@ pub(crate) fn build_ray_tracing_pipeline(
             closest_hit_shader: Some(hull_closest_hit_idx),
             any_hit_shader: None,
             intersection_shader: hull_intersection_idx,
-        });
-
-        let hull_crossed_idx = stages.len() as u32;
-
-        stages.push(PipelineShaderStageCreateInfo::new(
-            &hull_crossed_intersection,
-        ));
-
-        groups.push(RayTracingShaderGroupCreateInfo::ProceduralHit {
-            closest_hit_shader: Some(3),
-            any_hit_shader: None,
-            intersection_shader: hull_crossed_idx,
         });
     }
 
@@ -432,27 +387,6 @@ impl Task for RegionRenderTask {
             })
         };
 
-        if let Some(hull_crossed) = self.hull_crossed {
-            unsafe {
-                cbf.fill_buffer(&FillBufferInfo {
-                    dst_buffer: hull_crossed.buffer_id,
-                    data: 0,
-                    ..Default::default()
-                });
-                cbf.pipeline_barrier(&DependencyInfo {
-                    memory_barriers: &[MemoryBarrier {
-                        src_access: vulkano::sync::AccessFlags::TRANSFER_WRITE,
-                        dst_access: vulkano::sync::AccessFlags::SHADER_STORAGE_WRITE
-                            | vulkano::sync::AccessFlags::SHADER_STORAGE_READ,
-                        src_stages: vulkano::sync::PipelineStages::ALL_TRANSFER,
-                        dst_stages: vulkano::sync::PipelineStages::RAY_TRACING_SHADER,
-                        ..Default::default()
-                    }],
-                    ..Default::default()
-                });
-            }
-        }
-
         unsafe {
             cbf.push_constants(
                 self.pipeline.layout(),
@@ -467,10 +401,6 @@ impl Task for RegionRenderTask {
                     scene_buffer_id: self.scene_storage_id,
                     region_table_buffer_id: self.region_table_storage_id,
                     aabb_table_buffer_id: self.aabb_table_storage_id(),
-                    hull_count_buffer_id: self
-                        .hull_crossed
-                        .map(|hull_crossed| hull_crossed.storage_id)
-                        .unwrap_or(StorageBufferId::INVALID),
                     mode: rcx.mode as u32,
                     frame_seed: rcx.frame_seed,
                     diff_radiance_image_id: rcx.diff_radiance_image_id,
