@@ -381,7 +381,7 @@ void main() {
             vec2 uv_prev = (clip_prev.xy / clip_prev.w) * 0.5 + 0.5;
             vec2 uv_cur = (vec2(gl_LaunchIDEXT.xy) + 0.5) / vec2(gl_LaunchSizeEXT.xy);
             float viewz_prev = abs(-world_prev.z);
-            mv = vec3((uv_prev - uv_cur) * vec2(gl_LaunchSizeEXT.xy), viewz_prev - viewz);
+            mv = vec3(uv_prev - uv_cur, viewz_prev - viewz);
         }
 
         vec4 normal_roughness = (hit_t > 0.0)
