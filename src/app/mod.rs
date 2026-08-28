@@ -35,7 +35,7 @@ use crate::{
             composite::{CompositeTask, create_composite_pipeline},
             frame_images::FrameImages,
             gpu::{GpuDesc, MIN_SWAPCHAIN_IMAGES},
-            nrd::{DenoiseTask, NrdInstance},
+            nrd::{DenoiseTask, NrdInstance, history::NrdHistory},
             region::{
                 feed::RendererInput,
                 residency::RegionStore,
@@ -69,11 +69,7 @@ pub struct App {
     store: RegionStore,
 
     nrd: Option<Arc<NrdInstance>>,
-    prev_view: glam::Mat4,
-    prev_proj: glam::Mat4,
-    camera_valid: bool,
-    nrd_frame_index: u32,
-    nrd_clear_pending: bool,
+    history: NrdHistory,
 
     rcx: Option<RenderContext>,
 }
@@ -136,11 +132,7 @@ impl App {
             store,
 
             nrd: None,
-            prev_view: glam::Mat4::IDENTITY,
-            prev_proj: glam::Mat4::IDENTITY,
-            camera_valid: false,
-            nrd_frame_index: 0,
-            nrd_clear_pending: true,
+            history: NrdHistory::new(),
 
             rcx: None,
         }
@@ -221,26 +213,14 @@ impl App {
             10000.0,
         );
 
+        let prev = self.history.observe_camera(view, proj);
+
         rcx.region.camera = capture_raygen::Camera {
             proj_inverse: proj.inverse().to_cols_array_2d(),
             view_inverse: view.inverse().to_cols_array_2d(),
-            view_prev: self.prev_view.to_cols_array_2d(),
-            proj_prev: self.prev_proj.to_cols_array_2d(),
+            view_prev: prev.view.to_cols_array_2d(),
+            proj_prev: prev.proj.to_cols_array_2d(),
         };
-
-        rcx.region.nrd.view_to_clip = proj.to_cols_array();
-        rcx.region.nrd.world_to_view = view.to_cols_array();
-        if self.camera_valid {
-            rcx.region.nrd.view_to_clip_prev = self.prev_proj.to_cols_array();
-            rcx.region.nrd.world_to_view_prev = self.prev_view.to_cols_array();
-        } else {
-            rcx.region.nrd.view_to_clip_prev = rcx.region.nrd.view_to_clip;
-            rcx.region.nrd.world_to_view_prev = rcx.region.nrd.world_to_view;
-        }
-
-        self.prev_view = view;
-        self.prev_proj = proj;
-        self.camera_valid = true;
     }
 }
 
@@ -495,9 +475,9 @@ impl ApplicationHandler for App {
                         rcx.frame_images.bind_into(&mut rcx.region);
                         rcx.region.denoiser_enabled = self.nrd.is_some();
 
-                        if let Some(nrd) = &self.nrd {
-                            self.nrd_clear_pending = true;
+                        self.history.resized();
 
+                        if let Some(nrd) = &self.nrd {
                             if let Some(task) = rcx
                                 .task_graph
                                 .task_node_mut(rcx.denoise_node_id)
@@ -523,24 +503,8 @@ impl ApplicationHandler for App {
                 let apply_report = self.store.apply(&self.gpu, &self.input);
                 let edited = !apply_report.dirty.is_empty();
 
-                let clear = self.nrd_clear_pending && self.nrd.is_some();
-                let reset = edited && !clear;
-
-                self.nrd_frame_index = if clear || reset {
-                    1
-                } else {
-                    self.nrd_frame_index.wrapping_add(1)
-                };
-                self.nrd_clear_pending = false;
-
                 let rcx = self.rcx.as_mut().unwrap();
-                rcx.region.nrd.clear = clear;
-                rcx.region.nrd.reset = reset;
-                rcx.region.nrd.frame_index = if clear || reset {
-                    0
-                } else {
-                    self.nrd_frame_index
-                };
+                rcx.region.nrd = self.history.advance(edited, self.nrd.is_some());
 
                 let resource_map = {
                     let mut map = ResourceMap::new(&rcx.task_graph).unwrap();

@@ -1,3 +1,4 @@
+pub mod history;
 pub mod sys;
 
 use core::ffi::CStr;

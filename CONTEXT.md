@@ -266,6 +266,14 @@ bindless storage views. A resize destroys and recreates all of them together,
 and the denoiser's instance is recreated alongside.
 _Avoid_: render targets, trace-pass images, G-buffer
 
+**Frame history**:
+The Denoise pass's temporal memory: the previous frame's camera matrices and
+the accumulation frame index. The Denoise module owns it: the app reports
+camera updates, region edits, and swapchain resizes; the history decides
+each frame's clear, reset, and frame index. A resize clears it, a region
+edit resets it.
+_Avoid_: temporal state, NRD state, accumulation counter
+
 ## Render mode
 
 **Render mode**:
