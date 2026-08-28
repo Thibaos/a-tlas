@@ -14,22 +14,15 @@
 
 layout(location = 0) rayPayloadEXT MainPassPayload payload;
 
-const uint MODE_VOXEL = 0u;
-const uint MODE_HULL = 1u;
-const uint MODE_VALIDATION = 2u;
-const uint MODE_NORMAL = 4u;
-
 const uint MAX_BOUNCES = 4u;
 const float LOBE_P = 0.5;
 
 const float SUN_PICK_P = 0.5;
 const float SKY_PICK_P = 1.0 - SUN_PICK_P;
 const float RR_FLOOR = 0.05; // Russian-roulette survival floor (bounded variance)
-const float ALBEDO_EPS = 1e-3; // de-modulation guard: diffuse ÷ max(albedo, ALBEDO_EPS)
 const float BOUNCE_OFFSET = 1e-3; // bounce origin nudged along the normal (self-intersection)
 const float ALPHA_MIN = 1e-4; // GGX alpha floor (perfect-mirror singularity guard)
 const float COS_EPS = 1e-6; // cos-term guard in the G1/pdf denominators (grazing NaN guard)
-const float SKY_VIEWZ_NRD = 1.0e6; // beyond NRD's denoisingRange: sky pixels are excluded
 
 const float PI = 3.14159265358979;
 const float TWO_PI = 6.28318530717959;
@@ -372,7 +365,7 @@ void main() {
             ? radiance / max(primary_albedo, vec3(ALBEDO_EPS)) : radiance;
 
         float viewz = (hit_t > 0.0)
-            ? abs(-hit_t * dot(direction, camera.view_inverse[2].xyz)) : SKY_VIEWZ_NRD;
+            ? abs(-hit_t * dot(direction, camera.view_inverse[2].xyz)) : VIEWZ_SKY;
 
         vec3 mv = vec3(0.0);
         if (hit_t > 0.0) {

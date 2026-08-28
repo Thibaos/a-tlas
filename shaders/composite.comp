@@ -5,6 +5,7 @@
 
 #include <vulkano.glsl>
 #include "common/nrd.glsl"
+#include "common/contract.glsl"
 
 layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 
@@ -23,12 +24,6 @@ layout(push_constant) uniform PushConstants {
     uint width;
     uint height;
 };
-
-const uint MODE_VOXEL = 0u;
-const uint MODE_VALIDATION = 2u;
-
-const float ALBEDO_EPS = 1e-3;
-const float SKY_VIEWZ = 1.0e5;
 
 vec3 aces_fit(vec3 x) {
     const float a = 2.51;
@@ -60,7 +55,7 @@ void main() {
     vec3 albedo = imageLoad(vko_image2D_rgba8(albedo_metal_id), p).rgb;
 
     float viewz = imageLoad(vko_image2D_r32f(viewz_id), p).x;
-    bool is_sky = viewz > SKY_VIEWZ;
+    bool is_sky = viewz >= VIEWZ_SKY;
 
     vec3 radiance;
     if (denoiser == 0u) {

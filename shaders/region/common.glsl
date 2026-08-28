@@ -1,8 +1,4 @@
-#define RAY_T_MIN 0.01
-#define RAY_T_MAX 10000.0
-
-#define REGION_TABLE_ENTRIES 4096
-#define OFFSET_SENTINEL 0xFFFFFFFFu
+#include "../common/contract.glsl"
 
 layout(buffer_reference, std430) readonly buffer RegionPool {
     uint words[];

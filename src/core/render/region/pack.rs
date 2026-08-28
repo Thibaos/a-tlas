@@ -18,14 +18,18 @@ use glam::IVec3;
 use vulkano::acceleration_structure::AabbPositions;
 
 use crate::core::world::{
-    grid::{MICRO_CHUNK_LENGTH, REGION_LENGTH, region_id, region_index_of},
+    grid::{
+        MICRO_CHUNK_LENGTH, REGION_HALF_EXTENT, REGION_LENGTH, region_id, region_index_of,
+    },
     snapshot::MicroChunkSnapshot,
 };
 
-pub const MICRO_CHUNKS_PER_REGION: usize = 32 * 32 * 32;
+pub const MC_PER_REGION_SIDE: usize = (REGION_LENGTH / MICRO_CHUNK_LENGTH) as usize;
+pub const MICRO_CHUNKS_PER_REGION: usize =
+    MC_PER_REGION_SIDE * MC_PER_REGION_SIDE * MC_PER_REGION_SIDE;
 pub const OFFSET_TABLE_SIZE: usize = MICRO_CHUNKS_PER_REGION * 4;
 pub const OFFSET_SENTINEL: u32 = u32::MAX;
-pub const REGION_COUNT: usize = 4096;
+pub const REGION_COUNT: usize = (2 * REGION_HALF_EXTENT as usize).pow(3);
 
 pub struct RegionData {
     pub region_index: IVec3,
@@ -91,7 +95,9 @@ pub(crate) fn pack_region(region_index: IVec3, snapshots: &[&MicroChunkSnapshot]
         );
 
         let mc = mc_local_origin / MICRO_CHUNK_LENGTH;
-        let mc_index = ((mc.z * 32 + mc.y) * 32 + mc.x) as usize;
+
+        let side = MC_PER_REGION_SIDE as i32;
+        let mc_index = ((mc.z * side + mc.y) * side + mc.x) as usize;
 
         let block_offset = blocks.len() as u32;
         debug_assert!(block_offset % 8 == 0);
@@ -128,15 +134,18 @@ pub(crate) fn pack_region(region_index: IVec3, snapshots: &[&MicroChunkSnapshot]
 }
 
 fn occupied_cell_bounds(mask: &[u8; 64]) -> (IVec3, IVec3) {
-    let mut min = IVec3::splat(7);
+    let side = MICRO_CHUNK_LENGTH as usize;
+
+    let mut min = IVec3::splat(MICRO_CHUNK_LENGTH - 1);
     let mut max = IVec3::ZERO;
     let mut any = false;
 
-    for idx in 0..512usize {
+    for idx in 0..side * side * side {
         if (mask[idx / 8] >> (idx % 8)) & 1 != 0 {
-            let x = (idx % 8) as i32;
-            let y = ((idx / 8) % 8) as i32;
-            let z = (idx / 64) as i32;
+            let x = (idx % side) as i32;
+            let y = ((idx / side) % side) as i32;
+            let z = (idx / (side * side)) as i32;
+
             min = min.min(IVec3::new(x, y, z));
             max = max.max(IVec3::new(x, y, z));
             any = true;
@@ -227,5 +236,134 @@ mod tests {
         assert_eq!(index, (3 * 32 + 2) * 32 + 1);
         assert_eq!((31 * 32 + 31) * 32 + 31, MICRO_CHUNKS_PER_REGION - 1);
         assert_eq!(MICRO_CHUNK_LENGTH, 8);
+    }
+}
+
+#[cfg(test)]
+mod contract {
+    use std::fs;
+    use std::path::{Path, PathBuf};
+
+    use crate::core::render::region::task::RenderMode;
+
+    use super::*;
+
+    const CONTRACT: &str = include_str!("../../../../shaders/common/contract.glsl");
+
+    const NAMES: &[&str] = &[
+        "RAY_T_MIN",
+        "RAY_T_MAX",
+        "REGION_TABLE_ENTRIES",
+        "REGION_ID_MASK",
+        "MC_STRIDE_Y",
+        "MC_STRIDE_Z",
+        "VOXEL_STRIDE_Y",
+        "VOXEL_STRIDE_Z",
+        "MASK_BYTES",
+        "OFFSET_SENTINEL",
+        "MODE_VOXEL",
+        "MODE_HULL",
+        "MODE_VALIDATION",
+        "MODE_NORMAL",
+        "ALBEDO_EPS",
+        "VIEWZ_SKY",
+        "SKY_VIEWZ",
+        "SKY_VIEWZ_NRD",
+    ];
+
+    fn define(name: &str) -> String {
+        CONTRACT
+            .lines()
+            .find_map(|line| {
+                let mut parts = line.trim().split_whitespace();
+
+                (parts.next() == Some("#define") && parts.next() == Some(name))
+                    .then(|| parts.next().expect("define without value").to_string())
+            })
+            .unwrap_or_else(|| panic!("contract.glsl missing {name}"))
+    }
+
+    fn uint(name: &str) -> u64 {
+        let value = define(name);
+
+        match value.strip_prefix("0x") {
+            Some(hex) => u64::from_str_radix(hex.trim_end_matches('u'), 16).unwrap(),
+            None => value.trim_end_matches('u').parse().unwrap(),
+        }
+    }
+
+    fn float(name: &str) -> f64 {
+        define(name).parse().unwrap()
+    }
+
+    #[test]
+    fn glsl_matches_rust() {
+        let side = MC_PER_REGION_SIDE as u64;
+        let voxel = MICRO_CHUNK_LENGTH as u64;
+
+        assert_eq!(uint("REGION_TABLE_ENTRIES"), REGION_COUNT as u64);
+        assert_eq!(uint("REGION_ID_MASK"), REGION_COUNT as u64 - 1);
+        assert_eq!(uint("MC_STRIDE_Y"), side);
+        assert_eq!(uint("MC_STRIDE_Z"), side * side);
+        assert_eq!(uint("VOXEL_STRIDE_Y"), voxel);
+        assert_eq!(uint("VOXEL_STRIDE_Z"), voxel * voxel);
+        assert_eq!(uint("MASK_BYTES"), voxel * voxel * voxel / 8);
+        assert_eq!(uint("OFFSET_SENTINEL"), OFFSET_SENTINEL as u64);
+
+        assert_eq!(uint("MODE_VOXEL"), RenderMode::Voxel as u32 as u64);
+
+        #[cfg(debug_assertions)]
+        {
+            assert_eq!(uint("MODE_HULL"), RenderMode::Hull as u32 as u64);
+            assert_eq!(uint("MODE_VALIDATION"), RenderMode::NrdValidation as u32 as u64);
+            assert_eq!(uint("MODE_NORMAL"), RenderMode::Normal as u32 as u64);
+        }
+
+        assert_eq!(float("ALBEDO_EPS"), 1e-3);
+        assert_eq!(float("VIEWZ_SKY"), 1.0e6);
+        assert_eq!(float("RAY_T_MIN"), 0.01);
+        assert_eq!(float("RAY_T_MAX"), 10000.0);
+
+        assert!(float("VIEWZ_SKY") > float("RAY_T_MAX"));
+    }
+
+    #[test]
+    fn contract_declared_once() {
+        let mut sources = Vec::new();
+        collect_shaders(
+            &Path::new(env!("CARGO_MANIFEST_DIR")).join("shaders"),
+            &mut sources,
+        );
+
+        for path in sources {
+            if path.file_name().is_some_and(|name| name == "contract.glsl") {
+                continue;
+            }
+
+            let text = fs::read_to_string(&path).unwrap();
+
+            for name in NAMES {
+                let redeclared = text.contains(&format!("#define {name} "))
+                    || text.contains(&format!("{name} ="));
+
+                assert!(
+                    !redeclared,
+                    "{} declares contract constant {name}",
+                    path.display()
+                );
+            }
+        }
+    }
+
+    fn collect_shaders(dir: &Path, out: &mut Vec<PathBuf>) {
+        for entry in fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+
+            if path.is_dir() {
+                collect_shaders(&path, out);
+            } else {
+                out.push(path);
+            }
+        }
     }
 }

@@ -10,9 +10,6 @@
 #include "header.glsl"
 #include "common.glsl"
 
-const uint MC_STRIDE_Y = 32u;
-const uint MC_STRIDE_Z = 1024u;
-
 struct HullAabb {
     vec3 min;
     vec3 max;
@@ -23,8 +20,8 @@ layout(buffer_reference, scalar) readonly buffer HullAabbBuffer {
 };
 
 uint voxel_index(ivec3 cell_in_microchunk) {
-    return uint(cell_in_microchunk.x) + 8u * uint(cell_in_microchunk.y)
-        + 64u * uint(cell_in_microchunk.z);
+    return uint(cell_in_microchunk.x) + VOXEL_STRIDE_Y * uint(cell_in_microchunk.y)
+        + VOXEL_STRIDE_Z * uint(cell_in_microchunk.z);
 }
 
 uint microchunk_index(ivec3 mc) {
@@ -81,7 +78,7 @@ void main() {
         return;
     }
 
-    uint region_id = gl_InstanceCustomIndexEXT & 0xFFFu;
+    uint region_id = gl_InstanceCustomIndexEXT & REGION_ID_MASK;
     uint64_t pool_bda = region_table.bdas[region_id];
 
     if (pool_bda == 0ul) {
@@ -150,7 +147,7 @@ void main() {
 
                 if ((mask_word & bit_mask) != 0u) {
                     uint count = material_rank(pool, block_offset, idx);
-                    uint byte_off = block_offset + 64u + count;
+                    uint byte_off = block_offset + MASK_BYTES + count;
                     uint byte_word = pool.words[byte_off >> 2u];
                     uint material = (byte_word >> ((byte_off & 3u) << 3u)) & 0xFFu;
                     // Snap the reported crossing to the division form of the
