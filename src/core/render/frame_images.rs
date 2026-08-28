@@ -79,9 +79,7 @@ fn roles_of(kind: FrameImageKind) -> &'static [Role] {
         SpecRadiance | NormalRoughness | Mv => &[Role::TraceOutput, Role::DenoiserInput],
         ViewZ => &[Role::TraceOutput, Role::DenoiserInput, Role::CompositeRead],
         AlbedoMetal => &[Role::TraceOutput],
-        DenoisedDiff | DenoisedSpec | Validation => {
-            &[Role::DenoiserOutput, Role::CompositeRead]
-        }
+        DenoisedDiff | DenoisedSpec | Validation => &[Role::DenoiserOutput, Role::CompositeRead],
     }
 }
 
@@ -122,7 +120,12 @@ impl FrameImages {
         }
     }
 
-    pub fn recreate(&mut self, resources: &Resources, swapchain_id: Id<Swapchain>, extent: [u32; 3]) {
+    pub fn recreate(
+        &mut self,
+        resources: &Resources,
+        swapchain_id: Id<Swapchain>,
+        extent: [u32; 3],
+    ) {
         if self.attached {
             let mut batch = resources.create_deferred_batch();
 
@@ -160,7 +163,9 @@ impl FrameImages {
             let view = ImageView::new_default(&image).unwrap();
 
             entry.physical_id = physical_id;
-            entry.storage_id = bcx.global_set().add_storage_image(view, ImageLayout::General);
+            entry.storage_id = bcx
+                .global_set()
+                .add_storage_image(view, ImageLayout::General);
         }
 
         self.attached = true;
@@ -264,7 +269,10 @@ fn image_slot_mut(region: &mut RegionRenderContext, kind: FrameImageKind) -> &mu
     }
 }
 
-fn swapchain_storage_views(resources: &Resources, swapchain_id: Id<Swapchain>) -> Vec<StorageImageId> {
+fn swapchain_storage_views(
+    resources: &Resources,
+    swapchain_id: Id<Swapchain>,
+) -> Vec<StorageImageId> {
     let bcx = resources.bindless_context().unwrap();
     let swapchain_state = resources.swapchain(swapchain_id);
     let images = swapchain_state.images();
@@ -283,7 +291,7 @@ fn swapchain_storage_views(resources: &Resources, swapchain_id: Id<Swapchain>) -
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::render::region::task::{capture_raygen, default_scene, NrdFrame, RenderMode};
+    use crate::core::render::region::task::{NrdFrame, RenderMode, capture_raygen, default_scene};
 
     fn test_images() -> FrameImages {
         FrameImages {
@@ -366,7 +374,14 @@ mod tests {
     fn trace_outputs_are_the_six_production_writes() {
         assert_eq!(
             with_role(Role::TraceOutput),
-            vec![DiffRadiance, SpecRadiance, NormalRoughness, ViewZ, Mv, AlbedoMetal]
+            vec![
+                DiffRadiance,
+                SpecRadiance,
+                NormalRoughness,
+                ViewZ,
+                Mv,
+                AlbedoMetal
+            ]
         );
     }
 

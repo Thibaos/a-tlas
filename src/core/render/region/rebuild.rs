@@ -5,18 +5,14 @@ use vulkano::{
     DeviceSize,
     acceleration_structure::{
         AabbPositions, AccelerationStructure, AccelerationStructureBuildGeometryInfo,
-        AccelerationStructureBuildRangeInfo, AccelerationStructureGeometry,
-        AccelerationStructureGeometryAabbsData, AccelerationStructureGeometryData,
-        AccelerationStructureGeometryInstancesData, AccelerationStructureInstance,
+        AccelerationStructureBuildRangeInfo, AccelerationStructureInstance,
         AccelerationStructureType, BuildAccelerationStructureMode,
     },
-    buffer::{Buffer, BufferCreateInfo, BufferUsage, Subbuffer},
-    memory::allocator::AllocationCreateInfo,
-    sync::{AccessFlags, PipelineStages},
+    buffer::{Buffer, Subbuffer},
 };
 use vulkano_taskgraph::{
     Id, QueueFamilyType, Task, TaskContext, TaskResult,
-    command_buffer::{DependencyInfo, MemoryBarrier, RecordingCommandBuffer},
+    command_buffer::RecordingCommandBuffer,
     graph::{CompileInfo, ExecutableTaskGraph, TaskGraph},
     resource::{AccessTypes, HostAccessType},
     resource_map,
@@ -197,14 +193,7 @@ impl Task for BuildBlasTask {
         for build in &self.builds {
             let aabb_buffer = Subbuffer::new(tcx.buffer(build.aabb_buffer_id).buffer().clone())
                 .cast_aligned::<AabbPositions>();
-            let aabb_data = AccelerationStructureGeometryAabbsData {
-                data: aabb_buffer.device_address().unwrap().get(),
-                stride: size_of::<AabbPositions>() as u32,
-                ..Default::default()
-            };
-            let geometries = vec![AccelerationStructureGeometry::new(
-                AccelerationStructureGeometryData::Aabbs(aabb_data),
-            )];
+            let geometries = accel::aabb_geometries(&aabb_buffer);
 
             let mut build_geometry_info = AccelerationStructureBuildGeometryInfo {
                 ty: AccelerationStructureType::BottomLevel,
@@ -216,12 +205,7 @@ impl Task for BuildBlasTask {
             build_geometry_info.dst_acceleration_structure = Some(&build.blas);
             build_geometry_info.scratch_data = build.scratch.device_address().get();
 
-            unsafe {
-                cbf.pipeline_barrier(&DependencyInfo {
-                    memory_barriers: &[build_pre_barrier()],
-                    ..Default::default()
-                })
-            };
+            accel::as_build_pre_barrier(cbf);
 
             unsafe {
                 cbf.as_raw().build_acceleration_structure(
@@ -233,12 +217,7 @@ impl Task for BuildBlasTask {
                 )
             };
 
-            unsafe {
-                cbf.pipeline_barrier(&DependencyInfo {
-                    memory_barriers: &[build_post_barrier()],
-                    ..Default::default()
-                })
-            };
+            accel::as_build_post_barrier(cbf);
         }
 
         Ok(())
@@ -263,13 +242,7 @@ impl Task for BuildTlasTask {
     ) -> TaskResult {
         let instance_buffer = Subbuffer::new(tcx.buffer(self.instance_buffer_id).buffer().clone())
             .cast_aligned::<AccelerationStructureInstance>();
-        let instances_data = AccelerationStructureGeometryInstancesData {
-            data: instance_buffer.device_address().unwrap().get(),
-            ..Default::default()
-        };
-        let geometries = vec![AccelerationStructureGeometry::new(
-            AccelerationStructureGeometryData::Instances(instances_data),
-        )];
+        let geometries = accel::instance_geometries(&instance_buffer);
 
         let mut build_geometry_info = AccelerationStructureBuildGeometryInfo {
             ty: AccelerationStructureType::TopLevel,
@@ -282,12 +255,7 @@ impl Task for BuildTlasTask {
         build_geometry_info.dst_acceleration_structure = Some(&self.tlas);
         build_geometry_info.scratch_data = self.scratch.device_address().get();
 
-        unsafe {
-            cbf.pipeline_barrier(&DependencyInfo {
-                memory_barriers: &[build_pre_barrier()],
-                ..Default::default()
-            })
-        };
+        accel::as_build_pre_barrier(cbf);
 
         unsafe {
             cbf.as_raw().build_acceleration_structure(
@@ -299,42 +267,9 @@ impl Task for BuildTlasTask {
             )
         };
 
-        unsafe {
-            cbf.pipeline_barrier(&DependencyInfo {
-                memory_barriers: &[build_post_barrier()],
-                ..Default::default()
-            })
-        };
+        accel::as_build_post_barrier(cbf);
 
         Ok(())
-    }
-}
-
-fn build_pre_barrier() -> MemoryBarrier<'static> {
-    MemoryBarrier {
-        src_access: AccessFlags::TRANSFER_WRITE
-            | AccessFlags::SHADER_WRITE
-            | AccessFlags::HOST_WRITE
-            | AccessFlags::ACCELERATION_STRUCTURE_WRITE,
-        dst_access: AccessFlags::ACCELERATION_STRUCTURE_WRITE
-            | AccessFlags::ACCELERATION_STRUCTURE_READ,
-        src_stages: PipelineStages::ALL_TRANSFER
-            | PipelineStages::COMPUTE_SHADER
-            | PipelineStages::HOST
-            | PipelineStages::ACCELERATION_STRUCTURE_BUILD,
-        dst_stages: PipelineStages::ACCELERATION_STRUCTURE_BUILD,
-        ..Default::default()
-    }
-}
-
-fn build_post_barrier() -> MemoryBarrier<'static> {
-    MemoryBarrier {
-        src_access: AccessFlags::ACCELERATION_STRUCTURE_WRITE,
-        dst_access: AccessFlags::ACCELERATION_STRUCTURE_READ | AccessFlags::SHADER_READ,
-        src_stages: PipelineStages::ACCELERATION_STRUCTURE_BUILD,
-        dst_stages: PipelineStages::ACCELERATION_STRUCTURE_BUILD
-            | PipelineStages::RAY_TRACING_SHADER,
-        ..Default::default()
     }
 }
 
@@ -359,7 +294,8 @@ impl RebuildGraph {
         }
 
         if plan.instances.is_some() {
-            task_graph.add_host_buffer_access(store.instance_buffer_id, HostAccessType::Write);
+            task_graph
+                .add_host_buffer_access(store.bindings.instance_buffer_id, HostAccessType::Write);
         }
 
         let upload_node = task_graph
@@ -370,7 +306,7 @@ impl RebuildGraph {
                     uploads: plan.uploads,
                     table: plan.table,
                     instances: plan.instances,
-                    instance_buffer_id: store.instance_buffer_id,
+                    instance_buffer_id: store.bindings.instance_buffer_id,
                     region_table_buffer_id: store.region_table_buffer_id(),
                 },
             )
@@ -403,13 +339,13 @@ impl RebuildGraph {
                         QueueFamilyType::Compute,
                         BuildTlasTask {
                             instance_count: tlas.instance_count,
-                            instance_buffer_id: store.instance_buffer_id,
+                            instance_buffer_id: store.bindings.instance_buffer_id,
                             tlas: store.tlas(),
                             scratch: tlas.scratch,
                         },
                     )
                     .buffer_access(
-                        store.instance_buffer_id,
+                        store.bindings.instance_buffer_id,
                         AccessTypes::ACCELERATION_STRUCTURE_BUILD_ACCELERATION_STRUCTURE_WRITE,
                     )
                     .build(),
@@ -455,68 +391,6 @@ fn blas_buffer_ids(plan: &RebuildPlan) -> Vec<Id<Buffer>> {
         .iter()
         .map(|build| build.aabb_buffer_id)
         .collect()
-}
-
-pub(crate) fn allocate_scratch(gpu: &GpuDesc, size: DeviceSize) -> Arc<Buffer> {
-    Buffer::new_slice::<u8>(
-        &gpu.memory_allocator,
-        &BufferCreateInfo {
-            usage: BufferUsage::SHADER_DEVICE_ADDRESS | BufferUsage::STORAGE_BUFFER,
-            ..Default::default()
-        },
-        &AllocationCreateInfo::default(),
-        size.max(1),
-    )
-    .unwrap()
-    .buffer()
-    .clone()
-}
-
-pub(crate) fn blas_build_sizes(
-    gpu: &GpuDesc,
-    aabb_buffer: &Subbuffer<[AabbPositions]>,
-    aabb_count: u32,
-) -> vulkano::acceleration_structure::AccelerationStructureBuildSizesInfo {
-    let geometries = aabb_geometries(aabb_buffer);
-    accel::acceleration_structure_build_sizes(
-        &gpu.device,
-        &geometries,
-        AccelerationStructureType::BottomLevel,
-        aabb_count,
-    )
-}
-
-pub(crate) fn aabb_geometries(
-    aabb_buffer: &Subbuffer<[AabbPositions]>,
-) -> Vec<AccelerationStructureGeometry<'static>> {
-    let aabb_data = AccelerationStructureGeometryAabbsData {
-        data: aabb_buffer.device_address().unwrap().get(),
-        stride: size_of::<AabbPositions>() as u32,
-        ..Default::default()
-    };
-    vec![AccelerationStructureGeometry::new(
-        AccelerationStructureGeometryData::Aabbs(aabb_data),
-    )]
-}
-
-pub(crate) fn tlas_build_sizes(
-    gpu: &GpuDesc,
-    instance_buffer: &Subbuffer<[AccelerationStructureInstance]>,
-    instance_count: u32,
-) -> vulkano::acceleration_structure::AccelerationStructureBuildSizesInfo {
-    let instances_data = AccelerationStructureGeometryInstancesData {
-        data: instance_buffer.device_address().unwrap().get(),
-        ..Default::default()
-    };
-    let geometries = vec![AccelerationStructureGeometry::new(
-        AccelerationStructureGeometryData::Instances(instances_data),
-    )];
-    accel::acceleration_structure_build_sizes(
-        &gpu.device,
-        &geometries,
-        AccelerationStructureType::TopLevel,
-        instance_count,
-    )
 }
 
 #[cfg(test)]

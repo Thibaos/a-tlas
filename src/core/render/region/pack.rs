@@ -18,9 +18,7 @@ use glam::IVec3;
 use vulkano::acceleration_structure::AabbPositions;
 
 use crate::core::world::{
-    grid::{
-        MICRO_CHUNK_LENGTH, REGION_HALF_EXTENT, REGION_LENGTH, region_id, region_index_of,
-    },
+    grid::{MICRO_CHUNK_LENGTH, REGION_HALF_EXTENT, REGION_LENGTH, region_id, region_index_of},
     snapshot::MicroChunkSnapshot,
 };
 
@@ -315,7 +313,10 @@ mod contract {
         #[cfg(debug_assertions)]
         {
             assert_eq!(uint("MODE_HULL"), RenderMode::Hull as u32 as u64);
-            assert_eq!(uint("MODE_VALIDATION"), RenderMode::NrdValidation as u32 as u64);
+            assert_eq!(
+                uint("MODE_VALIDATION"),
+                RenderMode::NrdValidation as u32 as u64
+            );
             assert_eq!(uint("MODE_NORMAL"), RenderMode::Normal as u32 as u64);
         }
 

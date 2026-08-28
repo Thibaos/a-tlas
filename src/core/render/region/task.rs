@@ -31,10 +31,13 @@ use vulkano::{
 use vulkano_taskgraph::{
     Id, Task, TaskContext, TaskResult,
     command_buffer::{DependencyInfo, MemoryBarrier, RecordingCommandBuffer},
-    descriptor_set::{AccelerationStructureId, StorageBufferId, StorageImageId},
+    descriptor_set::StorageImageId,
 };
 
-use crate::core::{render::gpu::GpuDesc, render::region::residency::RegionStore};
+use crate::core::{
+    render::gpu::GpuDesc,
+    render::region::residency::{RegionBindings, RegionStore},
+};
 
 pub(crate) mod capture_raygen {
     vulkano_shaders::shader! {
@@ -184,16 +187,7 @@ pub struct RegionRenderContext {
 
 pub struct RegionRenderTask {
     swapchain_id: Id<Swapchain>,
-    camera_buffer_id: Id<Buffer>,
-    instance_buffer_id: Id<Buffer>,
-    camera_storage_id: StorageBufferId,
-    palette_storage_id: StorageBufferId,
-    scene_buffer_id: Id<Buffer>,
-    scene_storage_id: StorageBufferId,
-    material_table_storage_id: StorageBufferId,
-    region_table_storage_id: StorageBufferId,
-    aabb_table_storage_id: StorageBufferId,
-    acceleration_structure_id: AccelerationStructureId,
+    bindings: RegionBindings,
     shader_binding_table: ShaderBindingTable,
     pipeline: Arc<RayTracingPipeline>,
     #[allow(dead_code)]
@@ -247,16 +241,7 @@ impl RegionRenderTask {
 
         Self {
             swapchain_id: virtual_swapchain_id,
-            camera_buffer_id: store.camera_buffer_id,
-            instance_buffer_id: store.instance_buffer_id,
-            camera_storage_id: store.camera_storage_id,
-            scene_buffer_id: store.scene_buffer_id,
-            scene_storage_id: store.scene_storage_id,
-            palette_storage_id: store.palette_storage_id,
-            material_table_storage_id: store.material_table_storage_id,
-            region_table_storage_id: store.region_table_storage_id,
-            aabb_table_storage_id: store.aabb_table_storage_id,
-            acceleration_structure_id: store.acceleration_structure_id,
+            bindings: store.bindings,
             shader_binding_table,
             pipeline,
             blases: store.blases(),
@@ -264,11 +249,7 @@ impl RegionRenderTask {
     }
 
     pub fn instance_buffer_id(&self) -> Id<Buffer> {
-        self.instance_buffer_id
-    }
-
-    fn aabb_table_storage_id(&self) -> StorageBufferId {
-        self.aabb_table_storage_id
+        self.bindings.instance_buffer_id
     }
 }
 
@@ -379,8 +360,8 @@ impl Task for RegionRenderTask {
         let image_index = swapchain_state.current_image_index().unwrap();
         let extent = swapchain_state.images()[0].extent();
 
-        unsafe { cbf.update_buffer(self.camera_buffer_id, 0, &rcx.camera) };
-        unsafe { cbf.update_buffer(self.scene_buffer_id, 0, &rcx.scene) };
+        unsafe { cbf.update_buffer(self.bindings.camera_buffer_id, 0, &rcx.camera) };
+        unsafe { cbf.update_buffer(self.bindings.scene_buffer_id, 0, &rcx.scene) };
 
         unsafe {
             cbf.pipeline_barrier(&DependencyInfo {
@@ -403,13 +384,13 @@ impl Task for RegionRenderTask {
                 &capture_raygen::RegionPushConstants {
                     image_id: rcx.swapchain_storage_image_ids[image_index as usize],
                     t_image_id: rcx.t_image_storage_id,
-                    acceleration_structure_id: self.acceleration_structure_id,
-                    camera_buffer_id: self.camera_storage_id,
-                    palette_buffer_id: self.palette_storage_id,
-                    material_table_buffer_id: self.material_table_storage_id,
-                    scene_buffer_id: self.scene_storage_id,
-                    region_table_buffer_id: self.region_table_storage_id,
-                    aabb_table_buffer_id: self.aabb_table_storage_id(),
+                    acceleration_structure_id: self.bindings.acceleration_structure_id,
+                    camera_buffer_id: self.bindings.camera_storage_id,
+                    palette_buffer_id: self.bindings.palette_storage_id,
+                    material_table_buffer_id: self.bindings.material_table_storage_id,
+                    scene_buffer_id: self.bindings.scene_storage_id,
+                    region_table_buffer_id: self.bindings.region_table_storage_id,
+                    aabb_table_buffer_id: self.bindings.aabb_table_storage_id,
                     mode: rcx.mode as u32,
                     frame_seed: rcx.frame_seed,
                     diff_radiance_image_id: rcx.diff_radiance_image_id,

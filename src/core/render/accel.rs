@@ -1,51 +1,67 @@
 use std::sync::Arc;
 
 use vulkano::{
+    DeviceSize,
     acceleration_structure::{
         AabbPositions, AccelerationStructure, AccelerationStructureBuildGeometryInfo,
-        AccelerationStructureBuildRangeInfo, AccelerationStructureBuildType,
-        AccelerationStructureCreateInfo, AccelerationStructureGeometry,
-        AccelerationStructureGeometryAabbsData, AccelerationStructureGeometryData,
-        AccelerationStructureGeometryInstancesData, AccelerationStructureInstance,
-        AccelerationStructureType, BuildAccelerationStructureFlags, BuildAccelerationStructureMode,
+        AccelerationStructureBuildRangeInfo, AccelerationStructureBuildSizesInfo,
+        AccelerationStructureBuildType, AccelerationStructureCreateInfo,
+        AccelerationStructureGeometry, AccelerationStructureGeometryAabbsData,
+        AccelerationStructureGeometryData, AccelerationStructureGeometryInstancesData,
+        AccelerationStructureInstance, AccelerationStructureType, BuildAccelerationStructureFlags,
+        BuildAccelerationStructureMode,
     },
     buffer::{Buffer, BufferCreateInfo, BufferUsage, Subbuffer},
     device::{Device, Queue},
     memory::allocator::{AllocationCreateInfo, MemoryAllocator},
+    sync::{AccessFlags, PipelineStages},
 };
+use vulkano_taskgraph::{
+    Id,
+    command_buffer::{DependencyInfo, MemoryBarrier, RecordingCommandBuffer},
+    resource::{Flight, Resources},
+};
+
+use crate::core::render::gpu::GpuDesc;
 
 pub type BuildGeometries = Vec<AccelerationStructureGeometry<'static>>;
 
-fn as_build_barriers(cbf: &mut vulkano_taskgraph::command_buffer::RecordingCommandBuffer<'_>) {
-    let pre_memory_barrier = vulkano_taskgraph::command_buffer::MemoryBarrier {
-        src_access: vulkano::sync::AccessFlags::TRANSFER_WRITE
-            | vulkano::sync::AccessFlags::SHADER_WRITE,
-        dst_access: vulkano::sync::AccessFlags::ACCELERATION_STRUCTURE_WRITE
-            | vulkano::sync::AccessFlags::ACCELERATION_STRUCTURE_READ,
-        src_stages: vulkano::sync::PipelineStages::ALL_TRANSFER
-            | vulkano::sync::PipelineStages::COMPUTE_SHADER,
-        dst_stages: vulkano::sync::PipelineStages::ACCELERATION_STRUCTURE_BUILD,
+pub(crate) fn as_build_pre_barrier(cbf: &mut RecordingCommandBuffer<'_>) {
+    let pre_memory_barrier = MemoryBarrier {
+        src_access: AccessFlags::TRANSFER_WRITE
+            | AccessFlags::SHADER_WRITE
+            | AccessFlags::HOST_WRITE
+            | AccessFlags::ACCELERATION_STRUCTURE_WRITE,
+        dst_access: AccessFlags::ACCELERATION_STRUCTURE_WRITE
+            | AccessFlags::ACCELERATION_STRUCTURE_READ,
+        src_stages: PipelineStages::ALL_TRANSFER
+            | PipelineStages::COMPUTE_SHADER
+            | PipelineStages::HOST
+            | PipelineStages::ACCELERATION_STRUCTURE_BUILD,
+        dst_stages: PipelineStages::ACCELERATION_STRUCTURE_BUILD,
         ..Default::default()
     };
 
     unsafe {
-        cbf.pipeline_barrier(&vulkano_taskgraph::command_buffer::DependencyInfo {
+        cbf.pipeline_barrier(&DependencyInfo {
             memory_barriers: &[pre_memory_barrier],
             ..Default::default()
         });
     }
+}
 
-    let post_memory_barrier = vulkano_taskgraph::command_buffer::MemoryBarrier {
-        src_access: vulkano::sync::AccessFlags::ACCELERATION_STRUCTURE_WRITE,
-        dst_access: vulkano::sync::AccessFlags::ACCELERATION_STRUCTURE_READ
-            | vulkano::sync::AccessFlags::SHADER_READ,
-        src_stages: vulkano::sync::PipelineStages::ACCELERATION_STRUCTURE_BUILD,
-        dst_stages: vulkano::sync::PipelineStages::ACCELERATION_STRUCTURE_BUILD
-            | vulkano::sync::PipelineStages::RAY_TRACING_SHADER,
+pub(crate) fn as_build_post_barrier(cbf: &mut RecordingCommandBuffer<'_>) {
+    let post_memory_barrier = MemoryBarrier {
+        src_access: AccessFlags::ACCELERATION_STRUCTURE_WRITE,
+        dst_access: AccessFlags::ACCELERATION_STRUCTURE_READ | AccessFlags::SHADER_READ,
+        src_stages: PipelineStages::ACCELERATION_STRUCTURE_BUILD,
+        dst_stages: PipelineStages::ACCELERATION_STRUCTURE_BUILD
+            | PipelineStages::RAY_TRACING_SHADER,
         ..Default::default()
     };
+
     unsafe {
-        cbf.pipeline_barrier(&vulkano_taskgraph::command_buffer::DependencyInfo {
+        cbf.pipeline_barrier(&DependencyInfo {
             memory_barriers: &[post_memory_barrier],
             ..Default::default()
         });
@@ -122,9 +138,10 @@ pub fn build_acceleration_structure_in_place(
             resources,
             flight_id,
             |cbf, _tcx| {
-                as_build_barriers(cbf);
+                as_build_pre_barrier(cbf);
                 cbf.as_raw()
                     .build_acceleration_structure(&as_build_geometry_info, &[as_build_range_info]);
+                as_build_post_barrier(cbf);
                 Ok(())
             },
             [],
@@ -166,15 +183,7 @@ pub(crate) fn create_blas_aabbs_storage(
     memory_allocator: Arc<dyn MemoryAllocator>,
     device: Arc<Device>,
 ) -> (Arc<AccelerationStructure>, u64) {
-    let aabb_data = AccelerationStructureGeometryAabbsData {
-        data: aabb_buffer.device_address().unwrap().get(),
-        stride: size_of::<AabbPositions>() as u32,
-        ..Default::default()
-    };
-
-    let geometries = vec![AccelerationStructureGeometry::new(
-        AccelerationStructureGeometryData::Aabbs(aabb_data),
-    )];
+    let geometries = aabb_geometries(aabb_buffer);
 
     let as_build_sizes_info = acceleration_structure_build_sizes(
         &device,
@@ -268,11 +277,6 @@ pub fn build_acceleration_structure_fresh(
     (built, as_build_sizes_info.acceleration_structure_size)
 }
 
-use vulkano_taskgraph::{
-    Id,
-    resource::{Flight, Resources},
-};
-
 pub fn build_blas_aabbs_fresh(
     aabb_buffer: Subbuffer<[AabbPositions]>,
     primitive_count: u32,
@@ -282,16 +286,8 @@ pub fn build_blas_aabbs_fresh(
     resources: &Arc<Resources>,
     flight_id: Id<Flight>,
 ) -> (Arc<AccelerationStructure>, u64) {
-    let aabb_data = AccelerationStructureGeometryAabbsData {
-        data: aabb_buffer.device_address().unwrap().get(),
-        stride: size_of::<AabbPositions>() as u32,
-        ..Default::default()
-    };
-
     build_acceleration_structure_fresh(
-        vec![AccelerationStructureGeometry::new(
-            AccelerationStructureGeometryData::Aabbs(aabb_data),
-        )],
+        aabb_geometries(&aabb_buffer),
         primitive_count,
         AccelerationStructureType::BottomLevel,
         memory_allocator,
@@ -308,14 +304,7 @@ pub fn create_tlas_storage(
     memory_allocator: Arc<dyn MemoryAllocator>,
     device: Arc<Device>,
 ) -> (Arc<AccelerationStructure>, u64) {
-    let as_geometry_instances_data = AccelerationStructureGeometryInstancesData {
-        data: instance_buffer.device_address().unwrap().get(),
-        ..Default::default()
-    };
-
-    let geometries = vec![AccelerationStructureGeometry::new(
-        AccelerationStructureGeometryData::Instances(as_geometry_instances_data),
-    )];
+    let geometries = instance_geometries(instance_buffer);
 
     let as_build_geometry_info = AccelerationStructureBuildGeometryInfo {
         ty: AccelerationStructureType::TopLevel,
@@ -354,4 +343,70 @@ pub fn create_tlas_storage(
         acceleration,
         as_build_sizes_info.acceleration_structure_size,
     )
+}
+
+pub(crate) fn aabb_geometries(aabb_buffer: &Subbuffer<[AabbPositions]>) -> BuildGeometries {
+    let aabb_data = AccelerationStructureGeometryAabbsData {
+        data: aabb_buffer.device_address().unwrap().get(),
+        stride: size_of::<AabbPositions>() as u32,
+        ..Default::default()
+    };
+
+    vec![AccelerationStructureGeometry::new(
+        AccelerationStructureGeometryData::Aabbs(aabb_data),
+    )]
+}
+
+pub(crate) fn instance_geometries(
+    instance_buffer: &Subbuffer<[AccelerationStructureInstance]>,
+) -> BuildGeometries {
+    let instances_data = AccelerationStructureGeometryInstancesData {
+        data: instance_buffer.device_address().unwrap().get(),
+        ..Default::default()
+    };
+
+    vec![AccelerationStructureGeometry::new(
+        AccelerationStructureGeometryData::Instances(instances_data),
+    )]
+}
+
+pub(crate) fn blas_build_sizes(
+    gpu: &GpuDesc,
+    aabb_buffer: &Subbuffer<[AabbPositions]>,
+    aabb_count: u32,
+) -> AccelerationStructureBuildSizesInfo {
+    acceleration_structure_build_sizes(
+        &gpu.device,
+        &aabb_geometries(aabb_buffer),
+        AccelerationStructureType::BottomLevel,
+        aabb_count,
+    )
+}
+
+pub(crate) fn tlas_build_sizes(
+    gpu: &GpuDesc,
+    instance_buffer: &Subbuffer<[AccelerationStructureInstance]>,
+    instance_count: u32,
+) -> AccelerationStructureBuildSizesInfo {
+    acceleration_structure_build_sizes(
+        &gpu.device,
+        &instance_geometries(instance_buffer),
+        AccelerationStructureType::TopLevel,
+        instance_count,
+    )
+}
+
+pub(crate) fn allocate_scratch(gpu: &GpuDesc, size: DeviceSize) -> Arc<Buffer> {
+    Buffer::new_slice::<u8>(
+        &gpu.memory_allocator,
+        &BufferCreateInfo {
+            usage: BufferUsage::SHADER_DEVICE_ADDRESS | BufferUsage::STORAGE_BUFFER,
+            ..Default::default()
+        },
+        &AllocationCreateInfo::default(),
+        size.max(1),
+    )
+    .unwrap()
+    .buffer()
+    .clone()
 }

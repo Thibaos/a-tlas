@@ -485,12 +485,8 @@ impl ApplicationHandler for App {
                             })
                             .expect("failed to recreate swapchain");
 
-                        let extent = self
-                            .gpu
-                            .resources
-                            .swapchain(rcx.swapchain_id)
-                            .images()[0]
-                            .extent();
+                        let extent =
+                            self.gpu.resources.swapchain(rcx.swapchain_id).images()[0].extent();
 
                         self.nrd = NrdInstance::recreate(self.nrd.take(), &self.gpu, extent);
 
@@ -548,7 +544,8 @@ impl ApplicationHandler for App {
 
                 let resource_map = {
                     let mut map = ResourceMap::new(&rcx.task_graph).unwrap();
-                    map.insert(rcx.virtual_swapchain_id, rcx.swapchain_id).unwrap();
+                    map.insert(rcx.virtual_swapchain_id, rcx.swapchain_id)
+                        .unwrap();
 
                     for (virtual_id, physical_id) in rcx.frame_images.resource_pairs() {
                         map.insert(virtual_id, physical_id).unwrap();
@@ -642,4 +639,3 @@ impl ApplicationHandler for App {
         };
     }
 }
-

@@ -38,11 +38,11 @@ use crate::core::{
                 AllocStats, BlasAllocation, FreeLists, FreedBlas, FreedPool, PendingFrees,
                 allocate_blas, allocate_pool,
             },
+            decision::{RegionEffect, RegionSlot, decide},
             feed::RendererInput,
             pack::{REGION_COUNT, RegionData},
             rebuild::{
                 BlasBuild, RebuildGraph, RebuildLogEntry, RebuildPlan, RegionUpload, TlasBuild,
-                allocate_scratch, blas_build_sizes, tlas_build_sizes,
             },
             task::{capture_raygen, default_scene},
         },
@@ -75,7 +75,8 @@ pub struct ApplyReport {
     pub instance_count: usize,
 }
 
-pub struct RegionStore {
+#[derive(Clone, Copy)]
+pub struct RegionBindings {
     pub camera_buffer_id: Id<Buffer>,
     pub scene_buffer_id: Id<Buffer>,
     pub region_table_storage_id: StorageBufferId,
@@ -84,12 +85,16 @@ pub struct RegionStore {
     pub palette_storage_id: StorageBufferId,
     pub material_table_storage_id: StorageBufferId,
     pub acceleration_structure_id: AccelerationStructureId,
+    pub aabb_table_storage_id: StorageBufferId,
+    pub instance_buffer_id: Id<Buffer>,
+}
+
+pub struct RegionStore {
+    pub bindings: RegionBindings,
     region_table_buffer_id: Id<Buffer>,
     aabb_table_buffer_id: Id<Buffer>,
-    pub aabb_table_storage_id: StorageBufferId,
     instances: Vec<AccelerationStructureInstance>,
     resident_ids: Vec<u32>,
-    pub instance_buffer_id: Id<Buffer>,
     tlas: Arc<AccelerationStructure>,
     tlas_storage_size: u64,
     tlas_initialized: bool,
@@ -98,7 +103,7 @@ pub struct RegionStore {
     free: FreeLists,
     pending_free: PendingFrees,
     dummy_blas: Arc<AccelerationStructure>,
-    pub alloc_stats: AllocStats,
+    alloc_stats: AllocStats,
 }
 
 impl RegionStore {
@@ -336,7 +341,7 @@ impl RegionStore {
             )
             .unwrap();
 
-        let mut store = Self {
+        let bindings = RegionBindings {
             camera_buffer_id,
             scene_buffer_id,
             region_table_storage_id,
@@ -345,12 +350,16 @@ impl RegionStore {
             palette_storage_id,
             material_table_storage_id,
             acceleration_structure_id,
+            aabb_table_storage_id,
+            instance_buffer_id,
+        };
+
+        let mut store = Self {
+            bindings,
             region_table_buffer_id,
             aabb_table_buffer_id,
-            aabb_table_storage_id,
             instances: static_instances(),
             resident_ids: Vec::new(),
-            instance_buffer_id,
             tlas,
             tlas_storage_size,
             tlas_initialized: false,
@@ -375,13 +384,13 @@ impl RegionStore {
         if !store.tlas_initialized {
             let instance_buffer = Subbuffer::new(
                 gpu.resources
-                    .buffer(store.instance_buffer_id)
+                    .buffer(store.bindings.instance_buffer_id)
                     .buffer()
                     .clone(),
             )
             .cast_aligned::<AccelerationStructureInstance>();
 
-            let sizes = tlas_build_sizes(gpu, &instance_buffer, 1);
+            let sizes = accel::tlas_build_sizes(gpu, &instance_buffer, 1);
 
             debug_assert!(
                 store.tlas_storage_size >= sizes.acceleration_structure_size,
@@ -394,7 +403,7 @@ impl RegionStore {
                     instances: Some(store.packed_instance_prefix()),
                     tlas: Some(TlasBuild {
                         instance_count: 1,
-                        scratch: allocate_scratch(gpu, sizes.build_scratch_size),
+                        scratch: accel::allocate_scratch(gpu, sizes.build_scratch_size),
                     }),
                     ..Default::default()
                 },
@@ -454,16 +463,6 @@ impl RegionStore {
         self.rebuild(gpu, packs)
     }
 
-    #[allow(dead_code)]
-    pub fn resident_count(&self) -> usize {
-        self.resident_ids.len()
-    }
-
-    #[allow(dead_code)]
-    pub fn resident_ids(&self) -> &[u32] {
-        &self.resident_ids
-    }
-
     pub fn blases(&self) -> Vec<Arc<AccelerationStructure>> {
         self.regions
             .iter()
@@ -480,41 +479,48 @@ impl RegionStore {
     }
 
     fn rebuild(&mut self, gpu: &GpuDesc, packs: Vec<(IVec3, Option<RegionData>)>) -> ApplyReport {
+        let slots: Vec<Option<RegionSlot>> = self
+            .regions
+            .iter()
+            .map(|region| {
+                region.as_ref().map(|region| RegionSlot {
+                    pool_capacity: region.pool_capacity,
+                    aabb_capacity: region.aabb_capacity,
+                })
+            })
+            .collect();
+
+        let instance_count_before = self.resident_ids.len();
+        let decision = decide(&slots, &self.resident_ids, packs);
+        self.resident_ids = decision.resident_ids;
+
         let mut report = ApplyReport {
-            instance_count_before: self.resident_ids.len(),
+            instance_count_before,
+            became_resident: decision.became_resident,
+            left_resident: decision.left_resident,
+            dirty: decision.dirty,
+            blas_replaced: decision.blas_replaced,
+            tlas_rebuilt: decision.tlas_dirty,
             ..Default::default()
         };
 
         let mut plan = RebuildPlan::default();
-        let mut tlas_dirty = false;
-        let mut table_changed = false;
 
-        for (region_index, pack) in packs {
-            let id = region_id(region_index) as usize;
-            debug_assert!(
-                id < REGION_COUNT,
-                "region id {id} outside the 12-bit lattice"
-            );
+        for (id, effect) in decision.effects {
+            match effect {
+                RegionEffect::Ignore => {}
 
-            let was_resident = self.regions[id].is_some();
-            match (was_resident, pack) {
-                (false, None) => {}
-
-                (false, Some(pack)) => {
-                    let pool = allocate_pool(
-                        gpu,
-                        &mut self.free,
-                        &mut self.alloc_stats,
-                        pack.blocks.len() as u64,
-                    );
-                    let blas_alloc = allocate_blas(
-                        gpu,
-                        &mut self.free,
-                        &mut self.alloc_stats,
-                        pack.aabbs.len() as u32,
-                    );
-
-                    let aabb_count = pack.aabbs.len() as u32;
+                RegionEffect::Enter {
+                    pool_bytes,
+                    aabbs,
+                    pack,
+                } => {
+                    let region_index = pack.region_index;
+                    let pool =
+                        allocate_pool(gpu, &mut self.free, &mut self.alloc_stats, pool_bytes);
+                    let blas_alloc =
+                        allocate_blas(gpu, &mut self.free, &mut self.alloc_stats, aabbs);
+                    let aabb_count = aabbs;
                     let aabb_buffer = Subbuffer::new(
                         gpu.resources
                             .buffer(blas_alloc.aabb_buffer_id)
@@ -549,12 +555,10 @@ impl RegionStore {
                         .buffer()
                         .device_address()
                         .get();
-                    self.instances[id].acceleration_structure_reference =
+                    self.instances[id as usize].acceleration_structure_reference =
                         blas.device_address().into();
-                    self.insert_resident(id as u32);
-                    self.table_addresses[id] = address;
-                    table_changed = true;
-                    self.regions[id] = Some(ResidentRegion {
+                    self.table_addresses[id as usize] = address;
+                    self.regions[id as usize] = Some(ResidentRegion {
                         pool_buffer_id: pool.buffer_id,
                         pool_capacity: pool.capacity,
                         aabb_buffer_id: blas_alloc.aabb_buffer_id,
@@ -562,61 +566,49 @@ impl RegionStore {
                         blas,
                         blas_storage_size,
                     });
-                    report.became_resident.push(region_index);
-                    tlas_dirty = true;
                 }
 
-                (true, None) => {
-                    let region = self.regions[id].take().unwrap();
-                    self.remove_resident(id as u32);
-                    self.table_addresses[id] = 0;
-                    table_changed = true;
+                RegionEffect::Exit {
+                    retire_pool,
+                    retire_blas,
+                } => {
+                    let region = self.regions[id as usize].take().unwrap();
+                    self.table_addresses[id as usize] = 0;
 
                     self.pending_free.pools.push(FreedPool {
                         buffer_id: region.pool_buffer_id,
-                        capacity: region.pool_capacity,
+                        capacity: retire_pool,
                     });
 
                     self.pending_free.blas.push(FreedBlas {
                         aabb_buffer_id: region.aabb_buffer_id,
-                        aabb_capacity: region.aabb_capacity,
+                        aabb_capacity: retire_blas,
                         blas: region.blas.clone(),
                         blas_storage_size: region.blas_storage_size,
                     });
-
-                    report.left_resident.push(region_index);
-                    tlas_dirty = true;
                 }
 
-                (true, Some(pack)) => {
-                    let pool_grows =
-                        self.regions[id].as_ref().unwrap().pool_capacity < pack.blocks.len() as u64;
-                    let blas_grows =
-                        self.regions[id].as_ref().unwrap().aabb_capacity < pack.aabbs.len() as u32;
-
-                    let new_pool = pool_grows.then(|| {
-                        allocate_pool(
-                            gpu,
-                            &mut self.free,
-                            &mut self.alloc_stats,
-                            pack.blocks.len() as u64,
-                        )
+                RegionEffect::Update {
+                    pool_bytes,
+                    aabbs,
+                    retire_pool,
+                    retire_blas,
+                    pack,
+                } => {
+                    let region_index = pack.region_index;
+                    let new_pool = retire_pool.is_some().then(|| {
+                        allocate_pool(gpu, &mut self.free, &mut self.alloc_stats, pool_bytes)
                     });
 
-                    let new_blas = blas_grows.then(|| {
-                        allocate_blas(
-                            gpu,
-                            &mut self.free,
-                            &mut self.alloc_stats,
-                            pack.aabbs.len() as u32,
-                        )
-                    });
+                    let new_blas = retire_blas
+                        .is_some()
+                        .then(|| allocate_blas(gpu, &mut self.free, &mut self.alloc_stats, aabbs));
 
                     let mut blas_replacement: Option<BlasAllocation> = None;
 
                     if let Some(pool) = new_pool {
                         {
-                            let region = self.regions[id].as_mut().unwrap();
+                            let region = self.regions[id as usize].as_mut().unwrap();
                             self.pending_free.pools.push(FreedPool {
                                 buffer_id: region.pool_buffer_id,
                                 capacity: region.pool_capacity,
@@ -630,13 +622,12 @@ impl RegionStore {
                             .buffer()
                             .device_address()
                             .get();
-                        self.table_addresses[id] = address;
-                        table_changed = true;
+                        self.table_addresses[id as usize] = address;
                     }
 
                     if let Some(alloc) = new_blas {
                         {
-                            let region = self.regions[id].as_mut().unwrap();
+                            let region = self.regions[id as usize].as_mut().unwrap();
                             self.pending_free.blas.push(FreedBlas {
                                 aabb_buffer_id: region.aabb_buffer_id,
                                 aabb_capacity: region.aabb_capacity,
@@ -650,11 +641,11 @@ impl RegionStore {
                     }
 
                     let (pool_id, aabb_id) = {
-                        let region = self.regions[id].as_ref().unwrap();
+                        let region = self.regions[id as usize].as_ref().unwrap();
                         (region.pool_buffer_id, region.aabb_buffer_id)
                     };
 
-                    let aabb_count = pack.aabbs.len() as u32;
+                    let aabb_count = aabbs;
 
                     plan.uploads.push(RegionUpload {
                         region_index,
@@ -686,19 +677,17 @@ impl RegionStore {
                             ));
 
                             {
-                                let region = self.regions[id].as_mut().unwrap();
+                                let region = self.regions[id as usize].as_mut().unwrap();
                                 region.blas = blas.clone();
                                 region.blas_storage_size = blas_storage_size;
                             }
 
-                            self.instances[id].acceleration_structure_reference =
+                            self.instances[id as usize].acceleration_structure_reference =
                                 blas.device_address().into();
-                            report.blas_replaced.push(region_index);
-                            tlas_dirty = true;
                         }
                         None => {
                             let (blas, blas_storage_size) = {
-                                let region = self.regions[id].as_ref().unwrap();
+                                let region = self.regions[id as usize].as_ref().unwrap();
                                 (region.blas.clone(), region.blas_storage_size)
                             };
 
@@ -718,13 +707,11 @@ impl RegionStore {
                             ));
                         }
                     }
-
-                    report.dirty.push(region_index);
                 }
             }
         }
 
-        if table_changed {
+        if decision.table_changed {
             plan.table = Some(
                 self.table_addresses
                     .clone()
@@ -733,17 +720,17 @@ impl RegionStore {
             );
         }
 
-        if tlas_dirty {
+        if decision.tlas_dirty {
             let instance_buffer = Subbuffer::new(
                 gpu.resources
-                    .buffer(self.instance_buffer_id)
+                    .buffer(self.bindings.instance_buffer_id)
                     .buffer()
                     .clone(),
             )
             .cast_aligned::<AccelerationStructureInstance>();
 
             let instance_count = self.resident_ids.len().max(1) as u32;
-            let sizes = tlas_build_sizes(gpu, &instance_buffer, instance_count);
+            let sizes = accel::tlas_build_sizes(gpu, &instance_buffer, instance_count);
 
             debug_assert!(
                 self.tlas_storage_size >= sizes.acceleration_structure_size,
@@ -753,12 +740,11 @@ impl RegionStore {
             plan.instances = Some(self.packed_instance_prefix());
             plan.tlas = Some(TlasBuild {
                 instance_count,
-                scratch: allocate_scratch(gpu, sizes.build_scratch_size),
+                scratch: accel::allocate_scratch(gpu, sizes.build_scratch_size),
             });
         }
 
         report.rebuild_log = plan.log();
-        report.tlas_rebuilt = tlas_dirty;
 
         if plan.is_empty() {
             report.instance_count = self.resident_ids.len();
@@ -767,10 +753,7 @@ impl RegionStore {
 
         self.rebuild_with_plan(gpu, plan);
 
-        let aabbs_moved = !report.became_resident.is_empty()
-            || !report.left_resident.is_empty()
-            || !report.blas_replaced.is_empty();
-        if aabbs_moved {
+        if report.tlas_rebuilt {
             self.write_aabb_table(gpu, self.aabb_table_buffer_id);
         }
 
@@ -800,21 +783,6 @@ impl RegionStore {
             acceleration_structure_reference: self.dummy_blas.device_address().into(),
             ..Default::default()
         }
-    }
-
-    fn insert_resident(&mut self, id: u32) {
-        match self.resident_ids.binary_search(&id) {
-            Ok(_) => panic!("region {id} already resident"),
-            Err(position) => self.resident_ids.insert(position, id),
-        }
-    }
-
-    fn remove_resident(&mut self, id: u32) {
-        let position = self
-            .resident_ids
-            .binary_search(&id)
-            .unwrap_or_else(|_| panic!("region {id} not resident"));
-        self.resident_ids.remove(position);
     }
 
     fn release_pending_frees(&mut self) {
@@ -851,7 +819,7 @@ fn plan_blas_build(
     blas_storage_size: u64,
     fresh: bool,
 ) -> BlasBuild {
-    let sizes = blas_build_sizes(gpu, aabb_buffer, aabb_count);
+    let sizes = accel::blas_build_sizes(gpu, aabb_buffer, aabb_count);
 
     debug_assert!(
         blas_storage_size >= sizes.acceleration_structure_size,
@@ -863,7 +831,7 @@ fn plan_blas_build(
         aabb_buffer_id,
         aabb_count,
         blas,
-        scratch: allocate_scratch(gpu, sizes.build_scratch_size),
+        scratch: accel::allocate_scratch(gpu, sizes.build_scratch_size),
         fresh,
     }
 }
