@@ -256,6 +256,16 @@ A no-op for the debug Render modes, which paint the swapchain directly.
 _Avoid_: post-processing (beyond exposure/tonemap, out of scope), final
 pass
 
+## Frame lifecycle
+
+**Frame images**:
+The renderer's extent-bound image set: the Trace pass's outputs (the Beauty
+buffer pair plus the auxiliary buffers), the Denoise pass's outputs (the
+denoised diffuse/specular pair and the validation image), and the swapchain's
+bindless storage views. A resize destroys and recreates all of them together,
+and the denoiser's instance is recreated alongside.
+_Avoid_: render targets, trace-pass images, G-buffer
+
 ## Render mode
 
 **Render mode**:

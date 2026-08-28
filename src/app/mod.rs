@@ -5,21 +5,15 @@ mod schedule;
 use std::{f32::consts::PI, sync::Arc, time::Duration};
 use vulkano::{
     VulkanError,
-    format::Format,
-    image::{
-        Image, ImageCreateInfo, ImageFormatInfo, ImageLayout, ImageType, ImageUsage,
-        view::ImageView,
-    },
-    memory::allocator::AllocationCreateInfo,
+    image::{ImageFormatInfo, ImageUsage},
     swapchain::{PresentMode, Surface, Swapchain, SwapchainCreateInfo},
 };
 
 use vulkano_taskgraph::{
     Id, QueueFamilyType,
     descriptor_set::StorageImageId,
-    graph::{CompileInfo, ExecutableTaskGraph, ExecuteError, TaskGraph},
-    resource::{AccessTypes, ImageLayoutType, Resources},
-    resource_map,
+    graph::{CompileInfo, ExecutableTaskGraph, ExecuteError, ResourceMap, TaskGraph},
+    resource::{AccessTypes, ImageLayoutType},
 };
 
 use winit::{
@@ -39,11 +33,9 @@ use crate::{
     core::{
         render::{
             composite::{CompositeTask, create_composite_pipeline},
+            frame_images::FrameImages,
             gpu::{GpuDesc, MIN_SWAPCHAIN_IMAGES},
-            nrd::{
-                DenoiseTask, NrdInputs, NrdInstance,
-                sys::{NRD_VERSION_BUILD, NRD_VERSION_MAJOR, NRD_VERSION_MINOR},
-            },
+            nrd::{DenoiseTask, NrdInstance},
             region::{
                 feed::RendererInput,
                 residency::RegionStore,
@@ -52,33 +44,10 @@ use crate::{
                     default_ev, default_scene, production_raygen,
                 },
             },
-            swapchain::window_size_dependent_setup,
         },
         world::{World, format::open_file, grid::LATTICE_HALF_EXTENT, snapshot::emit_snapshots},
     },
 };
-
-const DENOISE_ENABLED: bool = true;
-
-fn create_nrd(gpu: &GpuDesc, extent: [u32; 3]) -> Option<Arc<NrdInstance>> {
-    if !DENOISE_ENABLED {
-        return None;
-    }
-
-    match NrdInstance::new(gpu, extent[0], extent[1]) {
-        Ok(instance) => {
-            println!(
-                "denoiser: NVIDIA NRD v{}.{}.{} ReBLUR (REBLUR_DIFFUSE_SPECULAR)",
-                NRD_VERSION_MAJOR, NRD_VERSION_MINOR, NRD_VERSION_BUILD,
-            );
-            Some(Arc::new(instance))
-        }
-        Err(error) => {
-            eprintln!("denoiser disabled: {error}");
-            None
-        }
-    }
-}
 
 pub struct App {
     close_requested: bool,
@@ -115,7 +84,7 @@ pub struct RenderContext {
     virtual_swapchain_id: Id<Swapchain>,
     recreate_swapchain: bool,
     task_graph: ExecutableTaskGraph<RegionRenderContext>,
-    trace_pass_images: TracePassImages,
+    frame_images: FrameImages,
     denoise_node_id: vulkano_taskgraph::graph::NodeId,
     region: RegionRenderContext,
 }
@@ -344,20 +313,15 @@ impl ApplicationHandler for App {
 
         let swapchain_id = swapchain.0;
 
-        let swapchain_storage_image_ids =
-            window_size_dependent_setup(&self.gpu.resources, swapchain_id);
-
         let mut task_graph = TaskGraph::new(&self.gpu.resources);
 
         let virtual_swapchain_id = task_graph.add_swapchain(&SwapchainCreateInfo::default());
 
-        let mut trace_pass_images = TracePassImages::add_virtual(&mut task_graph);
+        let mut frame_images = FrameImages::declare(&mut task_graph);
         let swapchain_state = self.gpu.resources.swapchain(swapchain_id);
         let extent = swapchain_state.images()[0].extent();
-        let physical_trace_pass_images =
-            create_trace_pass_images(&self.gpu.resources, extent[0], extent[1]);
-        trace_pass_images.attach_physical(physical_trace_pass_images);
-        self.nrd = create_nrd(&self.gpu, extent);
+        frame_images.recreate(&self.gpu.resources, swapchain_id, extent);
+        self.nrd = NrdInstance::recreate(self.nrd.take(), &self.gpu, extent);
 
         let raygen = unsafe {
             production_raygen::load(&self.gpu.device)
@@ -380,107 +344,25 @@ impl ApplicationHandler for App {
             instance_buffer_id,
             AccessTypes::RAY_TRACING_SHADER_ACCELERATION_STRUCTURE_READ,
         );
-        rt_node.image_access(
-            trace_pass_images.diff_radiance.virtual_id,
-            AccessTypes::RAY_TRACING_SHADER_STORAGE_WRITE,
-            ImageLayoutType::General,
-        );
-        rt_node.image_access(
-            trace_pass_images.spec_radiance.virtual_id,
-            AccessTypes::RAY_TRACING_SHADER_STORAGE_WRITE,
-            ImageLayoutType::General,
-        );
-        rt_node.image_access(
-            trace_pass_images.normal_roughness.virtual_id,
-            AccessTypes::RAY_TRACING_SHADER_STORAGE_WRITE,
-            ImageLayoutType::General,
-        );
-        rt_node.image_access(
-            trace_pass_images.viewz.virtual_id,
-            AccessTypes::RAY_TRACING_SHADER_STORAGE_WRITE,
-            ImageLayoutType::General,
-        );
-        rt_node.image_access(
-            trace_pass_images.mv.virtual_id,
-            AccessTypes::RAY_TRACING_SHADER_STORAGE_WRITE,
-            ImageLayoutType::General,
-        );
-        rt_node.image_access(
-            trace_pass_images.albedo_metal.virtual_id,
-            AccessTypes::RAY_TRACING_SHADER_STORAGE_WRITE,
-            ImageLayoutType::General,
-        );
+        frame_images.declare_trace_outputs(&mut rt_node);
         let rt_node_id = rt_node.build();
 
-        let composite_node_id = task_graph
-            .create_task_node(
-                "Composite",
-                QueueFamilyType::Graphics,
-                CompositeTask::new(virtual_swapchain_id),
-            )
-            .image_access(
-                virtual_swapchain_id.current_image_id(),
-                AccessTypes::COMPUTE_SHADER_STORAGE_WRITE,
-                ImageLayoutType::General,
-            )
-            .image_access(
-                trace_pass_images.diff_radiance.virtual_id,
-                AccessTypes::COMPUTE_SHADER_STORAGE_READ,
-                ImageLayoutType::General,
-            )
-            .image_access(
-                trace_pass_images.denoised_diff.virtual_id,
-                AccessTypes::COMPUTE_SHADER_STORAGE_READ,
-                ImageLayoutType::General,
-            )
-            .image_access(
-                trace_pass_images.denoised_spec.virtual_id,
-                AccessTypes::COMPUTE_SHADER_STORAGE_READ,
-                ImageLayoutType::General,
-            )
-            .image_access(
-                trace_pass_images.validation.virtual_id,
-                AccessTypes::COMPUTE_SHADER_STORAGE_READ,
-                ImageLayoutType::General,
-            )
-            .image_access(
-                trace_pass_images.viewz.virtual_id,
-                AccessTypes::COMPUTE_SHADER_STORAGE_READ,
-                ImageLayoutType::General,
-            )
-            .build();
+        let mut composite_node = task_graph.create_task_node(
+            "Composite",
+            QueueFamilyType::Graphics,
+            CompositeTask::new(virtual_swapchain_id),
+        );
+        composite_node.image_access(
+            virtual_swapchain_id.current_image_id(),
+            AccessTypes::COMPUTE_SHADER_STORAGE_WRITE,
+            ImageLayoutType::General,
+        );
+        frame_images.declare_composite_reads(&mut composite_node);
+        let composite_node_id = composite_node.build();
 
         let mut denoise_node =
             task_graph.create_task_node("Denoise", QueueFamilyType::Graphics, DenoiseTask::new());
-        for image in [
-            &trace_pass_images.diff_radiance,
-            &trace_pass_images.spec_radiance,
-            &trace_pass_images.normal_roughness,
-            &trace_pass_images.viewz,
-            &trace_pass_images.mv,
-        ] {
-            denoise_node.image_access(
-                image.virtual_id,
-                AccessTypes::COMPUTE_SHADER_SAMPLED_READ,
-                ImageLayoutType::General,
-            );
-        }
-        for image in [
-            &trace_pass_images.denoised_diff,
-            &trace_pass_images.denoised_spec,
-            &trace_pass_images.validation,
-        ] {
-            denoise_node.image_access(
-                image.virtual_id,
-                AccessTypes::COMPUTE_SHADER_STORAGE_WRITE,
-                ImageLayoutType::General,
-            );
-        }
-        // The constants buffer stays undeclared on purpose: declaring the
-        // physical id here trips ResourceMap validation (InvalidSlotError).
-        // Its hazards are covered anyway: update_buffer lands in the same
-        // recording as the dispatches behind an explicit TRANSFER_WRITE
-        // barrier, and frames are serialized by the per-frame wait_idle.
+        frame_images.declare_denoise_io(&mut denoise_node);
         let denoise_node_id = denoise_node.build();
 
         task_graph.add_edge(rt_node_id, denoise_node_id).unwrap();
@@ -512,38 +394,17 @@ impl ApplicationHandler for App {
         }
 
         if let Some(nrd) = self.nrd.clone() {
-            let input_view = |image: &TracePassImage| {
-                ImageView::new_default(&self.gpu.resources.image(image.physical_id).image().clone())
-                    .unwrap()
-            };
-            let inputs = NrdInputs {
-                diff_radiance: input_view(&trace_pass_images.diff_radiance),
-                spec_radiance: input_view(&trace_pass_images.spec_radiance),
-                normal_roughness: input_view(&trace_pass_images.normal_roughness),
-                viewz: input_view(&trace_pass_images.viewz),
-                mv: input_view(&trace_pass_images.mv),
-                diff_out: input_view(&trace_pass_images.denoised_diff),
-                spec_out: input_view(&trace_pass_images.denoised_spec),
-                validation: input_view(&trace_pass_images.validation),
-            };
-
-            task_graph
+            let task = task_graph
                 .task_node_mut(denoise_node_id)
                 .unwrap()
                 .task_mut()
                 .downcast_mut::<DenoiseTask>()
-                .unwrap()
-                .instance = Some(nrd.clone());
-            task_graph
-                .task_node_mut(denoise_node_id)
-                .unwrap()
-                .task_mut()
-                .downcast_mut::<DenoiseTask>()
-                .unwrap()
-                .inputs = Some(inputs);
+                .unwrap();
+            task.instance = Some(nrd.clone());
+            task.inputs = Some(frame_images.nrd_inputs(&self.gpu.resources));
         }
 
-        let region = RegionRenderContext {
+        let mut region = RegionRenderContext {
             camera: capture_raygen::Camera {
                 proj_inverse: [[0.0; 4]; 4],
                 view_inverse: [[0.0; 4]; 4],
@@ -551,23 +412,25 @@ impl ApplicationHandler for App {
                 proj_prev: glam::Mat4::IDENTITY.to_cols_array_2d(),
             },
             scene: default_scene(),
-            swapchain_storage_image_ids,
+            swapchain_storage_image_ids: Vec::new(),
             t_image_storage_id: StorageImageId::INVALID,
-            diff_radiance_image_id: trace_pass_images.diff_radiance.storage_id,
-            spec_radiance_image_id: trace_pass_images.spec_radiance.storage_id,
-            normal_roughness_image_id: trace_pass_images.normal_roughness.storage_id,
-            viewz_image_id: trace_pass_images.viewz.storage_id,
-            mv_image_id: trace_pass_images.mv.storage_id,
-            albedo_metal_image_id: trace_pass_images.albedo_metal.storage_id,
-            denoised_diff_image_id: trace_pass_images.denoised_diff.storage_id,
-            denoised_spec_image_id: trace_pass_images.denoised_spec.storage_id,
-            validation_image_id: trace_pass_images.validation.storage_id,
+            diff_radiance_image_id: StorageImageId::INVALID,
+            spec_radiance_image_id: StorageImageId::INVALID,
+            normal_roughness_image_id: StorageImageId::INVALID,
+            viewz_image_id: StorageImageId::INVALID,
+            mv_image_id: StorageImageId::INVALID,
+            denoised_diff_image_id: StorageImageId::INVALID,
+            denoised_spec_image_id: StorageImageId::INVALID,
+            validation_image_id: StorageImageId::INVALID,
             denoiser_enabled: self.nrd.is_some(),
             nrd: NrdFrame::default(),
+            albedo_metal_image_id: StorageImageId::INVALID,
             ev: default_ev(),
             mode: RenderMode::default(),
             frame_seed: 0,
         };
+
+        frame_images.bind_into(&mut region);
 
         self.rcx = Some(RenderContext {
             window,
@@ -575,7 +438,7 @@ impl ApplicationHandler for App {
             virtual_swapchain_id,
             recreate_swapchain: false,
             task_graph,
-            trace_pass_images,
+            frame_images,
             denoise_node_id,
             region,
         });
@@ -622,89 +485,22 @@ impl ApplicationHandler for App {
                             })
                             .expect("failed to recreate swapchain");
 
-                        let mut batch = self.gpu.resources.create_deferred_batch();
+                        let extent = self
+                            .gpu
+                            .resources
+                            .swapchain(rcx.swapchain_id)
+                            .images()[0]
+                            .extent();
 
-                        for &id in &rcx.region.swapchain_storage_image_ids {
-                            batch.destroy_storage_image(id);
-                        }
+                        self.nrd = NrdInstance::recreate(self.nrd.take(), &self.gpu, extent);
 
-                        let t = &rcx.trace_pass_images;
-                        for image in [
-                            &t.diff_radiance,
-                            &t.spec_radiance,
-                            &t.normal_roughness,
-                            &t.viewz,
-                            &t.mv,
-                            &t.albedo_metal,
-                            &t.denoised_diff,
-                            &t.denoised_spec,
-                            &t.validation,
-                        ] {
-                            batch.destroy_image(image.physical_id);
-                            batch.destroy_storage_image(image.storage_id);
-                        }
-
-                        if let Some(old) = &self.nrd {
-                            let (images, constants) = old.resource_ids();
-                            for id in images {
-                                batch.destroy_image(id);
-                            }
-                            batch.destroy_buffer(constants);
-                        }
-
-                        batch.enqueue();
-
-                        rcx.region.swapchain_storage_image_ids =
-                            window_size_dependent_setup(&self.gpu.resources, rcx.swapchain_id);
-
-                        let swapchain_state = self.gpu.resources.swapchain(rcx.swapchain_id);
-                        let extent = swapchain_state.images()[0].extent();
-                        let physical =
-                            create_trace_pass_images(&self.gpu.resources, extent[0], extent[1]);
-                        rcx.trace_pass_images.attach_physical(physical);
-                        rcx.region.diff_radiance_image_id =
-                            rcx.trace_pass_images.diff_radiance.storage_id;
-                        rcx.region.spec_radiance_image_id =
-                            rcx.trace_pass_images.spec_radiance.storage_id;
-                        rcx.region.normal_roughness_image_id =
-                            rcx.trace_pass_images.normal_roughness.storage_id;
-                        rcx.region.viewz_image_id = rcx.trace_pass_images.viewz.storage_id;
-                        rcx.region.mv_image_id = rcx.trace_pass_images.mv.storage_id;
-                        rcx.region.albedo_metal_image_id =
-                            rcx.trace_pass_images.albedo_metal.storage_id;
-                        rcx.region.denoised_diff_image_id =
-                            rcx.trace_pass_images.denoised_diff.storage_id;
-                        rcx.region.denoised_spec_image_id =
-                            rcx.trace_pass_images.denoised_spec.storage_id;
-                        rcx.region.validation_image_id =
-                            rcx.trace_pass_images.validation.storage_id;
-
-                        self.nrd = create_nrd(&self.gpu, extent);
-
-                        if self.nrd.is_some() {
-                            self.nrd_clear_pending = true;
-                        }
+                        rcx.frame_images
+                            .recreate(&self.gpu.resources, rcx.swapchain_id, extent);
+                        rcx.frame_images.bind_into(&mut rcx.region);
                         rcx.region.denoiser_enabled = self.nrd.is_some();
 
                         if let Some(nrd) = &self.nrd {
-                            let input_view = |image: &TracePassImage| {
-                                ImageView::new_default(
-                                    &self.gpu.resources.image(image.physical_id).image().clone(),
-                                )
-                                .unwrap()
-                            };
-                            let inputs = NrdInputs {
-                                diff_radiance: input_view(&rcx.trace_pass_images.diff_radiance),
-                                spec_radiance: input_view(&rcx.trace_pass_images.spec_radiance),
-                                normal_roughness: input_view(
-                                    &rcx.trace_pass_images.normal_roughness,
-                                ),
-                                viewz: input_view(&rcx.trace_pass_images.viewz),
-                                mv: input_view(&rcx.trace_pass_images.mv),
-                                diff_out: input_view(&rcx.trace_pass_images.denoised_diff),
-                                spec_out: input_view(&rcx.trace_pass_images.denoised_spec),
-                                validation: input_view(&rcx.trace_pass_images.validation),
-                            };
+                            self.nrd_clear_pending = true;
 
                             if let Some(task) = rcx
                                 .task_graph
@@ -713,7 +509,8 @@ impl ApplicationHandler for App {
                                 .and_then(|node| node.task_mut().downcast_mut::<DenoiseTask>())
                             {
                                 task.instance = Some(nrd.clone());
-                                task.inputs = Some(inputs);
+                                task.inputs =
+                                    Some(rcx.frame_images.nrd_inputs(&self.gpu.resources));
                             }
                         }
 
@@ -749,29 +546,16 @@ impl ApplicationHandler for App {
                     self.nrd_frame_index
                 };
 
-                let resource_map = resource_map!(
-                    &rcx.task_graph,
-                    rcx.virtual_swapchain_id => rcx.swapchain_id,
-                    rcx.trace_pass_images.diff_radiance.virtual_id =>
-                        rcx.trace_pass_images.diff_radiance.physical_id,
-                    rcx.trace_pass_images.spec_radiance.virtual_id =>
-                        rcx.trace_pass_images.spec_radiance.physical_id,
-                    rcx.trace_pass_images.normal_roughness.virtual_id =>
-                        rcx.trace_pass_images.normal_roughness.physical_id,
-                    rcx.trace_pass_images.viewz.virtual_id =>
-                        rcx.trace_pass_images.viewz.physical_id,
-                    rcx.trace_pass_images.mv.virtual_id =>
-                        rcx.trace_pass_images.mv.physical_id,
-                    rcx.trace_pass_images.albedo_metal.virtual_id =>
-                        rcx.trace_pass_images.albedo_metal.physical_id,
-                    rcx.trace_pass_images.denoised_diff.virtual_id =>
-                        rcx.trace_pass_images.denoised_diff.physical_id,
-                    rcx.trace_pass_images.denoised_spec.virtual_id =>
-                        rcx.trace_pass_images.denoised_spec.physical_id,
-                    rcx.trace_pass_images.validation.virtual_id =>
-                        rcx.trace_pass_images.validation.physical_id,
-                )
-                .unwrap();
+                let resource_map = {
+                    let mut map = ResourceMap::new(&rcx.task_graph).unwrap();
+                    map.insert(rcx.virtual_swapchain_id, rcx.swapchain_id).unwrap();
+
+                    for (virtual_id, physical_id) in rcx.frame_images.resource_pairs() {
+                        map.insert(virtual_id, physical_id).unwrap();
+                    }
+
+                    map
+                };
 
                 let execute_result = unsafe {
                     rcx.task_graph.execute(resource_map, &rcx.region, || {
@@ -859,141 +643,3 @@ impl ApplicationHandler for App {
     }
 }
 
-pub(crate) struct TracePassImage {
-    pub virtual_id: Id<Image>,
-    pub physical_id: Id<Image>,
-    pub storage_id: StorageImageId,
-}
-
-pub(crate) struct TracePassImages {
-    pub diff_radiance: TracePassImage,
-    pub spec_radiance: TracePassImage,
-    pub normal_roughness: TracePassImage,
-    pub viewz: TracePassImage,
-    pub mv: TracePassImage,
-    pub albedo_metal: TracePassImage,
-    pub denoised_diff: TracePassImage,
-    pub denoised_spec: TracePassImage,
-    pub validation: TracePassImage,
-}
-
-impl TracePassImages {
-    fn add_virtual(task_graph: &mut TaskGraph<RegionRenderContext>) -> Self {
-        let mut add = |format: Format| {
-            task_graph.add_image(&ImageCreateInfo {
-                image_type: ImageType::Dim2d,
-                format,
-                usage: ImageUsage::STORAGE,
-                ..Default::default()
-            })
-        };
-
-        let image = |virtual_id| TracePassImage {
-            virtual_id,
-            physical_id: Id::INVALID,
-            storage_id: StorageImageId::INVALID,
-        };
-
-        Self {
-            diff_radiance: image(add(Format::R16G16B16A16_SFLOAT)),
-            spec_radiance: image(add(Format::R16G16B16A16_SFLOAT)),
-            normal_roughness: image(add(Format::R8G8B8A8_UNORM)),
-            viewz: image(add(Format::R32_SFLOAT)),
-            mv: image(add(Format::R16G16B16A16_SFLOAT)),
-            albedo_metal: image(add(Format::R8G8B8A8_UNORM)),
-            denoised_diff: image(add(Format::R16G16B16A16_SFLOAT)),
-            denoised_spec: image(add(Format::R16G16B16A16_SFLOAT)),
-            validation: image(add(Format::R8G8B8A8_UNORM)),
-        }
-    }
-
-    fn attach_physical(&mut self, physical: TracePassImages) {
-        self.diff_radiance.physical_id = physical.diff_radiance.physical_id;
-        self.diff_radiance.storage_id = physical.diff_radiance.storage_id;
-        self.spec_radiance.physical_id = physical.spec_radiance.physical_id;
-        self.spec_radiance.storage_id = physical.spec_radiance.storage_id;
-        self.normal_roughness.physical_id = physical.normal_roughness.physical_id;
-        self.normal_roughness.storage_id = physical.normal_roughness.storage_id;
-        self.viewz.physical_id = physical.viewz.physical_id;
-        self.viewz.storage_id = physical.viewz.storage_id;
-        self.mv.physical_id = physical.mv.physical_id;
-        self.mv.storage_id = physical.mv.storage_id;
-        self.albedo_metal.physical_id = physical.albedo_metal.physical_id;
-        self.albedo_metal.storage_id = physical.albedo_metal.storage_id;
-        self.denoised_diff.physical_id = physical.denoised_diff.physical_id;
-        self.denoised_diff.storage_id = physical.denoised_diff.storage_id;
-        self.denoised_spec.physical_id = physical.denoised_spec.physical_id;
-        self.denoised_spec.storage_id = physical.denoised_spec.storage_id;
-        self.validation.physical_id = physical.validation.physical_id;
-        self.validation.storage_id = physical.validation.storage_id;
-    }
-}
-
-pub(crate) fn create_trace_pass_images(
-    resources: &Resources,
-    width: u32,
-    height: u32,
-) -> TracePassImages {
-    let bcx = resources.bindless_context().unwrap();
-    let create = |format: Format| {
-        let physical_id = resources
-            .create_image(
-                &ImageCreateInfo {
-                    image_type: ImageType::Dim2d,
-                    format,
-                    extent: [width, height, 1],
-                    usage: ImageUsage::STORAGE | ImageUsage::SAMPLED,
-                    ..Default::default()
-                },
-                &AllocationCreateInfo::default(),
-            )
-            .unwrap();
-        let image = resources.image(physical_id).image().clone();
-        let image_view = ImageView::new_default(&image).unwrap();
-        let storage_id = bcx
-            .global_set()
-            .add_storage_image(image_view, ImageLayout::General);
-        TracePassImage {
-            virtual_id: Id::INVALID,
-            physical_id,
-            storage_id,
-        }
-    };
-
-    let denoised = |format: Format| {
-        let physical_id = resources
-            .create_image(
-                &ImageCreateInfo {
-                    image_type: ImageType::Dim2d,
-                    format,
-                    extent: [width, height, 1],
-                    usage: ImageUsage::STORAGE | ImageUsage::SAMPLED,
-                    ..Default::default()
-                },
-                &AllocationCreateInfo::default(),
-            )
-            .unwrap();
-        let image = resources.image(physical_id).image().clone();
-        let image_view = ImageView::new_default(&image).unwrap();
-        let storage_id = bcx
-            .global_set()
-            .add_storage_image(image_view, ImageLayout::General);
-        TracePassImage {
-            virtual_id: Id::INVALID,
-            physical_id,
-            storage_id,
-        }
-    };
-
-    TracePassImages {
-        diff_radiance: create(Format::R16G16B16A16_SFLOAT),
-        spec_radiance: create(Format::R16G16B16A16_SFLOAT),
-        normal_roughness: create(Format::R8G8B8A8_UNORM),
-        viewz: create(Format::R32_SFLOAT),
-        mv: create(Format::R16G16B16A16_SFLOAT),
-        albedo_metal: create(Format::R8G8B8A8_UNORM),
-        denoised_diff: denoised(Format::R16G16B16A16_SFLOAT),
-        denoised_spec: denoised(Format::R16G16B16A16_SFLOAT),
-        validation: denoised(Format::R8G8B8A8_UNORM),
-    }
-}

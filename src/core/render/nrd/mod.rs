@@ -39,6 +39,8 @@ use crate::core::render::region::task::{RegionRenderContext, RenderMode};
 
 const CONSTANTS_SLOTS: u64 = 64;
 
+const DENOISE_ENABLED: bool = true;
+
 pub struct PoolTexture {
     pub id: Id<Image>,
     pub view: Arc<ImageView>,
@@ -268,16 +270,44 @@ impl NrdInstance {
         [self.width, self.height]
     }
 
-    /// Pool textures plus the constants buffer, for deferred destruction by
-    /// the owner when the instance is replaced (resize).
-    pub fn resource_ids(&self) -> (Vec<Id<Image>>, Id<Buffer>) {
-        let images = self
-            .permanent_pool
-            .iter()
-            .chain(&self.transient_pool)
-            .map(|texture| texture.id)
-            .collect();
-        (images, self.constants_buffer_id)
+    /// Destroys the previous instance's GPU resources and builds the
+    /// replacement for the extent; the destroyed images drop only after
+    /// every flight's pending frames complete.
+    pub fn recreate(
+        old: Option<Arc<NrdInstance>>,
+        gpu: &GpuDesc,
+        extent: [u32; 3],
+    ) -> Option<Arc<NrdInstance>> {
+        if !DENOISE_ENABLED {
+            return None;
+        }
+
+        if let Some(old) = old {
+            let mut batch = gpu.resources.create_deferred_batch();
+
+            for texture in old.permanent_pool.iter().chain(&old.transient_pool) {
+                batch.destroy_image(texture.id);
+            }
+
+            batch.destroy_buffer(old.constants_buffer_id);
+            batch.enqueue();
+        }
+
+        match NrdInstance::new(gpu, extent[0], extent[1]) {
+            Ok(instance) => {
+                println!(
+                    "denoiser: NVIDIA NRD v{}.{}.{} ReBLUR (REBLUR_DIFFUSE_SPECULAR)",
+                    sys::NRD_VERSION_MAJOR,
+                    sys::NRD_VERSION_MINOR,
+                    sys::NRD_VERSION_BUILD,
+                );
+                Some(Arc::new(instance))
+            }
+            Err(error) => {
+                eprintln!("denoiser disabled: {error}");
+                None
+            }
+        }
     }
 
     /// vulkano only accepts Undefined/Preinitialized as an image's initial
