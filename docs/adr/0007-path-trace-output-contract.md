@@ -20,7 +20,7 @@ Sky/Background pixels are radiance written into the diffuse buffer with a viewZ 
 
 ## Status
 
-accepted (path-tracing ticket 02, 2026-08-17). Supersedes 0002 for the app path. The validator's capture path (0002's direct-write shape) is retained unchanged for the byte-exact geometry validator.
+accepted (path-tracing ticket 02, 2026-08-17). Supersedes 0002. The validator's capture path (0002's direct-write shape) was removed with the validation teardown (2026-08-27).
 
 ## Considered Options
 
@@ -32,7 +32,7 @@ accepted (path-tracing ticket 02, 2026-08-17). Supersedes 0002 for the app path.
 
 ## Consequences
 
-- The production raygen writes six storage images in Voxel mode (the push constant block grows by six bindless ids; the shared block keeps the validator's capture raygen compatible. It pushes INVALID and never dereferences them).
+- The production raygen writes six storage images in Voxel mode (the push constant block grows by six bindless ids).
 - The composite node sits after the render node (and the hull-crossed heatmap overlay in debug builds), last before present; its reads are `IMAGE_LAYOUT_GENERAL` like the heatmap's, so no layout transitions are introduced.
 - The trace-pass images are virtual graph resources mapped to physical images per frame (the same mechanism as the virtual swapchain), so window resize destroys and recreates the physical images without rebuilding the graph.
 - Exposure is manual EV and the tonemap is the ACES filmic fit (Narkowicz 2015); both live in the composite shader, so ticket 08 (the Denoise pass) and later tuning touch one place.

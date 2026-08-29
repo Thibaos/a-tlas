@@ -26,7 +26,7 @@ use crate::{
             region::{
                 feed::RendererInput,
                 residency::RegionStore,
-                task::{RenderMode, capture_raygen},
+                task::{RenderMode, production_raygen},
             },
         },
         world::{World, format::open_file, grid::LATTICE_HALF_EXTENT, snapshot::emit_snapshots},
@@ -185,7 +185,7 @@ impl App {
 
         let prev = self.history.observe_camera(view, proj);
 
-        self.pipeline.as_mut().unwrap().region_mut().camera = capture_raygen::Camera {
+        self.pipeline.as_mut().unwrap().region_mut().camera = production_raygen::Camera {
             proj_inverse: proj.inverse().to_cols_array_2d(),
             view_inverse: view.inverse().to_cols_array_2d(),
             view_prev: prev.view.to_cols_array_2d(),

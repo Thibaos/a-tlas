@@ -44,7 +44,7 @@ use crate::core::{
             rebuild::{
                 BlasBuild, RebuildGraph, RebuildLogEntry, RebuildPlan, RegionUpload, TlasBuild,
             },
-            task::{capture_raygen, default_scene},
+            task::{production_raygen, default_scene},
         },
     },
     world::{
@@ -123,7 +123,7 @@ impl RegionStore {
                         | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
                     ..Default::default()
                 },
-                DeviceLayout::new_sized::<capture_raygen::Camera>(),
+                DeviceLayout::new_sized::<production_raygen::Camera>(),
             )
             .unwrap();
 
@@ -139,7 +139,7 @@ impl RegionStore {
                         | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
                     ..Default::default()
                 },
-                DeviceLayout::new_sized::<capture_raygen::Scene>(),
+                DeviceLayout::new_sized::<production_raygen::Scene>(),
             )
             .unwrap();
 
@@ -155,7 +155,7 @@ impl RegionStore {
                         | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
                     ..Default::default()
                 },
-                DeviceLayout::new_sized::<capture_raygen::Palette>(),
+                DeviceLayout::new_sized::<production_raygen::Palette>(),
             )
             .unwrap();
 
@@ -171,7 +171,7 @@ impl RegionStore {
                         | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
                     ..Default::default()
                 },
-                DeviceLayout::new_sized::<capture_raygen::MaterialTable>(),
+                DeviceLayout::new_sized::<production_raygen::MaterialTable>(),
             )
             .unwrap();
 
@@ -187,7 +187,7 @@ impl RegionStore {
                         | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
                     ..Default::default()
                 },
-                DeviceLayout::new_sized::<capture_raygen::RegionTable>(),
+                DeviceLayout::new_sized::<production_raygen::RegionTable>(),
             )
             .unwrap();
 
@@ -203,7 +203,7 @@ impl RegionStore {
                         | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
                     ..Default::default()
                 },
-                DeviceLayout::new_sized::<capture_raygen::AabbTable>(),
+                DeviceLayout::new_sized::<production_raygen::AabbTable>(),
             )
             .unwrap();
 
@@ -254,16 +254,16 @@ impl RegionStore {
                 &gpu.resources,
                 gpu.graphics_flight_id,
                 |_cbf, tcx| {
-                    *tcx.write_buffer::<capture_raygen::Palette>(palette_buffer_id, ..) =
-                        capture_raygen::Palette { colors: palette };
-                    *tcx.write_buffer::<capture_raygen::MaterialTable>(
+                    *tcx.write_buffer::<production_raygen::Palette>(palette_buffer_id, ..) =
+                        production_raygen::Palette { colors: palette };
+                    *tcx.write_buffer::<production_raygen::MaterialTable>(
                         material_table_buffer_id,
                         ..,
-                    ) = capture_raygen::MaterialTable {
+                    ) = production_raygen::MaterialTable {
                         albedo_metallic,
                         rough_emit,
                     };
-                    *tcx.write_buffer::<capture_raygen::Scene>(scene_buffer_id, ..) =
+                    *tcx.write_buffer::<production_raygen::Scene>(scene_buffer_id, ..) =
                         default_scene();
                     Ok(())
                 },
@@ -290,7 +290,7 @@ impl RegionStore {
             .create_storage_buffer(
                 region_table_buffer_id,
                 0,
-                Some(size_of::<capture_raygen::RegionTable>() as DeviceSize),
+                Some(size_of::<production_raygen::RegionTable>() as DeviceSize),
             )
             .unwrap();
 
@@ -299,7 +299,7 @@ impl RegionStore {
             .create_storage_buffer(
                 camera_buffer_id,
                 0,
-                Some(size_of::<capture_raygen::Camera>() as DeviceSize),
+                Some(size_of::<production_raygen::Camera>() as DeviceSize),
             )
             .unwrap();
 
@@ -308,7 +308,7 @@ impl RegionStore {
             .create_storage_buffer(
                 palette_buffer_id,
                 0,
-                Some(size_of::<capture_raygen::Palette>() as DeviceSize),
+                Some(size_of::<production_raygen::Palette>() as DeviceSize),
             )
             .unwrap();
 
@@ -317,7 +317,7 @@ impl RegionStore {
             .create_storage_buffer(
                 material_table_buffer_id,
                 0,
-                Some(size_of::<capture_raygen::MaterialTable>() as DeviceSize),
+                Some(size_of::<production_raygen::MaterialTable>() as DeviceSize),
             )
             .unwrap();
 
@@ -326,7 +326,7 @@ impl RegionStore {
             .create_storage_buffer(
                 scene_buffer_id,
                 0,
-                Some(size_of::<capture_raygen::Scene>() as DeviceSize),
+                Some(size_of::<production_raygen::Scene>() as DeviceSize),
             )
             .unwrap();
 
@@ -337,7 +337,7 @@ impl RegionStore {
             .create_storage_buffer(
                 aabb_table_buffer_id,
                 0,
-                Some(size_of::<capture_raygen::AabbTable>() as DeviceSize),
+                Some(size_of::<production_raygen::AabbTable>() as DeviceSize),
             )
             .unwrap();
 
@@ -435,8 +435,8 @@ impl RegionStore {
                 &gpu.resources,
                 gpu.graphics_flight_id,
                 |_cbf, tcx| {
-                    *tcx.write_buffer::<capture_raygen::AabbTable>(aabb_table_buffer_id, ..) =
-                        capture_raygen::AabbTable { bdas };
+                    *tcx.write_buffer::<production_raygen::AabbTable>(aabb_table_buffer_id, ..) =
+                        production_raygen::AabbTable { bdas };
                     Ok(())
                 },
                 [(aabb_table_buffer_id, HostAccessType::Write)],

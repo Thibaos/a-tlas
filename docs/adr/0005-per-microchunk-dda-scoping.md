@@ -16,4 +16,4 @@ accepted (grilling session, 2026-08-14)
 
 - The DDA reads its invoking AABB back through gl_PrimitiveID; this is the mechanism for ADR 0001's "the hit position alone yields the micro-chunk". The shader has no hit position, so the AABB read supplies it. It adds no new per-voxel metadata.
 - aabb_table and the AABB buffer's STORAGE_BUFFER usage move from debug-only into release.
-- The cross-chunk tie-break now delegates to hardware traversal order + closest-hit; the x,y,z tie-break remains within each chunk. Any byte-identical validator divergence is a stop-condition, not a reason to loosen the gate.
+- The cross-chunk tie-break now delegates to hardware traversal order + closest-hit; the x,y,z tie-break remains within each chunk.

@@ -115,9 +115,7 @@ _Avoid_: Ray tracing pipeline
 **DDA**:
 The renderer's voxel-resolution algorithm: a ray marches cell-by-cell through
 the 8x8x8 Micro-chunk lattice (Amanatides-Woo), rejecting empty cells against
-the Occupancy mask and committing the first occupied one. The Reference
-tracer marches an independent DDA, deliberately not a mirror of the
-renderer's.
+the Occupancy mask and committing the first occupied one.
 _Avoid_: voxel ray march, ray walk
 
 **t pre-pass**:
@@ -292,14 +290,3 @@ geometric Normal, -1..1 mapped to 0..1 per channel, voxel faces paint by
 their axis (x red, y green, z blue; + side bright, - side dark), background
 gray. Traces the DDA hit group like Voxel; the normal rides the payload.
 _Avoid_: normal map visualization (a texture-space concept)
-
-## Validation
-
-**Reference tracer**:
-The independent CPU renderer that validates the GPU path: a naive per-voxel
-ray tracer over the world's source of truth (the flat voxel map + palette), sharing
-only camera inputs and the palette with the GPU. Deliberately not a mirror of
-the renderer's DDA/AABB/pool representation, so a divergence points at the
-renderer rather than at shared algorithm assumptions (rendering-core ticket
-06).
-_Avoid_: Reference renderer, oracle

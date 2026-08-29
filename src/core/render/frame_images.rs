@@ -291,7 +291,7 @@ fn swapchain_storage_views(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::render::region::task::{NrdFrame, RenderMode, capture_raygen, default_scene};
+    use crate::core::render::region::task::{NrdFrame, RenderMode, production_raygen, default_scene};
 
     fn test_images() -> FrameImages {
         FrameImages {
@@ -312,7 +312,7 @@ mod tests {
 
     fn test_region() -> RegionRenderContext {
         RegionRenderContext {
-            camera: capture_raygen::Camera {
+            camera: production_raygen::Camera {
                 proj_inverse: [[0.0; 4]; 4],
                 view_inverse: [[0.0; 4]; 4],
                 view_prev: [[0.0; 4]; 4],
@@ -320,7 +320,6 @@ mod tests {
             },
             scene: default_scene(),
             swapchain_storage_image_ids: Vec::new(),
-            t_image_storage_id: StorageImageId::INVALID,
             diff_radiance_image_id: StorageImageId::INVALID,
             spec_radiance_image_id: StorageImageId::INVALID,
             normal_roughness_image_id: StorageImageId::INVALID,

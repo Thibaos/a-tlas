@@ -26,6 +26,6 @@ through the flight waits.
 
 - The world side (loading/editing/streaming, implemented later) calls `submit_microchunk` / `submit_batch`; enqueue-only, any thread, never blocks on GPU.
 - Content edits cost one in-place region BLAS rebuild; TLAS rebuilds only on region residency transitions; rebuild GPU time is inline in one frame (measured by ticket 06); startup is a one-shot pre-loop build.
-- The reference tracer (ticket 06 / ADR 0003) exercises the contract directly, so contract violations between world and renderer surface in validation.
+- Contract violations between world and renderer surface as rendering artifacts; the reference tracer that exercised the contract directly (ticket 06 / ADR 0003) was removed with the validation teardown (2026-08-27).
 - Region BLAS + pool memory churn under streaming is absorbed by free lists; reuse ordering prevents use-after-free.
 - 03's "region-granularity frustum culling" and "async double-buffered worker (back AS + flip)" are revised by this ADR.

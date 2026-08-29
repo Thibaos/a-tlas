@@ -26,8 +26,8 @@ use crate::core::render::{
     region::{
         residency::RegionStore,
         task::{
-            NrdFrame, RegionRenderContext, RegionRenderTask, RenderMode, capture_raygen,
-            default_ev, default_scene, production_raygen,
+            NrdFrame, RegionRenderContext, RegionRenderTask, RenderMode, default_ev,
+            default_scene, production_raygen,
         },
     },
 };
@@ -185,7 +185,7 @@ impl FramePipeline {
         }
 
         let mut region = RegionRenderContext {
-            camera: capture_raygen::Camera {
+            camera: production_raygen::Camera {
                 proj_inverse: [[0.0; 4]; 4],
                 view_inverse: [[0.0; 4]; 4],
                 view_prev: glam::Mat4::IDENTITY.to_cols_array_2d(),
@@ -193,7 +193,6 @@ impl FramePipeline {
             },
             scene: default_scene(),
             swapchain_storage_image_ids: Vec::new(),
-            t_image_storage_id: StorageImageId::INVALID,
             diff_radiance_image_id: StorageImageId::INVALID,
             spec_radiance_image_id: StorageImageId::INVALID,
             normal_roughness_image_id: StorageImageId::INVALID,

@@ -28,10 +28,7 @@ const float PI = 3.14159265358979;
 const float TWO_PI = 6.28318530717959;
 
 // Stateless path RNG (PCG-XSH-RR, O'Neill 2014): every draw is a pure
-// function of (seed, draw_index). No mutable per-path RNG state, so the CPU
-// mirror (07) reproduces every value byte-identically regardless of control
-// flow (RR termination, early exits). u32 ops wrap mod 2^32 identically in
-// GLSL and Rust; the float conversion (high 24 bits × 2^-24) is exact in both.
+// function of (seed, draw_index), no mutable per-path state.
 uint pcg_hash(uint x) {
     uint state = x * 747796405u + 2891336453u;
     uint word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
@@ -39,10 +36,7 @@ uint pcg_hash(uint x) {
     return word;
 }
 
-// One uniform draw in [0, 1) from the (seed, index) pair. Draw order is
-// exactly the call order in the path loop below; the mirror must consume the
-// same sequence: index 0 = the lobe pick, then per bounce the direction
-// (u1, u2) and the Russian-roulette draw.
+// One uniform draw in [0, 1) from the (seed, index) pair.
 float rand_unit(uint seed, uint index) {
     uint h = pcg_hash(seed ^ (index * 0x9E3779B1u));
     return float(h >> 8u) * (1.0 / 16777216.0);
@@ -50,7 +44,6 @@ float rand_unit(uint seed, uint index) {
 
 // Deterministic local tangent frame from the geometric normal: reference
 // (0,1,0), falling back to (1,0,0) when the normal is (anti-)parallel to y.
-// The CPU mirror uses the identical rule.
 void make_frame(vec3 n, out vec3 t_axis, out vec3 b_axis) {
     vec3 ref = (abs(n.y) > 0.999) ? vec3(1.0, 0.0, 0.0) : vec3(0.0, 1.0, 0.0);
     t_axis = normalize(cross(ref, n));

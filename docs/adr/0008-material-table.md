@@ -8,9 +8,9 @@ accepted (path-tracing ticket 03, 2026-08-17)
 
 ## Decision
 
-- **Table shape**: a 256-entry bindless storage buffer beside the Palette (both world-static, uploaded once at startup). Two `vec4[256]` columns, `albedo_metallic` (albedo.rgb + metallic) and `rough_emit` (emission.rgb + roughness), indexed by the 8-bit hitKind (the material index) in closest-hit; the raygen reads it through the payload's `hit_kind` (the payload grows one uint; the capture path never reads it).
-- **CPU mirror**: `Material` (albedo / metallic / roughness / emission) and `get_material_table` in src/world/voxel.rs, the single source of truth. `RegionStore` uploads its packed twin; the validator's reference tracer shades with the mirror when the shading half lands (ticket 07).
-- **Albedo == Palette color by construction**: the table's albedo column is the palette, so the byte-exact capture path is unchanged (closest-hit forces alpha 1.0. Palette alpha is not a material property), and the validator doubles as the invariant guard: the GPU reads the table while the CPU reference reads the palette. Any divergence fails the diff.
+- **Table shape**: a 256-entry bindless storage buffer beside the Palette (both world-static, uploaded once at startup). Two `vec4[256]` columns, `albedo_metallic` (albedo.rgb + metallic) and `rough_emit` (emission.rgb + roughness), indexed by the 8-bit hitKind (the material index) in closest-hit; the raygen reads it through the payload's `hit_kind` (the payload grows one uint).
+- **CPU mirror**: `Material` (albedo / metallic / roughness / emission) and `get_material_table` in src/core/world/material.rs, the single source of truth. `RegionStore` uploads its packed twin.
+- **Albedo == Palette color by construction**: the table's albedo column is the palette (closest-hit forces alpha 1.0; palette alpha is not a material property).
 - **Defaults** (no MATL entry, or missing property): diffuse, metallic 0, roughness 0.3, emission 0. Properties clamp to [0, 1]; malformed material ids (≥ 256) are skipped, not fatal. `_type` is informational in v1. All types keep the PBR triad (`glass` is treated as opaque per the map's out-of-scope).
 - **Emission mapping**: linear RGB radiance = `_emit` × albedo × 10 (`EMISSION_SCALE`, tunable. Bright enough to read through the ACES tonemap and to act as a real path-hit light later). The result is unclamped; the firefly-clamp policy stays in the effort's fog.
 
@@ -23,7 +23,6 @@ accepted (path-tracing ticket 03, 2026-08-17)
 
 ## Consequences
 
-- `RegionStore` owns one more static buffer (8 KB); the shared push-constant block grows one bindless id (always valid. The closest-hit reads the table in every pipeline, app and validator).
+- `RegionStore` owns one more static buffer (8 KB); the shared push-constant block grows one bindless id (always valid; closest-hit reads the table in every pipeline).
 - The production raygen's Voxel mode writes the real MATL metalness into the albedo+metalness buffer, and the stub diffuse radiance becomes albedo + emission, the "emission as albedo-light" pattern, so the table's emission column is visibly correct before ticket 05 traces real paths (05 replaces the stub with de-modulated radiance; emission still rides the diffuse signal per ADR 0007).
-- The validator's reference tracer still reads the palette (equal to the table albedo); ticket 07 switches it to the mirror when the shading half lands.
-- Verification: the `materials` test world (assets/test/materials.vox, MATL chunk authored with known properties) runs through the byte-exact capture validator, and unit tests pin the mirror's mapping (defaults, clamps, `_emit` × albedo × scale).
+- Verification: unit tests pin the mirror's mapping (defaults, clamps, `_emit` × albedo × scale) in src/core/world/material.rs.

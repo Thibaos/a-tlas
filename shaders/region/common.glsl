@@ -18,7 +18,6 @@ VKO_DECLARE_STORAGE_BUFFER(aabb_table, AabbTable {
 
 layout(push_constant) uniform RegionPushConstants {
     StorageImageId image_id;
-    StorageImageId t_image_id;
     AccelerationStructureId acceleration_structure_id;
     StorageBufferId camera_buffer_id;
     StorageBufferId palette_buffer_id;

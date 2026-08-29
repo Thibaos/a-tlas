@@ -1,11 +1,7 @@
-//! The Region pipeline's GPU half: the
-//! shared ray tracing pipeline and the per-frame render task that
-//! ray-passes the swapchain storage images, with the capture raygen
-//! (color + t-channel for the validator) or the production raygen (color
-//! only; `t_image_id` pushed as INVALID and never dereferenced).
-//! The pipeline builder is shared by both raygen stages;
-//! the miss/intersection/closest-hit stages are the Region path's own
-//! (shaders/region).
+//! The Region pipeline's GPU half: the shared ray tracing pipeline and the
+//! per-frame render task that ray-passes the swapchain storage images with
+//! the production raygen. The miss/intersection/closest-hit stages are the
+//! Region path's own (shaders/region).
 //!
 //! All per-Region GPU state: voxel pools, procedural AABB BLASes, the
 //! lattice-static instance set and the stable TLAS. Lives in
@@ -38,15 +34,6 @@ use crate::core::{
     render::gpu::GpuDesc,
     render::region::residency::{RegionBindings, RegionStore},
 };
-
-pub(crate) mod capture_raygen {
-    vulkano_shaders::shader! {
-        root_path_env: "CARGO_MANIFEST_DIR",
-        ty: "raygen",
-        path: "shaders/region/capture.rgen",
-        vulkan_version: "1.3"
-    }
-}
 
 pub(crate) mod production_raygen {
     vulkano_shaders::shader! {
@@ -165,10 +152,9 @@ fn identity_cols() -> [f32; 16] {
 }
 
 pub struct RegionRenderContext {
-    pub camera: capture_raygen::Camera,
-    pub scene: capture_raygen::Scene,
+    pub camera: production_raygen::Camera,
+    pub scene: production_raygen::Scene,
     pub swapchain_storage_image_ids: Vec<StorageImageId>,
-    pub t_image_storage_id: StorageImageId,
     pub diff_radiance_image_id: StorageImageId,
     pub spec_radiance_image_id: StorageImageId,
     pub normal_roughness_image_id: StorageImageId,
@@ -259,14 +245,14 @@ pub fn default_ev() -> f32 {
     (std::f32::consts::PI / E_SUN).log2()
 }
 
-pub fn default_scene() -> capture_raygen::Scene {
+pub fn default_scene() -> production_raygen::Scene {
     let sun_dir = glam::Vec3::new(0.45, 0.8, 0.35).normalize();
     let knots = [0.15, 0.6, 1.2];
     let cos_disk = (0.5_f32 * std::f32::consts::PI / 180.0).cos();
     let omega = 2.0 * std::f32::consts::PI * (1.0 - cos_disk);
     let l_disk = E_SUN / omega;
 
-    capture_raygen::Scene {
+    production_raygen::Scene {
         sun_dir: [sun_dir.x, sun_dir.y, sun_dir.z, 0.0],
         sky_knots: [knots[0], knots[1], knots[2], 0.0],
         sun_disk: [E_SUN, cos_disk, l_disk, 0.0],
@@ -381,9 +367,8 @@ impl Task for RegionRenderTask {
             cbf.push_constants(
                 self.pipeline.layout(),
                 0,
-                &capture_raygen::RegionPushConstants {
+                &production_raygen::RegionPushConstants {
                     image_id: rcx.swapchain_storage_image_ids[image_index as usize],
-                    t_image_id: rcx.t_image_storage_id,
                     acceleration_structure_id: self.bindings.acceleration_structure_id,
                     camera_buffer_id: self.bindings.camera_storage_id,
                     palette_buffer_id: self.bindings.palette_storage_id,

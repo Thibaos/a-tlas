@@ -10,8 +10,7 @@ to the division-form crossing of the entered boundary — accumulated stepping
 drift otherwise pushed `p` tens of ULP past the boundary and the scan fell
 into the no-face fallback on ordinary hits — and the epsilon is 32 ULP of
 the object-space coordinate (object space caps |p| at the region edge, so
-the false-positive window stays a fraction of a cell). The validator's CPU
-mirror runs the identical snap + reconstruction.
+the false-positive window stays a fraction of a cell).
 
 ## Decision
 
@@ -29,6 +28,6 @@ mirror runs the identical snap + reconstruction.
 
 ## Consequences
 
-- The payload grows one `vec3` (24 → 36 bytes, padded to 40); the capture validator compares {color, t} only, and the closest hit's added ALU changes no written byte. Verified byte-identical across the full suite (stash + rebuild + rerun, all 18 gpu.png hashes equal).
+- The payload grows one `vec3` (24 → 36 bytes, padded to 40); at acceptance, verified byte-identical across the validator's full suite (stash + rebuild + rerun, all 18 gpu.png hashes equal).
 - The production raygen's Voxel mode now writes the real octahedrally encoded normal and the Material's linear roughness into the normal+roughness auxiliary buffer (ADR 0007's "04 (normals)" stub note), plus the heatmap mode for visible verification.
-- Ticket 05 shades with `payload.normal` at every bounce; ticket 07's CPU path tracer reports the face exactly (its DDA knows the step axis) and must implement the same canonical tie-break. The two agree except at float corner ties.
+- Ticket 05 shades with `payload.normal` at every bounce.

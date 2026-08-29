@@ -21,7 +21,7 @@ use vulkano_taskgraph::{
 use crate::core::render::{
     accel,
     gpu::GpuDesc,
-    region::{pack::REGION_COUNT, residency::RegionStore, task::capture_raygen},
+    region::{pack::REGION_COUNT, residency::RegionStore, task::production_raygen},
 };
 
 pub struct RegionUpload {
@@ -158,8 +158,8 @@ impl Task for UploadRegionsTask {
         }
 
         if let Some(table) = &self.table {
-            *tcx.write_buffer::<capture_raygen::RegionTable>(self.region_table_buffer_id, ..) =
-                capture_raygen::RegionTable { bdas: *table };
+            *tcx.write_buffer::<production_raygen::RegionTable>(self.region_table_buffer_id, ..) =
+                production_raygen::RegionTable { bdas: *table };
         }
 
         if let Some(instances) = &self.instances {
