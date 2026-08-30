@@ -55,6 +55,7 @@ pub struct App {
 
     resize_pending: bool,
     mode_toggle_pending: bool,
+    denoiser_toggle_pending: bool,
 }
 
 impl App {
@@ -102,6 +103,7 @@ impl App {
 
             resize_pending: false,
             mode_toggle_pending: false,
+            denoiser_toggle_pending: false,
         }
     }
 
@@ -131,6 +133,16 @@ impl App {
             .contains(&InputKey::ToggleRenderMode)
         {
             self.mode_toggle_pending = true;
+        }
+    }
+
+    fn handle_toggle_denoiser(&mut self) {
+        if self
+            .player_input
+            .just_pressed
+            .contains(&InputKey::ToggleDenoiser)
+        {
+            self.denoiser_toggle_pending = true;
         }
     }
 
@@ -203,6 +215,7 @@ impl ApplicationHandler for App {
 
                 let resized = std::mem::take(&mut self.resize_pending);
                 let next_mode = std::mem::take(&mut self.mode_toggle_pending);
+                let toggle_denoiser = std::mem::take(&mut self.denoiser_toggle_pending);
 
                 self.pipeline.as_mut().unwrap().run_frame(
                     &self.gpu,
@@ -210,6 +223,7 @@ impl ApplicationHandler for App {
                         view,
                         resized,
                         next_mode,
+                        toggle_denoiser,
                     },
                 );
             }
@@ -258,6 +272,7 @@ impl ApplicationHandler for App {
 
         #[cfg(debug_assertions)]
         self.handle_toggle_render_mode();
+        self.handle_toggle_denoiser();
         self.player_input.clear();
 
         if self.close_requested {

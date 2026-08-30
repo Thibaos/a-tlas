@@ -93,7 +93,7 @@ impl Task for CompositeTask {
                     validation_id: rcx.validation_image_id,
                     ev: rcx.ev,
                     mode: rcx.mode as u32,
-                    denoiser: u32::from(rcx.denoiser_enabled),
+                    denoiser: u32::from(rcx.denoiser_active),
                     width: extent[0],
                     height: extent[1],
                 },

@@ -163,7 +163,7 @@ pub struct RegionRenderContext {
     pub denoised_diff_image_id: StorageImageId,
     pub denoised_spec_image_id: StorageImageId,
     pub validation_image_id: StorageImageId,
-    pub denoiser_enabled: bool,
+    pub denoiser_active: bool,
     pub nrd: NrdFrame,
     pub albedo_metal_image_id: StorageImageId,
     pub ev: f32,

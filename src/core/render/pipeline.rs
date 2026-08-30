@@ -45,6 +45,7 @@ pub struct FrameInput {
     pub view: Mat4,
     pub resized: bool,
     pub next_mode: bool,
+    pub toggle_denoiser: bool,
 }
 
 #[derive(Default)]
@@ -234,7 +235,7 @@ impl FramePipeline {
             denoised_diff_image_id: StorageImageId::INVALID,
             denoised_spec_image_id: StorageImageId::INVALID,
             validation_image_id: StorageImageId::INVALID,
-            denoiser_enabled: nrd.is_some(),
+            denoiser_active: nrd.is_some(),
             nrd: NrdFrame::default(),
             albedo_metal_image_id: StorageImageId::INVALID,
             ev: default_ev(),
@@ -282,7 +283,7 @@ impl FramePipeline {
         self.frame_images
             .recreate(&gpu.resources, self.swapchain_id, extent);
         self.frame_images.bind_into(&mut self.region);
-        self.region.denoiser_enabled = self.nrd.is_some();
+        self.region.denoiser_active = self.nrd.is_some();
 
         if let Some(nrd) = &self.nrd {
             if let Some(task) = self
@@ -330,6 +331,23 @@ impl FramePipeline {
         #[cfg(debug_assertions)]
         if input.next_mode {
             self.region.mode = next_render_mode(self.region.mode, self.nrd.is_some());
+        }
+
+        if input.toggle_denoiser && self.nrd.is_some() {
+            self.region.denoiser_active = !self.region.denoiser_active;
+
+            if self.region.denoiser_active {
+                self.history.request_clear();
+            }
+
+            println!(
+                "denoiser: {}",
+                if self.region.denoiser_active {
+                    "on"
+                } else {
+                    "raw"
+                }
+            );
         }
 
         let aspect = extent.width as f32 / extent.height as f32;

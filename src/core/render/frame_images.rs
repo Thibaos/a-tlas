@@ -330,7 +330,7 @@ mod tests {
             denoised_diff_image_id: StorageImageId::INVALID,
             denoised_spec_image_id: StorageImageId::INVALID,
             validation_image_id: StorageImageId::INVALID,
-            denoiser_enabled: false,
+            denoiser_active: false,
             nrd: NrdFrame::default(),
             albedo_metal_image_id: StorageImageId::INVALID,
             ev: 0.0,

@@ -736,6 +736,10 @@ impl Task for DenoiseTask {
             return Ok(());
         };
 
+        if !rcx.denoiser_active {
+            return Ok(());
+        }
+
         if rcx.mode != RenderMode::Voxel && !rcx.mode.is_nrd_validation() {
             return Ok(());
         }

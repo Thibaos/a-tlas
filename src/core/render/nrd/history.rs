@@ -78,6 +78,10 @@ impl NrdHistory {
         self.clear_pending = true;
     }
 
+    pub fn request_clear(&mut self) {
+        self.clear_pending = true;
+    }
+
     pub fn advance(&mut self, edited: bool, denoiser_present: bool) -> NrdFrame {
         let clear = self.clear_pending && denoiser_present;
         let reset = edited && !clear;
@@ -206,5 +210,21 @@ mod tests {
         history.observe_camera(view([1.0, 0.0, 0.0]), proj(2.0));
 
         assert!(history.advance(true, false).reset);
+    }
+
+    #[test]
+    fn reactivation_clears_history() {
+        let mut history = NrdHistory::new();
+        history.observe_camera(view([1.0, 0.0, 0.0]), proj(2.0));
+        history.advance(false, true);
+
+        history.request_clear();
+        history.observe_camera(view([1.0, 0.0, 0.0]), proj(2.0));
+        let frame = history.advance(false, true);
+
+        assert!(frame.clear && frame.frame_index == 0);
+
+        history.observe_camera(view([1.0, 0.0, 0.0]), proj(2.0));
+        assert!(!history.advance(false, true).clear);
     }
 }
