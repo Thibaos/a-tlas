@@ -4,7 +4,7 @@ Shading needs per-voxel surface properties beyond the palette color: metallic, r
 
 ## Status
 
-accepted (path-tracing ticket 03, 2026-08-17). Revised 2026-08-30: default roughness corrected to 1.0, and `_rough` is honored only on `_type`-carrying entries.
+accepted (path-tracing ticket 03, 2026-08-17). Revised 2026-08-30: default roughness corrected to 1.0, and `_rough` is honored only on `_type`-carrying entries. Superseded in one clause 2026-08-30: glass is no longer treated as opaque (ADR 0012).
 
 ## Decision
 

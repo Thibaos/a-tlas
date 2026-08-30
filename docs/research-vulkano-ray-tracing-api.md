@@ -1,6 +1,7 @@
 # Vulkano ray tracing API and limits (git main, ticket 01)
 
-> Research ticket: [.scratch/rendering-core/issues/01-vulkano-ray-tracing-api-and-limits.md](../.scratch/rendering-core/issues/01-vulkano-ray-tracing-api-and-limits.md)
+> Research ticket: rendering-core ticket 01 (the scratch tracker is
+> archived — the effort shipped as ADRs 0001–0006).
 > Verification date: 2026-07-30 (vulkano master HEAD `fb4cfdb56`), source-verified against the vulkano repo at master and at atlas-rt's pinned commit `eae054666` (both fetched from GitHub raw at those exact SHAs), plus atlas-rt's `Cargo.lock` and `src/`.
 
 ## Executive answer

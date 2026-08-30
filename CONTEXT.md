@@ -133,6 +133,8 @@ the Background color. The ray pass's t-range equals the camera's near/far, so
 Background also appears beyond the far plane. The camera's direct view of the
 Background adds the Sun disk (the Sun's visual), evaluated by the raygen's
 primary-miss branch.
+A camera path that crosses only glass and then misses is Background too:
+the crossings leave no trace in the frame images.
 _Avoid_: skybox, environment map (a sampled asset; the Procedural sky is
 analytic)
 
@@ -183,8 +185,9 @@ _Avoid_: skybox, environment map
 
 **Sun disk**:
 The Sun's visual: the measure-zero radiance bump on the Procedural sky in
-the Sun's direction, detected by a dot test. Seen only by the camera's
-direct view of the sky (the primary-miss branch); the transport never
+the Sun's direction, detected by a dot test. Seen by the camera's direct
+view of the sky (the primary-miss branch, through glass tinted by the
+pane product); the transport never
 importance-samples it. The delta Sun light carries the light, and sampling
 a bright bump with a gradient-matched pdf would firefly at 1 spp.
 _Avoid_: the Sun (the disk is the look; the Sun is the light)
@@ -192,8 +195,9 @@ _Avoid_: the Sun (the disk is the look; the Sun is the light)
 **NEE**:
 Next-event estimation: a Bounce samples a light directly (Sun or Procedural
 sky) rather than waiting for a path hit; one light is picked per Bounce
-(equal probability), with a shadow ray against the world; combined with the
-BSDF estimate by MIS.
+(equal probability), with a shadow ray against the world whose visibility
+carries the crossed Panes' Transmission (attenuated, colored shadows);
+combined with the BSDF estimate by MIS.
 _Avoid_: direct lighting (unqualified), light sampling (unqualified)
 
 **MIS**:
@@ -214,6 +218,34 @@ radiance is attributed to the selected lobe's channel, the other channel gets
 0 that frame, and the Denoise pass's temporal accumulation fills both.
 _Avoid_: split path (per-pixel the path is single-lobe by design.
 subsequent Bounces sample the full BSDF)
+
+**Transmission**:
+Light passing through a Glass voxel (a voxel whose Material's MATL entry
+is the glass type): the ray continues in the same direction, losing only
+the Pane's tint absorption along the way; no refraction, no reflection.
+_Avoid_: transparency, alpha blending, refraction
+
+**Pane**:
+A maximal run of contiguous glass voxels with the same palette index along
+a ray; tint absorption applies once per Pane, not per voxel, so thickness
+never darkens it. The run containing the camera counts.
+_Avoid_: slab, glass body
+
+**Crossing**:
+One pass of a path through a Glass voxel. The unit the 32-crossing cap
+counts; crossings consume no Bounces and draw no random numbers — the
+Pane's T applies deterministically.
+_Avoid_: transmission event, glass bounce
+
+**Revealed surface**:
+The first non-glass surface a glass-primary path reaches after crossing its
+Panes. At a glass primary the aux buffers describe it, not the glass entry
+face, and the in-lobe hit distance is measured from it — the Denoise pass
+sees the surface behind the glass (NRD's Primary Surface Replacement). Sky
+reached through glass with no scattering event in between is not one: that
+pixel is Background.
+_Avoid_: virtual surface (straight transmission keeps virtual == real),
+behind-glass surface
 
 **Trace pass**:
 The ray pass under the path-tracing output contract (ADR 0007): in Voxel

@@ -1,9 +1,10 @@
 # NRD ReBLUR and transmissive hits
 
 How glass pixels should feed our REBLUR_DIFFUSE_SPECULAR instance (NRD
-v4.17.3, vendored under third_party/nrd). Researched for wayfinder ticket
-[02](../.scratch/transparency-and-overrides/issues/02-nrd-reblur-transmission-guidance.md);
-grounds the G-buffer/denoiser contract decision (ticket 07).
+v4.17.3, vendored under third_party/nrd). Researched for
+transparency-and-overrides ticket 02 (resolved; the scratch tracker is
+archived — decisions in docs/adr/0012–0016); grounds the G-buffer/denoiser
+contract decision (ticket 07, ADR 0015).
 
 ## Headline
 

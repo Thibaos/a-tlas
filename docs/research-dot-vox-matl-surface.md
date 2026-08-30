@@ -1,6 +1,7 @@
 # The .vox MATL surface available to atlas-rt (dot_vox 5.2.0, ticket 01)
 
-> Research ticket: [.scratch/transparency-and-overrides/issues/01-dot-vox-matl-surface-for-glass.md](../.scratch/transparency-and-overrides/issues/01-dot-vox-matl-surface-for-glass.md)
+> Research ticket: transparency-and-overrides ticket 01 (the scratch
+> tracker is archived — decision in ADR 0012).
 > Verification date: 2026-08-25; dot_vox 5.2.0 (crate pinned `dot_vox = "*"` in Cargo.toml, resolved source read from the local cargo registry cache); MagicaVoxel editor 0.99.7.2 win64 (current release, 7/12/2025) downloaded and dissected: bundled sample `.vox` files parsed byte-by-byte, material-panel UI (`config/ui/r_mtl.ui`) read, editor binary string table scanned. All crate claims verified against actual dot_vox source, none guessed.
 
 ## Executive answer
