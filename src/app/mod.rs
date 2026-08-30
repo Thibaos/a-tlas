@@ -2,7 +2,10 @@ mod input;
 mod player;
 mod schedule;
 
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use glam::Mat4;
 
@@ -44,6 +47,9 @@ pub struct App {
     player_input: Input,
     schedule_controller: ScheduleController,
 
+    log_frames: u16,
+    log_since: Instant,
+
     window: Option<Arc<Window>>,
     pipeline: Option<FramePipeline>,
 
@@ -84,6 +90,9 @@ impl App {
             player_controller: PlayerController::default(),
             player_input: Input::default(),
             schedule_controller,
+
+            log_frames: 0u16,
+            log_since: Instant::now(),
 
             voxel_data,
             world,
@@ -133,8 +142,14 @@ impl App {
     }
 
     fn request_log(&mut self) {
+        self.log_frames += 1;
+
         if self.schedule_controller.check("log").is_some() {
-            println!("{:.2} fps", 1.0 / self.delta_time.as_secs_f32());
+            let fps = f32::from(self.log_frames) / self.log_since.elapsed().as_secs_f32();
+            println!("{fps:.2} fps");
+
+            self.log_frames = 0;
+            self.log_since = Instant::now();
         }
     }
 
