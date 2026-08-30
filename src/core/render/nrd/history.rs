@@ -1,6 +1,6 @@
 //! The Denoise pass's temporal history (CONTEXT.md): the previous frame's
 //! camera matrices, their validity, and the accumulation frame index. The
-//! app reports camera updates, region edits, and swapchain resizes; the
+//! FramePipeline reports camera updates, region edits, and swapchain resizes; the
 //! history decides each frame's clear, reset, and frame index.
 
 use glam::Mat4;

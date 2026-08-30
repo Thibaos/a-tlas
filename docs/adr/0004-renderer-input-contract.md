@@ -13,6 +13,11 @@ frames (graphics flight idle → compute-flight rebuild graph → next
 trace), not as nodes of one taskgraph; the race-freedom argument holds
 through the flight waits.
 
+Amended (frame-sequence consolidation, 2026-08-30): the per-frame `apply`
+call moved from the app into `FramePipeline::run_frame`; the drain-point
+contract stands — `new` and `apply` remain the only drain points of the
+dirty-region set, applied unconditionally each frame.
+
 ## Considered Options
 
 - **TLAS rebuild on every content edit**. Rejected: the instance references the BLAS by device address, stable across in-place rebuilds; a per-edit TLAS rebuild is needless work.

@@ -2,14 +2,16 @@ mod input;
 mod player;
 mod schedule;
 
-use std::{f32::consts::PI, sync::Arc, time::Duration};
+use std::{sync::Arc, time::Duration};
+
+use glam::Mat4;
 
 use winit::{
     application::ApplicationHandler,
     dpi::PhysicalSize,
     event::{DeviceEvent, ElementState, MouseScrollDelta, WindowEvent},
     event_loop::{ActiveEventLoop, EventLoop},
-    window::WindowAttributes,
+    window::{Window, WindowAttributes},
 };
 
 use crate::{
@@ -21,15 +23,9 @@ use crate::{
     core::{
         render::{
             gpu::GpuDesc,
-            nrd::history::NrdHistory,
-            pipeline::FramePipeline,
-            region::{
-                feed::RendererInput,
-                residency::RegionStore,
-                task::{RenderMode, production_raygen},
-            },
+            pipeline::{FrameInput, FramePipeline},
         },
-        world::{World, format::open_file, grid::LATTICE_HALF_EXTENT, snapshot::emit_snapshots},
+        world::{World, format::open_file, grid::LATTICE_HALF_EXTENT},
     },
 };
 
@@ -48,12 +44,11 @@ pub struct App {
     player_input: Input,
     schedule_controller: ScheduleController,
 
-    input: RendererInput,
-    store: RegionStore,
-
-    history: NrdHistory,
-
+    window: Option<Arc<Window>>,
     pipeline: Option<FramePipeline>,
+
+    resize_pending: bool,
+    mode_toggle_pending: bool,
 }
 
 impl App {
@@ -74,11 +69,6 @@ impl App {
         }
         let world = Arc::new(world);
 
-        let input = RendererInput::new();
-        input.submit_batch(emit_snapshots(&world));
-
-        let store = RegionStore::new(&gpu, &voxel_data, &input);
-
         let mut schedule_controller = ScheduleController::new();
         schedule_controller.add_schedule_frames("delta", 1);
         schedule_controller.add_schedule_duration("log", Duration::from_secs(1));
@@ -98,17 +88,16 @@ impl App {
             voxel_data,
             world,
 
-            input,
-            store,
-
-            history: NrdHistory::new(),
-
+            window: None,
             pipeline: None,
+
+            resize_pending: false,
+            mode_toggle_pending: false,
         }
     }
 
     pub fn toggle_capture_mouse(&mut self) {
-        let window = self.pipeline.as_ref().unwrap().window();
+        let window = self.window.as_ref().unwrap();
 
         if self.focused {
             self.focused = false;
@@ -132,22 +121,7 @@ impl App {
             .just_pressed
             .contains(&InputKey::ToggleRenderMode)
         {
-            let pipeline = self.pipeline.as_mut().unwrap();
-            let denoiser = pipeline.denoiser_enabled();
-            let region = pipeline.region_mut();
-            region.mode = match region.mode {
-                RenderMode::Voxel => RenderMode::Hull,
-                RenderMode::Hull => RenderMode::Normal,
-                RenderMode::Normal => {
-                    if denoiser {
-                        RenderMode::NrdValidation
-                    } else {
-                        eprintln!("render mode: NRD validation unavailable, denoiser inactive");
-                        RenderMode::Voxel
-                    }
-                }
-                RenderMode::NrdValidation => RenderMode::Voxel,
-            };
+            self.mode_toggle_pending = true;
         }
     }
 
@@ -164,33 +138,16 @@ impl App {
         }
     }
 
-    fn update_camera(&mut self) {
-
+    fn player_view(&mut self) -> Mat4 {
         if self.focused {
             self.player_controller
                 .rotate(self.player_input.mouse_motion);
         }
+
         self.player_controller
             .fly_movement(self.delta_time, &self.player_input);
-        let view = self.player_controller.view();
 
-        let size = self.pipeline.as_ref().unwrap().window().inner_size();
-
-        let proj = glam::camera::lh::proj::vulkan::perspective(
-            PI / 2.0,
-            (size.width as f32) / (size.height as f32),
-            0.01,
-            10000.0,
-        );
-
-        let prev = self.history.observe_camera(view, proj);
-
-        self.pipeline.as_mut().unwrap().region_mut().camera = production_raygen::Camera {
-            proj_inverse: proj.inverse().to_cols_array_2d(),
-            view_inverse: view.inverse().to_cols_array_2d(),
-            view_prev: prev.view.to_cols_array_2d(),
-            proj_prev: prev.proj.to_cols_array_2d(),
-        };
+        self.player_controller.view()
     }
 }
 
@@ -201,7 +158,13 @@ impl ApplicationHandler for App {
 
         let window = Arc::new(event_loop.create_window(window_attributes).unwrap());
 
-        self.pipeline = Some(FramePipeline::new(&self.gpu, window, &self.store));
+        self.pipeline = Some(FramePipeline::new(
+            &self.gpu,
+            window.clone(),
+            &self.voxel_data,
+            &self.world,
+        ));
+        self.window = Some(window);
     }
 
     fn window_event(
@@ -215,42 +178,25 @@ impl ApplicationHandler for App {
                 self.close_requested = true;
             }
             WindowEvent::Resized(_) => {
-                self.pipeline.as_mut().unwrap().request_recreate();
+                self.resize_pending = true;
             }
             WindowEvent::RedrawRequested => {
                 self.update_delta_time();
-                self.update_camera();
                 self.request_log();
 
-                let pipeline = self.pipeline.as_mut().unwrap();
+                let view = self.player_view();
 
-                let region = pipeline.region_mut();
-                region.frame_seed = region.frame_seed.wrapping_add(1);
+                let resized = std::mem::take(&mut self.resize_pending);
+                let next_mode = std::mem::take(&mut self.mode_toggle_pending);
 
-                let window_size = pipeline.window().inner_size();
-
-                if window_size.width == 0 || window_size.height == 0 {
-                    return;
-                }
-
-                if pipeline.recreate_if_needed(&self.gpu) {
-                    self.history.resized();
-                }
-
-                self.gpu
-                    .resources
-                    .flight(self.gpu.graphics_flight_id)
-                    .wait_idle()
-                    .unwrap();
-
-                let apply_report = self.store.apply(&self.gpu, &self.input);
-                let edited = !apply_report.dirty.is_empty();
-
-                let nrd_frame = self.history.advance(edited, pipeline.denoiser_enabled());
-
-                pipeline.region_mut().nrd = nrd_frame;
-
-                pipeline.execute();
+                self.pipeline.as_mut().unwrap().run_frame(
+                    &self.gpu,
+                    FrameInput {
+                        view,
+                        resized,
+                        next_mode,
+                    },
+                );
             }
             WindowEvent::MouseInput { state, button, .. } => {
                 if let Some(mapped) = input::map_mouse_button(button) {
@@ -302,7 +248,7 @@ impl ApplicationHandler for App {
         if self.close_requested {
             event_loop.exit();
         } else {
-            self.pipeline.as_ref().unwrap().window().request_redraw();
+            self.window.as_ref().unwrap().request_redraw();
         }
     }
 

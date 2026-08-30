@@ -291,7 +291,9 @@ fn swapchain_storage_views(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::render::region::task::{NrdFrame, RenderMode, production_raygen, default_scene};
+    use crate::core::render::region::task::{
+        NrdFrame, RenderMode, default_scene, production_raygen,
+    };
 
     fn test_images() -> FrameImages {
         FrameImages {

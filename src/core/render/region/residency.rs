@@ -44,7 +44,7 @@ use crate::core::{
             rebuild::{
                 BlasBuild, RebuildGraph, RebuildLogEntry, RebuildPlan, RegionUpload, TlasBuild,
             },
-            task::{production_raygen, default_scene},
+            task::{default_scene, production_raygen},
         },
     },
     world::{
