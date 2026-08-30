@@ -52,8 +52,12 @@ pub fn get_material_table(data: &dot_vox::DotVoxData) -> MaterialTable {
             entry.metallic = metallic.clamp(0.0, 1.0);
         }
 
-        if let Some(roughness) = material.roughness() {
-            entry.roughness = roughness.clamp(0.0, 1.0);
+        // The editor writes an untouched `_rough: 0.1` into every palette slot;
+        // roughness is authored data only for _type presets.
+        if material.material_type().is_some() {
+            if let Some(roughness) = material.roughness() {
+                entry.roughness = roughness.clamp(0.0, 1.0);
+            }
         }
 
         if let Some(emit) = material.emission() {
@@ -142,8 +146,12 @@ mod tests {
     #[test]
     fn matl_properties_override_defaults() {
         let data = data_with(vec![
-            matl(3, &[("_metal", "0.5"), ("_rough", "0.2")]),
-            matl(7, &[("_rough", "0.9")]),
+            matl(
+                3,
+                &[("_type", "_metal"), ("_metal", "0.5"), ("_rough", "0.2")],
+            ),
+            matl(7, &[("_type", "_metal"), ("_rough", "0.9")]),
+            matl(9, &[("_metal", "0.5"), ("_rough", "0.2")]),
         ]);
         let table = get_material_table(&data);
 
@@ -153,6 +161,14 @@ mod tests {
         assert_eq!(table[7].roughness, 0.9);
         assert_eq!(table[7].metallic, 0.0, "missing _metal keeps the default");
         assert_eq!(table[7].emission, [0.0; 3]);
+        assert_eq!(
+            table[9].metallic, 0.5,
+            "_metal is authored even without a preset"
+        );
+        assert_eq!(
+            table[9].roughness, DEFAULT_ROUGHNESS,
+            "typeless _rough is the editor's untouched default, not authored data"
+        );
     }
 
     #[test]
@@ -183,7 +199,12 @@ mod tests {
     fn properties_clamp_to_unit_range() {
         let data = data_with(vec![matl(
             4,
-            &[("_metal", "2.0"), ("_rough", "-0.5"), ("_emit", "3.0")],
+            &[
+                ("_type", "_metal"),
+                ("_metal", "2.0"),
+                ("_rough", "-0.5"),
+                ("_emit", "3.0"),
+            ],
         )]);
         let table = get_material_table(&data);
         assert_eq!(table[4].metallic, 1.0);

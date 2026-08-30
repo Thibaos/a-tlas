@@ -4,14 +4,15 @@ Shading needs per-voxel surface properties beyond the palette color: metallic, r
 
 ## Status
 
-accepted (path-tracing ticket 03, 2026-08-17)
+accepted (path-tracing ticket 03, 2026-08-17). Revised 2026-08-30: default roughness corrected to 1.0, and `_rough` is honored only on `_type`-carrying entries.
 
 ## Decision
 
 - **Table shape**: a 256-entry bindless storage buffer beside the Palette (both world-static, uploaded once at startup). Two `vec4[256]` columns, `albedo_metallic` (albedo.rgb + metallic) and `rough_emit` (emission.rgb + roughness), indexed by the 8-bit hitKind (the material index) in closest-hit; the raygen reads it through the payload's `hit_kind` (the payload grows one uint).
 - **CPU mirror**: `Material` (albedo / metallic / roughness / emission) and `get_material_table` in src/core/world/material.rs, the single source of truth. `RegionStore` uploads its packed twin.
 - **Albedo == Palette color by construction**: the table's albedo column is the palette (closest-hit forces alpha 1.0; palette alpha is not a material property).
-- **Defaults** (no MATL entry, or missing property): diffuse, metallic 0, roughness 0.3, emission 0. Properties clamp to [0, 1]; malformed material ids (≥ 256) are skipped, not fatal. `_type` is informational in v1. All types keep the PBR triad (`glass` is treated as opaque per the map's out-of-scope).
+- **Defaults** (no MATL entry, or missing property): diffuse, metallic 0, roughness 1.0, emission 0. Properties clamp to [0, 1]; malformed material ids (≥ 256) are skipped, not fatal. All types keep the PBR triad (`glass` is treated as opaque per the map's out-of-scope).
+- **`_rough` is authored only when `_type` is present.** The editor writes an untouched `_rough: 0.1` into every palette slot it saves, and the roughness slider exists only for the Metal/Glass/Blend presets, so honoring typeless `_rough` made every unedited surface glossy. `_metal` and `_emit` never appear on untouched slots and stay unconditional.
 - **Emission mapping**: linear RGB radiance = `_emit` × albedo × 10 (`EMISSION_SCALE`, tunable. Bright enough to read through the ACES tonemap and to act as a real path-hit light later). The result is unclamped; the firefly-clamp policy stays in the effort's fog.
 
 ## Considered Options
