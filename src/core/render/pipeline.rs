@@ -21,6 +21,7 @@ use vulkano_taskgraph::{
 use winit::window::Window;
 
 use crate::core::render::{
+    cache_resolve::{CacheResolveTask, create_cache_resolve_pipeline},
     composite::{CompositeTask, create_composite_pipeline},
     frame_images::FrameImages,
     gpu::{GpuDesc, MIN_SWAPCHAIN_IMAGES},
@@ -40,6 +41,13 @@ use crate::core::world::{World, snapshot::emit_snapshots};
 const PROJ_FOV: f32 = std::f32::consts::FRAC_PI_2;
 const PROJ_NEAR: f32 = 0.01;
 const PROJ_FAR: f32 = 10000.0;
+
+// contract.glsl's CACHE_EVENT_FRAMES, cross-checked by the pack contract test.
+pub(crate) const CACHE_EVENT_FRAMES: u32 = 10;
+
+fn scene_changed(a: &production_raygen::Scene, b: &production_raygen::Scene) -> bool {
+    a.sun_dir != b.sun_dir || a.sky_knots != b.sky_knots || a.sun_disk != b.sun_disk
+}
 
 pub struct FrameInput {
     pub view: Mat4,
@@ -68,6 +76,8 @@ pub struct FramePipeline {
     input: RendererInput,
     store: RegionStore,
     history: NrdHistory,
+    prev_scene: production_raygen::Scene,
+    cache_event_frames: u32,
 }
 
 impl FramePipeline {
@@ -163,6 +173,13 @@ impl FramePipeline {
         frame_images.declare_trace_outputs(&mut rt_node);
         let rt_node_id = rt_node.build();
 
+        let mut resolve_node = task_graph.create_task_node(
+            "CacheResolve",
+            QueueFamilyType::Graphics,
+            CacheResolveTask::new(store.bindings),
+        );
+        let resolve_node_id = resolve_node.build();
+
         let mut composite_node = task_graph.create_task_node(
             "Composite",
             QueueFamilyType::Graphics,
@@ -181,7 +198,10 @@ impl FramePipeline {
         frame_images.declare_denoise_io(&mut denoise_node);
         let denoise_node_id = denoise_node.build();
 
-        task_graph.add_edge(rt_node_id, denoise_node_id).unwrap();
+        task_graph.add_edge(rt_node_id, resolve_node_id).unwrap();
+        task_graph
+            .add_edge(resolve_node_id, denoise_node_id)
+            .unwrap();
         task_graph
             .add_edge(denoise_node_id, composite_node_id)
             .unwrap();
@@ -207,6 +227,17 @@ impl FramePipeline {
                 .pipeline = Some(composite_pipeline);
         }
 
+        {
+            let resolve_pipeline = create_cache_resolve_pipeline(gpu);
+            task_graph
+                .task_node_mut(resolve_node_id)
+                .unwrap()
+                .task_mut()
+                .downcast_mut::<CacheResolveTask>()
+                .unwrap()
+                .pipeline = Some(resolve_pipeline);
+        }
+
         if let Some(nrd) = nrd.clone() {
             let task = task_graph
                 .task_node_mut(denoise_node_id)
@@ -226,6 +257,7 @@ impl FramePipeline {
                 proj_prev: glam::Mat4::IDENTITY.to_cols_array_2d(),
             },
             scene: default_scene(),
+            cache_state: store.initial_cache_state(gpu),
             swapchain_storage_image_ids: Vec::new(),
             diff_radiance_image_id: StorageImageId::INVALID,
             spec_radiance_image_id: StorageImageId::INVALID,
@@ -241,6 +273,7 @@ impl FramePipeline {
             ev: default_ev(),
             mode: RenderMode::default(),
             frame_seed: 0,
+            cache_resolve_dispatch: 0,
         };
 
         frame_images.bind_into(&mut region);
@@ -258,6 +291,8 @@ impl FramePipeline {
             input,
             store,
             history,
+            prev_scene: default_scene(),
+            cache_event_frames: 0,
         }
     }
 
@@ -325,6 +360,17 @@ impl FramePipeline {
             .wait_idle()
             .unwrap();
 
+        if self.store.cache_stats_enabled() && self.region.cache_state.frame_index % 60 == 0 {
+            let (lookups, fallbacks, touched, deposits, landed) = self.store.cache_stats_tick(gpu);
+
+            println!(
+                "cache stats: {lookups} lookups, {fallbacks} fallbacks, {touched} faces touched, \
+                 {deposits} deposits, {landed} landed (dispatch {} live {})",
+                self.region.cache_resolve_dispatch,
+                self.store.cache_resolve_dispatch()
+            );
+        }
+
         let apply_report = self.store.apply(gpu, &self.input);
         let edited = !apply_report.dirty.is_empty();
 
@@ -364,6 +410,25 @@ impl FramePipeline {
         self.region.frame_seed = self.region.frame_seed.wrapping_add(1);
 
         self.region.nrd = self.history.advance(edited, self.nrd.is_some());
+
+        if plan.resized || self.region.nrd.clear {
+            self.store.clear_cache_slabs(gpu);
+        }
+
+        if scene_changed(&self.region.scene, &self.prev_scene) {
+            self.cache_event_frames = CACHE_EVENT_FRAMES;
+        } else if self.cache_event_frames > 0 {
+            self.cache_event_frames -= 1;
+        }
+
+        self.prev_scene = self.region.scene;
+        self.region.cache_state.frame_index = self
+            .region
+            .cache_state
+            .frame_index
+            .wrapping_add(1);
+        self.region.cache_state.event_frames = self.cache_event_frames;
+        self.region.cache_resolve_dispatch = self.store.cache_resolve_dispatch();
 
         self.execute();
 

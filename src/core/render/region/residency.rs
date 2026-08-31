@@ -35,8 +35,9 @@ use crate::core::{
         gpu::GpuDesc,
         region::{
             alloc::{
-                AllocStats, BlasAllocation, FreeLists, FreedBlas, FreedPool, PendingFrees,
-                allocate_blas, allocate_pool,
+                AllocStats, BlasAllocation, FreeLists, FreedBlas, FreedPool, FreedSlab,
+                PendingFrees, SlabAllocation, CACHE_ENTRY_BYTES, CACHE_SLAB_BUDGET, allocate_blas,
+                allocate_pool, allocate_slab,
             },
             decision::{RegionEffect, RegionSlot, decide},
             feed::RendererInput,
@@ -49,7 +50,7 @@ use crate::core::{
     },
     world::{
         format::get_palette,
-        grid::{REGION_LENGTH, region_id},
+        grid::{MICRO_CHUNK_LENGTH, REGION_LENGTH, region_id},
         material::get_material_table,
     },
 };
@@ -61,6 +62,7 @@ struct ResidentRegion {
     aabb_capacity: u32,
     blas: Arc<AccelerationStructure>,
     blas_storage_size: u64,
+    slab: Option<(Id<Buffer>, u64)>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -79,6 +81,7 @@ pub struct ApplyReport {
 pub struct RegionBindings {
     pub camera_buffer_id: Id<Buffer>,
     pub scene_buffer_id: Id<Buffer>,
+    pub cache_state_buffer_id: Id<Buffer>,
     pub region_table_storage_id: StorageBufferId,
     pub camera_storage_id: StorageBufferId,
     pub scene_storage_id: StorageBufferId,
@@ -86,6 +89,8 @@ pub struct RegionBindings {
     pub material_table_storage_id: StorageBufferId,
     pub acceleration_structure_id: AccelerationStructureId,
     pub aabb_table_storage_id: StorageBufferId,
+    pub cache_table_storage_id: StorageBufferId,
+    pub cache_state_storage_id: StorageBufferId,
     pub instance_buffer_id: Id<Buffer>,
 }
 
@@ -93,6 +98,8 @@ pub struct RegionStore {
     pub bindings: RegionBindings,
     region_table_buffer_id: Id<Buffer>,
     aabb_table_buffer_id: Id<Buffer>,
+    cache_table_buffer_id: Id<Buffer>,
+    cache_stats_buffer_id: Id<Buffer>,
     instances: Vec<AccelerationStructureInstance>,
     resident_ids: Vec<u32>,
     tlas: Arc<AccelerationStructure>,
@@ -100,6 +107,11 @@ pub struct RegionStore {
     tlas_initialized: bool,
     regions: Vec<Option<ResidentRegion>>,
     table_addresses: Vec<u64>,
+    cache_addresses: Vec<u64>,
+    cache_entry_counts: Vec<u64>,
+    slab_bytes_allocated: u64,
+    cache_stats_enabled: bool,
+    cache_table_dirty: bool,
     free: FreeLists,
     pending_free: PendingFrees,
     dummy_blas: Arc<AccelerationStructure>,
@@ -204,6 +216,56 @@ impl RegionStore {
                     ..Default::default()
                 },
                 DeviceLayout::new_sized::<production_raygen::AabbTable>(),
+            )
+            .unwrap();
+
+        let cache_table_buffer_id = gpu
+            .resources
+            .create_buffer(
+                &BufferCreateInfo {
+                    usage: BufferUsage::STORAGE_BUFFER | BufferUsage::TRANSFER_DST,
+                    ..Default::default()
+                },
+                &AllocationCreateInfo {
+                    memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
+                        | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
+                    ..Default::default()
+                },
+                DeviceLayout::new_sized::<production_raygen::CacheTable>(),
+            )
+            .unwrap();
+
+        let cache_state_buffer_id = gpu
+            .resources
+            .create_buffer(
+                &BufferCreateInfo {
+                    usage: BufferUsage::STORAGE_BUFFER | BufferUsage::TRANSFER_DST,
+                    ..Default::default()
+                },
+                &AllocationCreateInfo {
+                    memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
+                        | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
+                    ..Default::default()
+                },
+                DeviceLayout::new_sized::<production_raygen::CacheState>(),
+            )
+            .unwrap();
+
+        let cache_stats_buffer_id = gpu
+            .resources
+            .create_buffer(
+                &BufferCreateInfo {
+                    usage: BufferUsage::SHADER_DEVICE_ADDRESS
+                        | BufferUsage::STORAGE_BUFFER
+                        | BufferUsage::TRANSFER_DST,
+                    ..Default::default()
+                },
+                &AllocationCreateInfo {
+                    memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
+                        | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
+                    ..Default::default()
+                },
+                DeviceLayout::new_sized::<[u32; 5 * REGION_COUNT]>(),
             )
             .unwrap();
 
@@ -341,9 +403,28 @@ impl RegionStore {
             )
             .unwrap();
 
+        let cache_table_storage_id = bcx
+            .global_set()
+            .create_storage_buffer(
+                cache_table_buffer_id,
+                0,
+                Some(size_of::<production_raygen::CacheTable>() as DeviceSize),
+            )
+            .unwrap();
+
+        let cache_state_storage_id = bcx
+            .global_set()
+            .create_storage_buffer(
+                cache_state_buffer_id,
+                0,
+                Some(size_of::<production_raygen::CacheState>() as DeviceSize),
+            )
+            .unwrap();
+
         let bindings = RegionBindings {
             camera_buffer_id,
             scene_buffer_id,
+            cache_state_buffer_id,
             region_table_storage_id,
             camera_storage_id,
             scene_storage_id,
@@ -351,6 +432,8 @@ impl RegionStore {
             material_table_storage_id,
             acceleration_structure_id,
             aabb_table_storage_id,
+            cache_table_storage_id,
+            cache_state_storage_id,
             instance_buffer_id,
         };
 
@@ -358,6 +441,8 @@ impl RegionStore {
             bindings,
             region_table_buffer_id,
             aabb_table_buffer_id,
+            cache_table_buffer_id,
+            cache_stats_buffer_id,
             instances: static_instances(),
             resident_ids: Vec::new(),
             tlas,
@@ -365,6 +450,11 @@ impl RegionStore {
             tlas_initialized: false,
             regions: (0..REGION_COUNT).map(|_| None).collect(),
             table_addresses: vec![0; REGION_COUNT],
+            cache_addresses: vec![0; REGION_COUNT],
+            cache_entry_counts: vec![0; REGION_COUNT],
+            slab_bytes_allocated: 0,
+            cache_stats_enabled: std::env::var("ATLAS_RT_CACHE_STATS").is_ok(),
+            cache_table_dirty: false,
             free: FreeLists::default(),
             pending_free: PendingFrees::default(),
             dummy_blas,
@@ -411,6 +501,10 @@ impl RegionStore {
         }
 
         store.write_aabb_table(gpu, aabb_table_buffer_id);
+
+        if store.cache_stats_enabled() {
+            store.print_slab_stats();
+        }
 
         store
     }
@@ -538,6 +632,7 @@ impl RegionStore {
                         aabb_buffer_id: blas_alloc.aabb_buffer_id,
                         aabbs: pack.aabbs,
                     });
+
                     plan.blas_builds.push(plan_blas_build(
                         gpu,
                         region_index,
@@ -558,6 +653,7 @@ impl RegionStore {
                     self.instances[id as usize].acceleration_structure_reference =
                         blas.device_address().into();
                     self.table_addresses[id as usize] = address;
+                    let slab = self.assign_slab(gpu, &mut plan, id, aabbs);
                     self.regions[id as usize] = Some(ResidentRegion {
                         pool_buffer_id: pool.buffer_id,
                         pool_capacity: pool.capacity,
@@ -565,6 +661,7 @@ impl RegionStore {
                         aabb_capacity: blas_alloc.aabb_capacity,
                         blas,
                         blas_storage_size,
+                        slab,
                     });
                 }
 
@@ -574,11 +671,21 @@ impl RegionStore {
                 } => {
                     let region = self.regions[id as usize].take().unwrap();
                     self.table_addresses[id as usize] = 0;
+                    self.cache_addresses[id as usize] = 0;
+                    self.cache_entry_counts[id as usize] = 0;
+                    self.cache_table_dirty = true;
 
                     self.pending_free.pools.push(FreedPool {
                         buffer_id: region.pool_buffer_id,
                         capacity: retire_pool,
                     });
+
+                    if let Some(slab) = region.slab {
+                        self.pending_free.slabs.push(FreedSlab {
+                            buffer_id: slab.0,
+                            capacity: slab.1,
+                        });
+                    }
 
                     self.pending_free.blas.push(FreedBlas {
                         aabb_buffer_id: region.aabb_buffer_id,
@@ -707,6 +814,9 @@ impl RegionStore {
                             ));
                         }
                     }
+
+                    self.regions[id as usize].as_mut().unwrap().slab =
+                        self.assign_slab(gpu, &mut plan, id, aabbs);
                 }
             }
         }
@@ -720,6 +830,34 @@ impl RegionStore {
             );
         }
 
+        if self.cache_table_dirty {
+            // The resolve dispatch's inclusive word prefix: threads walk it
+            // to their owning region; empty slots contribute zero words.
+            let mut prefix = [0u32; REGION_COUNT];
+            let mut words = 0u32;
+
+            for r in 0..REGION_COUNT {
+                words += (self.cache_entry_counts[r] / 32) as u32;
+                prefix[r] = words;
+            }
+
+            plan.cache_table = Some(production_raygen::CacheTable {
+                bdas: self
+                    .cache_addresses
+                    .clone()
+                    .try_into()
+                    .expect("the cache table has REGION_COUNT entries"),
+                entry_counts: self
+                    .cache_entry_counts
+                    .iter()
+                    .map(|&count| count as u32)
+                    .collect::<Vec<_>>()
+                    .try_into()
+                    .expect("the cache table has REGION_COUNT entries"),
+                bitmap_prefix: prefix,
+            });
+            self.cache_table_dirty = false;
+        }
         if decision.tlas_dirty {
             let instance_buffer = Subbuffer::new(
                 gpu.resources
@@ -760,7 +898,6 @@ impl RegionStore {
         report.instance_count = self.resident_ids.len();
         report
     }
-
     fn rebuild_with_plan(&mut self, gpu: &GpuDesc, plan: RebuildPlan) {
         let tlas_rebuilds = plan.tlas.is_some();
         let graph = RebuildGraph::new(gpu, self, plan);
@@ -773,6 +910,77 @@ impl RegionStore {
         self.release_pending_frees();
     }
 
+    // 02's local tier: an edit frame replaces the dirty Region's slab, so
+    // its entries read absent (the gate's fallback) and refill cold. The
+    // replacement is zero-filled by the rebuild's upload task. A retiring
+    // slab that still fits the new content is reused in place — handing it
+    // through the free list would refuse the re-allocation while the budget
+    // still counts its bytes, dropping a slabbed Region out of the cache.
+    fn assign_slab(
+        &mut self,
+        gpu: &GpuDesc,
+        plan: &mut RebuildPlan,
+        id: u32,
+        aabb_count: u32,
+    ) -> Option<(Id<Buffer>, u64)> {
+        // Entries cover state + accumulator (CACHE_ENTRY_STRIDE words); the
+        // slab trails one touched-bitmap word per 32 entries — the words the
+        // deposits set and the resolve scans, at word offset entries *
+        // CACHE_ENTRY_STRIDE. Omitting them from the allocation puts every
+        // bitmap access past the buffer end.
+        let entries = aabb_count as u64 * (MICRO_CHUNK_LENGTH.pow(3) * 6) as u64;
+        let bytes = entries * CACHE_ENTRY_BYTES + entries / 32 * 4;
+
+        let retiring = self.regions[id as usize]
+            .as_ref()
+            .and_then(|region| region.slab);
+
+        let slab = match retiring {
+            Some((buffer_id, capacity)) if capacity >= bytes => {
+                Some(SlabAllocation {
+                    buffer_id,
+                    capacity,
+                })
+            }
+            retiring => {
+                if let Some((buffer_id, capacity)) = retiring {
+                    self.pending_free.slabs.push(FreedSlab {
+                        buffer_id,
+                        capacity,
+                    });
+                }
+
+                allocate_slab(
+                    gpu,
+                    &mut self.free,
+                    &mut self.alloc_stats,
+                    &mut self.slab_bytes_allocated,
+                    bytes,
+                )
+            }
+        };
+
+        match &slab {
+            Some(alloc) => {
+                plan.slab_zeroes.push((alloc.buffer_id, alloc.capacity));
+                self.cache_addresses[id as usize] = gpu
+                    .resources
+                    .buffer(alloc.buffer_id)
+                    .buffer()
+                    .device_address()
+                    .get();
+                self.cache_entry_counts[id as usize] = entries;
+            }
+            None => {
+                self.cache_addresses[id as usize] = 0;
+                self.cache_entry_counts[id as usize] = 0;
+            }
+        }
+
+        self.cache_table_dirty = true;
+
+        slab.map(|alloc| (alloc.buffer_id, alloc.capacity))
+    }
     fn packed_instance_prefix(&self) -> Vec<AccelerationStructureInstance> {
         packed_prefix(&self.instances, &self.resident_ids, self.dummy_instance())
     }
@@ -788,6 +996,160 @@ impl RegionStore {
     fn release_pending_frees(&mut self) {
         self.free.pools.append(&mut self.pending_free.pools);
         self.free.blas.append(&mut self.pending_free.blas);
+        self.free.slabs.append(&mut self.pending_free.slabs);
+    }
+
+    pub(crate) fn cache_table_buffer_id(&self) -> Id<Buffer> {
+        self.cache_table_buffer_id
+    }
+
+    pub(crate) fn cache_stats_enabled(&self) -> bool {
+        self.cache_stats_enabled
+    }
+
+    // The resolve dispatch covers every live slab's touched-bitmap words;
+    // the cache table's inclusive prefix maps threads back onto (region,
+    // word) pairs.
+    pub(crate) fn cache_resolve_dispatch(&self) -> u32 {
+        self.cache_entry_counts
+            .iter()
+            .map(|&count| (count / 32) as u32)
+            .sum()
+    }
+
+    pub(crate) fn initial_cache_state(&self, gpu: &GpuDesc) -> production_raygen::CacheState {
+        production_raygen::CacheState {
+            stats_bda: gpu
+                .resources
+                .buffer(self.cache_stats_buffer_id)
+                .buffer()
+                .device_address()
+                .get(),
+            frame_index: 1,
+            event_frames: 0,
+            stats_enabled: self.cache_stats_enabled as u32,
+        }
+    }
+
+    // 02's global tier: whatever resets NRD's history clears every slab,
+    // so no entry survives an event as fresh state.
+    pub(crate) fn clear_cache_slabs(&self, gpu: &GpuDesc) {
+        let live: Vec<(Id<Buffer>, u64)> = self
+            .regions
+            .iter()
+            .filter_map(|region| region.as_ref().and_then(|region| region.slab))
+            .collect();
+
+        if live.is_empty() {
+            return;
+        }
+
+        unsafe {
+            vulkano_taskgraph::execute(
+                &gpu.transfer_queue,
+                &gpu.resources,
+                gpu.graphics_flight_id,
+                |_cbf, tcx| {
+                    for (buffer_id, bytes) in &live {
+                        tcx.write_buffer::<[u8]>(*buffer_id, 0..*bytes).fill(0);
+                    }
+
+                    Ok(())
+                },
+                live.iter()
+                    .map(|(buffer_id, _)| (*buffer_id, HostAccessType::Write))
+                    .collect::<Vec<_>>(),
+                [],
+                [],
+            )
+            .unwrap();
+        }
+
+        gpu.resources
+            .flight(gpu.graphics_flight_id)
+            .wait_idle()
+            .unwrap();
+    }
+
+    // Sums the per-region counters and zeroes them; the frames are
+    // serialized by the wait_idle at the top of run_frame, so the read
+    // races nothing.
+    pub(crate) fn cache_stats_tick(&self, gpu: &GpuDesc) -> (u64, u64, u64, u64, u64) {
+        let mut sums = (0u64, 0u64, 0u64, 0u64, 0u64);
+
+        unsafe {
+            vulkano_taskgraph::execute(
+                &gpu.transfer_queue,
+                &gpu.resources,
+                gpu.graphics_flight_id,
+                |_cbf, tcx| {
+                    let words = tcx.read_buffer::<[u32; 5 * REGION_COUNT]>(
+                        self.cache_stats_buffer_id,
+                        ..,
+                    );
+
+                    for (index, word) in words.iter().enumerate() {
+                        match index / REGION_COUNT {
+                            0 => sums.0 += *word as u64,
+                            1 => sums.1 += *word as u64,
+                            2 => sums.2 += *word as u64,
+                            3 => sums.3 += *word as u64,
+                            _ => sums.4 += *word as u64,
+                        }
+                    }
+
+                    tcx.write_buffer::<[u32; 5 * REGION_COUNT]>(self.cache_stats_buffer_id, ..)
+                        .fill(0);
+
+                    Ok(())
+                },
+                [
+                    (self.cache_stats_buffer_id, HostAccessType::Read),
+
+                    (self.cache_stats_buffer_id, HostAccessType::Write),
+                ],
+                [],
+                [],
+            )
+            .unwrap();
+        }
+
+        gpu.resources
+            .flight(gpu.graphics_flight_id)
+            .wait_idle()
+            .unwrap();
+
+        sums
+    }
+
+    pub(crate) fn print_slab_stats(&self) {
+        let mut entries = 0u64;
+        let mut bytes = 0u64;
+
+        for region in &self.regions {
+            if let Some(region) = region {
+                if let Some((_, capacity)) = region.slab {
+                    entries += capacity / CACHE_ENTRY_BYTES;
+                    bytes += capacity;
+                }
+            }
+        }
+
+        println!(
+            "cache counts: {} recorded entries, dispatch {}",
+            self.cache_entry_counts.iter().sum::<u64>(),
+            self.cache_resolve_dispatch()
+        );
+        println!(
+            "cache slabs: {entries} entries, {bytes} bytes allocated (budget {})",
+            CACHE_SLAB_BUDGET
+        );
+        println!(
+            "cache slabs: {} allocation(s), {} reuse(s), {} budget refusal(s)",
+            self.alloc_stats.slab_allocations,
+            self.alloc_stats.slab_reuses,
+            self.alloc_stats.slab_budget_refusals
+        );
     }
 }
 

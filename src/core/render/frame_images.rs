@@ -321,6 +321,12 @@ mod tests {
                 proj_prev: [[0.0; 4]; 4],
             },
             scene: default_scene(),
+            cache_state: production_raygen::CacheState {
+                stats_bda: 0,
+                frame_index: 1,
+                event_frames: 0,
+                stats_enabled: 0,
+            },
             swapchain_storage_image_ids: Vec::new(),
             diff_radiance_image_id: StorageImageId::INVALID,
             spec_radiance_image_id: StorageImageId::INVALID,
@@ -336,6 +342,7 @@ mod tests {
             ev: 0.0,
             mode: RenderMode::default(),
             frame_seed: 0,
+            cache_resolve_dispatch: 0,
         }
     }
 

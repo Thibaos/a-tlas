@@ -225,6 +225,13 @@ multi-bounce is the cache's previous-frame temporal state, not a deeper
 trace. Never stamped into primary-surface radiance.
 _Avoid_: lightmap, probe grid, GI volume
 
+**Resolve pass**:
+The Radiance cache's per-frame pass: aggregates the frame's accumulated
+samples per entry and blends them into stored state with hysteresis (DDGI's
+update policy). Distinct from v1's rejected accumulate→resolve→stamp: 0017's
+grounds were measured at the stamp into primary radiance, not at the resolve.
+_Avoid_: cache update (the policy is the resolve's job)
+
 **Transmission**:
 Light passing through a Glass voxel (a voxel whose Material's MATL entry
 is the glass type): the ray continues in the same direction, losing only

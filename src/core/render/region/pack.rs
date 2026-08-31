@@ -243,6 +243,8 @@ mod contract {
     use std::path::{Path, PathBuf};
 
     use crate::core::render::region::task::RenderMode;
+    use crate::core::render::pipeline::CACHE_EVENT_FRAMES;
+    use crate::core::render::region::alloc::CACHE_ENTRY_BYTES;
 
     use super::*;
 
@@ -267,6 +269,12 @@ mod contract {
         "VIEWZ_SKY",
         "SKY_VIEWZ",
         "SKY_VIEWZ_NRD",
+        "CACHE_ENTRIES_PER_MC",
+        "CACHE_ENTRY_STRIDE",
+        "CACHE_STALE_T",
+        "CACHE_IRRADIANCE_GAMMA",
+        "CACHE_EVENT_FRAMES",
+        "CACHE_EVENT_REDUCTION",
     ];
 
     fn define(name: &str) -> String {
@@ -324,8 +332,24 @@ mod contract {
         assert_eq!(float("VIEWZ_SKY"), 1.0e6);
         assert_eq!(float("RAY_T_MIN"), 0.01);
         assert_eq!(float("RAY_T_MAX"), 10000.0);
-
         assert!(float("VIEWZ_SKY") > float("RAY_T_MAX"));
+
+        let entry_stride = uint("CACHE_ENTRY_STRIDE");
+        assert_eq!(uint("CACHE_ENTRIES_PER_MC"), voxel * voxel * voxel * 6);
+        assert_eq!(entry_stride, 7);
+        assert_eq!(uint("CACHE_ACC_OFFSET"), 3);
+        assert_eq!(entry_stride * 4, CACHE_ENTRY_BYTES);
+        assert_eq!(float("CACHE_ACC_SCALE"), 1024.0);
+        assert_eq!(float("CACHE_ACC_TICK_CAP"), 1048575.0);
+        assert_eq!(float("CACHE_BASE_HYSTERESIS"), 0.97);
+        assert_eq!(float("CACHE_LADDER_LOW"), 0.25);
+        assert_eq!(float("CACHE_LADDER_HIGH"), 0.8);
+        assert_eq!(float("CACHE_LADDER_STEP"), 0.15);
+        assert_eq!(float("CACHE_IMPULSE"), 1.10);
+        assert_eq!(uint("CACHE_STALE_T"), 4096);
+        assert_eq!(float("CACHE_IRRADIANCE_GAMMA"), 5.0);
+        assert_eq!(uint("CACHE_EVENT_FRAMES"), CACHE_EVENT_FRAMES as u64);
+        assert_eq!(float("CACHE_EVENT_REDUCTION"), 0.5);
     }
 
     #[test]

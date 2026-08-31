@@ -169,6 +169,8 @@ pub struct RegionRenderContext {
     pub ev: f32,
     pub mode: RenderMode,
     pub frame_seed: u32,
+    pub cache_state: production_raygen::CacheState,
+    pub cache_resolve_dispatch: u32,
 }
 
 pub struct RegionRenderTask {
@@ -347,6 +349,7 @@ impl Task for RegionRenderTask {
         let extent = swapchain_state.images()[0].extent();
 
         unsafe { cbf.update_buffer(self.bindings.camera_buffer_id, 0, &rcx.camera) };
+        unsafe { cbf.update_buffer(self.bindings.cache_state_buffer_id, 0, &rcx.cache_state) };
         unsafe { cbf.update_buffer(self.bindings.scene_buffer_id, 0, &rcx.scene) };
 
         unsafe {
@@ -376,6 +379,8 @@ impl Task for RegionRenderTask {
                     scene_buffer_id: self.bindings.scene_storage_id,
                     region_table_buffer_id: self.bindings.region_table_storage_id,
                     aabb_table_buffer_id: self.bindings.aabb_table_storage_id,
+                    cache_table_buffer_id: self.bindings.cache_table_storage_id,
+                    cache_state_buffer_id: self.bindings.cache_state_storage_id,
                     mode: rcx.mode as u32,
                     frame_seed: rcx.frame_seed,
                     diff_radiance_image_id: rcx.diff_radiance_image_id,

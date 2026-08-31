@@ -8,6 +8,7 @@
 #include "../common/common.glsl"
 #include "header.glsl"
 #include "common.glsl"
+#include "cache.glsl"
 
 layout(location = 0) rayPayloadInEXT MainPassPayload incoming_payload;
 
@@ -47,4 +48,20 @@ void main() {
     }
 
     incoming_payload.normal = normal;
+
+    // The cache key: the DDA's exact entered cell. The face-axis coordinate
+    // sits on a division-form boundary, so it snaps across the residual
+    // before the voxel slot is cut; a corner hit on a second axis resolves
+    // to a neighbor slot. Hits without a face carry no entry.
+    uint face_id = 0u;
+    ivec3 cell = ivec3(floor(hit_point));
+
+    if (face >= 0) {
+        float eps = 32.0 * 1.1920929e-07 * max(abs(hit_point[face]), 1.0);
+        cell[face] = int(floor(hit_point[face] + eps)) - ((normal[face] < 0.0) ? 0 : 1);
+        face_id = uint(face) * 2u + ((normal[face] > 0.0) ? 1u : 0u);
+    }
+
+    incoming_payload.cache_key = (gl_InstanceCustomIndexEXT & REGION_ID_MASK) | (uint(gl_PrimitiveID) << 12u);
+    incoming_payload.cache_meta = ((face >= 0) ? 4096u : 0u) | (face_id << 9u) | cache_voxel_slot(cell);
 }
