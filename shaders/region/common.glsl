@@ -25,7 +25,6 @@ layout(push_constant) uniform RegionPushConstants {
     StorageBufferId scene_buffer_id;
     StorageBufferId region_table_buffer_id;
     StorageBufferId aabb_table_buffer_id;
-    StorageBufferId cache_table_buffer_id;
     StorageBufferId cache_state_buffer_id;
     uint mode;
     uint frame_seed;

@@ -9,104 +9,81 @@
 #include "../common/contract.glsl"
 
 layout(push_constant) uniform ResolvePushConstants {
-    StorageBufferId cache_table_buffer_id;
     StorageBufferId cache_state_buffer_id;
-    uint dispatch_words;
 };
 
 #include "cache.glsl"
 
+// SHaRC's Resolve, one thread per table entry: the edit-frame dirty sweep
+// and the stale-aging eviction clear entries away, a touched entry blends
+// its frame's deposits into the stored state under 02's ladder, and the
+// accumulator resets for the next frame. Untouched entries keep their
+// record — coverage is age-bounded by CACHE_EVICT_T, not by the sweep.
 void main() {
-    uint thread = gl_GlobalInvocationID.x;
+    uint entry = gl_GlobalInvocationID.x;
 
-    if (thread >= dispatch_words) {
+    if (entry >= CACHE_TABLE_ENTRIES) {
         return;
     }
 
-    // Smallest region whose inclusive bitmap-word prefix passes the thread:
-    // empty region slots contribute zero words, so the search lands on the
-    // resident owner of this word.
-    uint lo = 0u;
-    uint hi = REGION_TABLE_ENTRIES;
+    CacheKeys keys = CacheKeys(cache_state.keys_bda);
+    uint64_t key = keys.keys[entry];
 
-    while (lo < hi) {
-        uint mid = (lo + hi) / 2u;
-
-        if (cache_table.bitmap_prefix[mid] <= thread) {
-            lo = mid + 1u;
-        } else {
-            hi = mid;
-        }
-    }
-
-    if (lo >= REGION_TABLE_ENTRIES || cache_table.bdas[lo] == 0ul) {
+    if (key == 0ul) {
         return;
     }
 
-    uint region_id = lo;
-    CacheSlab slab = CacheSlab(cache_table.bdas[region_id]);
-    uint entries = cache_table.entry_counts[region_id];
-    uint bitmap_base = entries * CACHE_ENTRY_STRIDE;
-    uint word_index = thread - ((region_id == 0u) ? 0u : cache_table.bitmap_prefix[region_id - 1u]);
-    uint word = slab.words[bitmap_base + word_index];
+    uint region_id = uint(key) & REGION_ID_MASK;
+    CacheAccum accum = CacheAccum(cache_state.accum_bda);
+    CacheResolved resolved = CacheResolved(cache_state.resolved_bda);
 
-    if (word == 0u) {
+    if ((CacheDirty(cache_state.dirty_bda).words[region_id >> 5]
+            & (1u << (region_id & 31u))) != 0u) {
+        keys.keys[entry] = 0ul;
+        accum.ticks[entry] = uvec4(0u);
+        resolved.recs[entry] = uvec4(0u);
+
         return;
     }
 
-    for (uint bit = 0u; bit < 32u; ++bit) {
-        if (((word >> bit) & 1u) == 0u) {
-            continue;
+    uvec4 ticks = accum.ticks[entry];
+    uvec4 rec = resolved.recs[entry];
+    uint count = ticks.w;
+
+    if (count == 0u) {
+        if (rec.z != 0u && cache_state.frame_index - rec.z >= CACHE_EVICT_T) {
+            keys.keys[entry] = 0ul;
+            resolved.recs[entry] = uvec4(0u);
         }
 
-        uint slot = (word_index << 5) + bit;
-
-        if (slot >= entries) {
-            break;
-        }
-
-        uint base = slot * CACHE_ENTRY_STRIDE;
-        uint count = slab.words[base + CACHE_ACC_OFFSET + 3u];
-
-        if (count == 0u) {
-            continue;
-        }
-
-        vec3 mean = vec3(slab.words[base + CACHE_ACC_OFFSET + 0u],
-                slab.words[base + CACHE_ACC_OFFSET + 1u],
-                slab.words[base + CACHE_ACC_OFFSET + 2u]) / (float(count) * CACHE_ACC_SCALE);
-        vec2 rg = unpackHalf2x16(slab.words[base]);
-        vec2 bz = unpackHalf2x16(slab.words[base + 1u]);
-        vec3 old = pow(vec3(rg.x, rg.y, bz.x), vec3(CACHE_IRRADIANCE_GAMMA));
-
-        // 02's ladder on the aggregate: a big move replaces, a moderate one
-        // sags the old weight, and a single-frame brightening impulse is
-        // clamped (absent entries skip the clamp so cold start fills).
-        float old_lum = (old.r + old.g + old.b) / 3.0;
-        float mean_lum = (mean.r + mean.g + mean.b) / 3.0;
-        float weight = cache_old_weight(CACHE_BASE_HYSTERESIS);
-        float change = abs(mean_lum - old_lum) / max(old_lum, 1e-6);
-
-        if (change > CACHE_LADDER_HIGH) {
-            weight = 0.0;
-        } else if (change > CACHE_LADDER_LOW) {
-            weight = max(weight - CACHE_LADDER_STEP, 0.0);
-        }
-
-        if (old_lum > 0.0 && mean_lum > old_lum * CACHE_IMPULSE) {
-            mean *= old_lum * CACHE_IMPULSE / mean_lum;
-        }
-
-        uint rem = slot % CACHE_ENTRIES_PER_MC;
-
-        cache_store(region_id, slot / CACHE_ENTRIES_PER_MC, rem / 6u, rem % 6u, mix(mean, old, weight));
-        cache_note_touched(region_id);
-
-        slab.words[base + CACHE_ACC_OFFSET + 0u] = 0u;
-        slab.words[base + CACHE_ACC_OFFSET + 1u] = 0u;
-        slab.words[base + CACHE_ACC_OFFSET + 2u] = 0u;
-        slab.words[base + CACHE_ACC_OFFSET + 3u] = 0u;
+        return;
     }
 
-    slab.words[bitmap_base + word_index] = 0u;
+    vec3 mean = vec3(ticks.xyz) / (float(count) * CACHE_ACC_SCALE);
+    vec2 rg = unpackHalf2x16(rec.x);
+    vec2 bz = unpackHalf2x16(rec.y);
+    vec3 old = pow(vec3(rg.x, rg.y, bz.x), vec3(CACHE_IRRADIANCE_GAMMA));
+
+    // 02's ladder on the aggregate: a big move replaces, a moderate one
+    // sags the old weight, and a single-frame brightening impulse is
+    // clamped (absent entries skip the clamp so cold start fills).
+    float old_lum = (old.r + old.g + old.b) / 3.0;
+    float mean_lum = (mean.r + mean.g + mean.b) / 3.0;
+    float weight = cache_old_weight(CACHE_BASE_HYSTERESIS);
+    float change = abs(mean_lum - old_lum) / max(old_lum, 1e-6);
+
+    if (change > CACHE_LADDER_HIGH) {
+        weight = 0.0;
+    } else if (change > CACHE_LADDER_LOW) {
+        weight = max(weight - CACHE_LADDER_STEP, 0.0);
+    }
+
+    if (old_lum > 0.0 && mean_lum > old_lum * CACHE_IMPULSE) {
+        mean *= old_lum * CACHE_IMPULSE / mean_lum;
+    }
+
+    cache_store(entry, mix(mean, old, weight));
+    cache_note_touched(region_id);
+
+    accum.ticks[entry] = uvec4(0u);
 }

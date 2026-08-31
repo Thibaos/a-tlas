@@ -4,7 +4,7 @@
 //! resize, flight wait, store drain, history advance, execute — lives here.
 
 use dot_vox::DotVoxData;
-use glam::{Mat4, camera::lh::proj::vulkan::perspective};
+use glam::{IVec3, Mat4, camera::lh::proj::vulkan::perspective};
 use std::sync::Arc;
 
 use vulkano::{
@@ -28,13 +28,14 @@ use crate::core::render::{
     nrd::{DenoiseTask, NrdInstance, history::NrdHistory},
     region::{
         feed::RendererInput,
-        residency::RegionStore,
+        residency::{CACHE_DIRTY_WORDS, RegionStore},
         task::{
             NrdFrame, RegionRenderContext, RegionRenderTask, RenderMode, default_ev, default_scene,
             production_raygen,
         },
     },
 };
+use crate::core::world::grid::region_id;
 use crate::core::world::{World, snapshot::emit_snapshots};
 
 // the camera's near/far are the ray pass's t-range (contract.glsl's RAY_T_MIN/MAX)
@@ -42,11 +43,28 @@ const PROJ_FOV: f32 = std::f32::consts::FRAC_PI_2;
 const PROJ_NEAR: f32 = 0.01;
 const PROJ_FAR: f32 = 10000.0;
 
+// contract.glsl's CACHE_TABLE_ENTRIES, cross-checked by the pack contract test.
+pub(crate) const CACHE_TABLE_ENTRIES: u32 = 1 << 23;
+
 // contract.glsl's CACHE_EVENT_FRAMES, cross-checked by the pack contract test.
 pub(crate) const CACHE_EVENT_FRAMES: u32 = 10;
 
 fn scene_changed(a: &production_raygen::Scene, b: &production_raygen::Scene) -> bool {
     a.sun_dir != b.sun_dir || a.sky_knots != b.sky_knots || a.sun_disk != b.sun_disk
+}
+
+// The edit-frame bitset the resolve sweeps the table with: one bit per
+// Region, region bits ride the key (06).
+fn cache_dirty_bits(dirty: &[IVec3]) -> [u32; CACHE_DIRTY_WORDS] {
+    let mut words = [0u32; CACHE_DIRTY_WORDS];
+
+    for region in dirty {
+        let id = region_id(*region) as usize;
+
+        words[id / 32] |= 1 << (id % 32);
+    }
+
+    words
 }
 
 pub struct FrameInput {
@@ -258,6 +276,7 @@ impl FramePipeline {
             },
             scene: default_scene(),
             cache_state: store.initial_cache_state(gpu),
+            cache_dirty: [0; CACHE_DIRTY_WORDS],
             swapchain_storage_image_ids: Vec::new(),
             diff_radiance_image_id: StorageImageId::INVALID,
             spec_radiance_image_id: StorageImageId::INVALID,
@@ -365,14 +384,13 @@ impl FramePipeline {
 
             println!(
                 "cache stats: {lookups} lookups, {fallbacks} fallbacks, {touched} faces touched, \
-                 {deposits} deposits, {landed} landed (dispatch {} live {})",
-                self.region.cache_resolve_dispatch,
-                self.store.cache_resolve_dispatch()
+                 {deposits} deposits, {landed} landed"
             );
         }
 
         let apply_report = self.store.apply(gpu, &self.input);
         let edited = !apply_report.dirty.is_empty();
+        self.region.cache_dirty = cache_dirty_bits(&apply_report.dirty);
 
         #[cfg(debug_assertions)]
         if input.next_mode {
@@ -412,7 +430,7 @@ impl FramePipeline {
         self.region.nrd = self.history.advance(edited, self.nrd.is_some());
 
         if plan.resized || self.region.nrd.clear {
-            self.store.clear_cache_slabs(gpu);
+            self.store.clear_cache_table(gpu);
         }
 
         if scene_changed(&self.region.scene, &self.prev_scene) {
@@ -428,7 +446,7 @@ impl FramePipeline {
             .frame_index
             .wrapping_add(1);
         self.region.cache_state.event_frames = self.cache_event_frames;
-        self.region.cache_resolve_dispatch = self.store.cache_resolve_dispatch();
+        self.region.cache_resolve_dispatch = CACHE_TABLE_ENTRIES;
 
         self.execute();
 
@@ -546,5 +564,27 @@ mod tests {
             next_render_mode(RenderMode::Normal, false),
             RenderMode::Voxel
         );
+    }
+
+    #[test]
+    fn dirty_bits_flag_exactly_the_dirty_regions() {
+        let dirty = vec![IVec3::new(0, 0, 0), IVec3::new(-8, 7, 3), IVec3::new(7, -8, -8)];
+        let words = cache_dirty_bits(&dirty);
+
+        let mut flagged = 0usize;
+
+        for (id, word) in words.iter().enumerate() {
+            for bit in 0..32 {
+                if ((word >> bit) & 1) == 1 {
+                    flagged += 1;
+
+                    let region = (id * 32 + bit) as u32;
+
+                    assert!(dirty.iter().any(|r| region_id(*r) == region));
+                }
+            }
+        }
+
+        assert_eq!(flagged, dirty.len());
     }
 }

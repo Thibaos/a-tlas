@@ -243,8 +243,7 @@ mod contract {
     use std::path::{Path, PathBuf};
 
     use crate::core::render::region::task::RenderMode;
-    use crate::core::render::pipeline::CACHE_EVENT_FRAMES;
-    use crate::core::render::region::alloc::CACHE_ENTRY_BYTES;
+    use crate::core::render::pipeline::{CACHE_EVENT_FRAMES, CACHE_TABLE_ENTRIES};
 
     use super::*;
 
@@ -269,12 +268,14 @@ mod contract {
         "VIEWZ_SKY",
         "SKY_VIEWZ",
         "SKY_VIEWZ_NRD",
-        "CACHE_ENTRIES_PER_MC",
-        "CACHE_ENTRY_STRIDE",
         "CACHE_STALE_T",
         "CACHE_IRRADIANCE_GAMMA",
         "CACHE_EVENT_FRAMES",
         "CACHE_EVENT_REDUCTION",
+        "CACHE_TABLE_BITS",
+        "CACHE_TABLE_ENTRIES",
+        "CACHE_EVICT_T",
+        "CACHE_DIRTY_WORDS",
     ];
 
     fn define(name: &str) -> String {
@@ -334,11 +335,10 @@ mod contract {
         assert_eq!(float("RAY_T_MAX"), 10000.0);
         assert!(float("VIEWZ_SKY") > float("RAY_T_MAX"));
 
-        let entry_stride = uint("CACHE_ENTRY_STRIDE");
-        assert_eq!(uint("CACHE_ENTRIES_PER_MC"), voxel * voxel * voxel * 6);
-        assert_eq!(entry_stride, 7);
-        assert_eq!(uint("CACHE_ACC_OFFSET"), 3);
-        assert_eq!(entry_stride * 4, CACHE_ENTRY_BYTES);
+        assert_eq!(uint("CACHE_TABLE_BITS"), 23);
+        assert_eq!(uint("CACHE_TABLE_ENTRIES"), CACHE_TABLE_ENTRIES as u64);
+        assert_eq!(uint("CACHE_EVICT_T"), 1024);
+        assert_eq!(uint("CACHE_DIRTY_WORDS"), REGION_COUNT as u64 / 32);
         assert_eq!(float("CACHE_ACC_SCALE"), 1024.0);
         assert_eq!(float("CACHE_ACC_TICK_CAP"), 1048575.0);
         assert_eq!(float("CACHE_BASE_HYSTERESIS"), 0.97);

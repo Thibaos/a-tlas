@@ -72,6 +72,7 @@ impl GpuDesc {
             synchronization2: true,
             shader_float64: true,
             shader_int64: true,
+            shader_buffer_int64_atomics: true,
             shader_int8: true,
             shader_subgroup_clock: true,
             shader_device_clock: cfg!(debug_assertions),

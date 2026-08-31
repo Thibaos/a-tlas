@@ -1,27 +1,27 @@
 #include "../common/contract.glsl"
 
-// The Radiance cache's per-face state (ADR 0019): one slab per resident
-// Region, one entry per exposed voxel face. The resolve pass is the only
+#extension GL_EXT_shader_atomic_int64 : require
+
+// The Radiance cache's fixed sparse table (06): SHaRC's three buffers — 64-bit
+// keys, 16 B accumulators, 16 B resolved records — one entry per exposed
+// voxel face, keyed by the DDA's exact hit. The resolve pass is the only
 // state writer (cache_store); traced-ray hits are the only readers
 // (cache_fetch) and feed the accumulator half (cache_deposit). A false from
-// cache_fetch is ADR 0019's uncovered-region gate: the caller uses the
-// direct BSDF estimate. Reads land only at traced-ray hit positions — never
-// stamped into primary-surface radiance.
-
-VKO_DECLARE_STORAGE_BUFFER(cache_table, CacheTable{
-    uint64_t[REGION_TABLE_ENTRIES] bdas;
-    uint[REGION_TABLE_ENTRIES] entry_counts;
-    uint[REGION_TABLE_ENTRIES] bitmap_prefix;
-})
+// cache_fetch is ADR 0019's uncovered gate: the caller uses the direct BSDF
+// estimate. Reads land only at traced-ray hit positions — never stamped
+// into primary-surface radiance.
 
 VKO_DECLARE_STORAGE_BUFFER(cache_state, CacheState{
     uint64_t stats_bda;
+    uint64_t keys_bda;
+    uint64_t accum_bda;
+    uint64_t resolved_bda;
+    uint64_t dirty_bda;
     uint frame_index;
     uint event_frames;
     uint stats_enabled;
 })
 
-#define cache_table vko_buffer(cache_table, cache_table_buffer_id)
 #define cache_state vko_buffer(cache_state, cache_state_buffer_id)
 
 layout(buffer_reference, std430) buffer CacheStats {
@@ -32,40 +32,101 @@ layout(buffer_reference, std430) buffer CacheStats {
     uint landed[REGION_TABLE_ENTRIES];
 };
 
-layout(buffer_reference, std430) buffer CacheSlab {
-    uint words[];
+layout(buffer_reference, std430) buffer CacheKeys {
+    uint64_t keys[];
 };
 
+layout(buffer_reference, std430) buffer CacheAccum {
+    uvec4 ticks[];
+};
+
+layout(buffer_reference, std430) buffer CacheDirty {
+    uint words[CACHE_DIRTY_WORDS];
+};
+layout(buffer_reference, std430) buffer CacheResolved {
+    uvec4 recs[];
+};
+
+// SHaRC's hash grid: the key's bucket is CACHE_BUCKET_SIZE contiguous slots
+// from a Jenkins-mixed base slot, never wrapping the table's end. Keys are
+// tagged with bit 63 because key 0 (origin Region, first block, -X face) is
+// a real face; 0 stays free as the empty marker.
+#define CACHE_BUCKET_SIZE 16u
+#define CACHE_PROBE_EMPTY_LIMIT 2u
+#define CACHE_KEY_TAG (1UL << 63)
 uint cache_voxel_slot(ivec3 cell) {
     return uint(cell.x & 7) + VOXEL_STRIDE_Y * uint(cell.y & 7) + VOXEL_STRIDE_Z * uint(cell.z & 7);
 }
 
-uint cache_slot(uint mc_block, uint voxel_idx, uint face) {
-    return mc_block * CACHE_ENTRIES_PER_MC + voxel_idx * 6u + face;
+uint64_t cache_key(uint region_id, uint mc_block, uint voxel_idx, uint face) {
+    uint64_t key = uint64_t(region_id) | (uint64_t(mc_block) << 12)
+        | (uint64_t(voxel_idx) << 27) | (uint64_t(face) << 36);
+
+    return key | CACHE_KEY_TAG;
 }
 
-uint cache_entry_base(uint mc_block, uint voxel_idx, uint face) {
-    return cache_slot(mc_block, voxel_idx, face) * CACHE_ENTRY_STRIDE;
+// http://burtleburtle.net/bob/hash/integer.html (HashGridCommon.h)
+uint cache_jenkins32(uint a) {
+    a = (a + 0x7ed55d16u) + (a << 12);
+    a = (a ^ 0xc761c23cu) ^ (a >> 19);
+    a = (a + 0x165667b1u) + (a << 5);
+    a = (a + 0xfd7046c5u) + (a << 3);
+    a = (a ^ 0xb55a4f09u) ^ (a >> 16);
+
+    return a;
 }
 
-// The uncovered-region gate (ADR 0019): a face is covered when its Region
-// owns a slab (hard budget cap in the allocator; bda 0 falls back), the
-// entry exists (nonzero stamp), and its age is inside CACHE_STALE_T.
-bool cache_fresh(uint region_id, uint mc_block, uint voxel_idx, uint face) {
-    uint64_t bda = cache_table.bdas[region_id];
+uint cache_base_slot(uint64_t key) {
+    uint hash = cache_jenkins32(uint(key)) ^ cache_jenkins32(uint(key >> 32));
 
-    if (bda == 0ul) {
-        return false;
+    return hash % (CACHE_TABLE_ENTRIES - CACHE_BUCKET_SIZE + 1u);
+}
+
+// SHaRC's Find: a read-only scan of the key's bucket, stopping after the
+// empty-slot limit. No atomics.
+bool cache_find(uint64_t key, uint base, out uint slot) {
+    CacheKeys keys = CacheKeys(cache_state.keys_bda);
+    uint empties = 0u;
+
+    for (uint i = 0u; i < CACHE_BUCKET_SIZE; ++i) {
+        uint64_t stored = keys.keys[base + i];
+
+        if (stored == 0ul) {
+            if (empties > CACHE_PROBE_EMPTY_LIMIT) {
+                break;
+            }
+
+            ++empties;
+        } else if (stored == key) {
+            slot = base + i;
+
+            return true;
+        }
     }
 
-    uint stamp = CacheSlab(bda).words[cache_entry_base(mc_block, voxel_idx, face) + 2u];
-    return stamp != 0u && cache_state.frame_index - stamp < CACHE_STALE_T;
+    return false;
 }
 
+// The uncovered-region gate (ADR 0019): a face is covered when its entry
+// exists in the table, has been resolved (nonzero stamp), and its age is
+// inside CACHE_STALE_T.
 bool cache_fetch(uint region_id, uint mc_block, uint voxel_idx, uint face, out vec3 irradiance) {
     irradiance = vec3(0.0);
 
-    if (!cache_fresh(region_id, mc_block, voxel_idx, face)) {
+    uint64_t key = cache_key(region_id, mc_block, voxel_idx, face);
+    uint slot;
+
+    if (!cache_find(key, cache_base_slot(key), slot)) {
+        if (cache_state.stats_enabled != 0u) {
+            atomicAdd(CacheStats(cache_state.stats_bda).fallbacks[region_id], 1u);
+        }
+
+        return false;
+    }
+
+    uvec4 rec = CacheResolved(cache_state.resolved_bda).recs[slot];
+
+    if (rec.z == 0u || cache_state.frame_index - rec.z >= CACHE_STALE_T) {
         if (cache_state.stats_enabled != 0u) {
             atomicAdd(CacheStats(cache_state.stats_bda).fallbacks[region_id], 1u);
         }
@@ -74,69 +135,77 @@ bool cache_fetch(uint region_id, uint mc_block, uint voxel_idx, uint face, out v
     }
 
     if (cache_state.stats_enabled != 0u) {
-        CacheStats stats = CacheStats(cache_state.stats_bda);
-        atomicAdd(stats.lookups[region_id], 1u);
+        atomicAdd(CacheStats(cache_state.stats_bda).lookups[region_id], 1u);
     }
 
-    uint base = cache_entry_base(mc_block, voxel_idx, face);
-    vec2 rg = unpackHalf2x16(CacheSlab(cache_table.bdas[region_id]).words[base]);
-    vec2 bz = unpackHalf2x16(CacheSlab(cache_table.bdas[region_id]).words[base + 1u]);
+    vec2 rg = unpackHalf2x16(rec.x);
+    vec2 bz = unpackHalf2x16(rec.y);
     irradiance = pow(vec3(rg.x, rg.y, bz.x), vec3(CACHE_IRRADIANCE_GAMMA));
 
     return true;
 }
 
 // The accumulate half of 02's accumulate→resolve: a deposit adds its
-// fixed-point radiance to the entry's accumulator and marks the entry
-// touched for the resolve's bitmap scan. `count` tags the deposit that
-// opens its chain, so the resolve's mean divides by chains, not by the
-// partial deposits a multi-hop chain scatters along its path.
+// fixed-point radiance to the entry's accumulator. `count` tags the deposit
+// that opens its chain, so the resolve's mean divides by chains, not by the
+// partial deposits a multi-hop chain scatters along its path. SHaRC's
+// Insert: claim-or-find across the bucket, one CAS per slot — a full bucket
+// drops the deposit (capacity pressure reads as churn, 06).
 void cache_deposit(uint region_id, uint mc_block, uint voxel_idx, uint face, bool count, vec3 radiance) {
     if (cache_state.stats_enabled != 0u) {
         atomicAdd(CacheStats(cache_state.stats_bda).deposits[region_id], 1u);
     }
 
-    uint64_t bda = cache_table.bdas[region_id];
+    uint64_t key = cache_key(region_id, mc_block, voxel_idx, face);
+    uint base = cache_base_slot(key);
+    CacheKeys keys = CacheKeys(cache_state.keys_bda);
+    uint slot = 0u;
+    bool landed = false;
 
-    if (bda == 0ul) {
+    for (uint i = 0u; i < CACHE_BUCKET_SIZE; ++i) {
+        uint64_t prev = atomicCompSwap(keys.keys[base + i], uint64_t(0), key);
+
+        if (prev == 0ul || prev == key) {
+            slot = base + i;
+            landed = true;
+
+            break;
+        }
+    }
+
+    if (!landed) {
         return;
     }
     if (cache_state.stats_enabled != 0u) {
         atomicAdd(CacheStats(cache_state.stats_bda).landed[region_id], 1u);
     }
 
-    uint slot = cache_slot(mc_block, voxel_idx, face);
-    uint base = slot * CACHE_ENTRY_STRIDE + CACHE_ACC_OFFSET;
-    CacheSlab slab = CacheSlab(bda);
     vec3 ticks = clamp(radiance, vec3(0.0), vec3(CACHE_ACC_TICK_CAP / CACHE_ACC_SCALE)) * CACHE_ACC_SCALE;
+    CacheAccum accum = CacheAccum(cache_state.accum_bda);
 
-    atomicAdd(slab.words[base + 0u], uint(ticks.r));
-    atomicAdd(slab.words[base + 1u], uint(ticks.g));
-    atomicAdd(slab.words[base + 2u], uint(ticks.b));
-
-    if (count) {
-        atomicAdd(slab.words[base + 3u], 1u);
+    if (ticks.r != 0.0) {
+        atomicAdd(accum.ticks[slot].x, uint(ticks.r));
     }
-
-    uint bitmap_base = cache_table.entry_counts[region_id] * CACHE_ENTRY_STRIDE;
-    atomicOr(slab.words[bitmap_base + (slot >> 5u)], 1u << (slot & 31u));
+    if (ticks.g != 0.0) {
+        atomicAdd(accum.ticks[slot].y, uint(ticks.g));
+    }
+    if (ticks.b != 0.0) {
+        atomicAdd(accum.ticks[slot].z, uint(ticks.b));
+    }
+    if (count) {
+        atomicAdd(accum.ticks[slot].w, 1u);
+    }
 }
 
 // Resolve-only store (02): gamma-encoded, the stamp renews coverage. Plain
 // writes — the resolve is the entry's single writer per frame.
-void cache_store(uint region_id, uint mc_block, uint voxel_idx, uint face, vec3 irradiance) {
-    uint64_t bda = cache_table.bdas[region_id];
-
-    if (bda == 0ul) {
-        return;
-    }
-
+void cache_store(uint slot, vec3 irradiance) {
     vec3 encoded = pow(max(irradiance, vec3(0.0)), vec3(1.0 / CACHE_IRRADIANCE_GAMMA));
-    uint base = cache_entry_base(mc_block, voxel_idx, face);
-    CacheSlab slab = CacheSlab(bda);
-    slab.words[base] = packHalf2x16(encoded.rg);
-    slab.words[base + 1u] = packHalf2x16(vec2(encoded.b, 0.0));
-    slab.words[base + 2u] = cache_state.frame_index;
+    CacheResolved resolved = CacheResolved(cache_state.resolved_bda);
+
+    resolved.recs[slot].x = packHalf2x16(encoded.rg);
+    resolved.recs[slot].y = packHalf2x16(vec2(encoded.b, 0.0));
+    resolved.recs[slot].z = cache_state.frame_index;
 }
 
 // The resolve pass notes each blended entry once (unique touched faces).

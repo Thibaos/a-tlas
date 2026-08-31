@@ -51,8 +51,6 @@ pub struct RebuildPlan {
     pub uploads: Vec<RegionUpload>,
     pub blas_builds: Vec<BlasBuild>,
     pub table: Option<[u64; REGION_COUNT]>,
-    pub cache_table: Option<production_raygen::CacheTable>,
-    pub slab_zeroes: Vec<(Id<Buffer>, u64)>,
     pub instances: Option<Vec<AccelerationStructureInstance>>,
     pub tlas: Option<TlasBuild>,
 }
@@ -62,8 +60,6 @@ impl RebuildPlan {
         self.uploads.is_empty()
             && self.blas_builds.is_empty()
             && self.table.is_none()
-            && self.cache_table.is_none()
-            && self.slab_zeroes.is_empty()
             && self.instances.is_none()
             && self.tlas.is_none()
     }
@@ -131,12 +127,9 @@ pub enum RebuildLogEntry {
 struct UploadRegionsTask {
     uploads: Vec<RegionUpload>,
     table: Option<[u64; REGION_COUNT]>,
-    cache_table: Option<production_raygen::CacheTable>,
-    slab_zeroes: Vec<(Id<Buffer>, u64)>,
     instances: Option<Vec<AccelerationStructureInstance>>,
     instance_buffer_id: Id<Buffer>,
     region_table_buffer_id: Id<Buffer>,
-    cache_table_buffer_id: Id<Buffer>,
 }
 impl Task for UploadRegionsTask {
     type World = ();
@@ -147,10 +140,6 @@ impl Task for UploadRegionsTask {
         tcx: &mut TaskContext<'_>,
         _world: &Self::World,
     ) -> TaskResult {
-        for (buffer_id, bytes) in &self.slab_zeroes {
-            tcx.write_buffer::<[u8]>(*buffer_id, 0..*bytes).fill(0);
-        }
-
         for upload in &self.uploads {
             tcx.write_buffer::<[u8]>(
                 upload.pool_buffer_id,
@@ -170,13 +159,6 @@ impl Task for UploadRegionsTask {
         if let Some(table) = &self.table {
             *tcx.write_buffer::<production_raygen::RegionTable>(self.region_table_buffer_id, ..) =
                 production_raygen::RegionTable { bdas: *table };
-        }
-
-        if let Some(cache_table) = &self.cache_table {
-            *tcx.write_buffer::<production_raygen::CacheTable>(
-                self.cache_table_buffer_id,
-                ..,
-            ) = cache_table.clone();
         }
 
         if let Some(instances) = &self.instances {
@@ -310,15 +292,6 @@ impl RebuildGraph {
                 .add_host_buffer_access(store.region_table_buffer_id(), HostAccessType::Write);
         }
 
-        for (buffer_id, _) in &plan.slab_zeroes {
-            task_graph.add_host_buffer_access(*buffer_id, HostAccessType::Write);
-        }
-
-        if plan.cache_table.is_some() {
-            task_graph
-                .add_host_buffer_access(store.cache_table_buffer_id(), HostAccessType::Write);
-        }
-
         if plan.instances.is_some() {
             task_graph
                 .add_host_buffer_access(store.bindings.instance_buffer_id, HostAccessType::Write);
@@ -331,12 +304,9 @@ impl RebuildGraph {
                 UploadRegionsTask {
                     uploads: plan.uploads,
                     table: plan.table,
-                    cache_table: plan.cache_table,
-                    slab_zeroes: plan.slab_zeroes,
                     instances: plan.instances,
                     instance_buffer_id: store.bindings.instance_buffer_id,
                     region_table_buffer_id: store.region_table_buffer_id(),
-                    cache_table_buffer_id: store.cache_table_buffer_id(),
                 },
             )
             .build();
@@ -448,8 +418,6 @@ mod tests {
             }],
             blas_builds: vec![],
             table: None,
-            cache_table: None,
-            slab_zeroes: Vec::new(),
             instances: None,
             tlas: None,
         };

@@ -41,10 +41,10 @@ pub fn create_cache_resolve_pipeline(gpu: &GpuDesc) -> Arc<ComputePipeline> {
     .unwrap()
 }
 
-// 02's resolve half: one dispatch after the trace pass aggregates each
-// touched face's deposits against its stored state (the 02 ladder and
-// impulse clamp), writes the blend back through cache_store, and zeroes the
-// accumulator and touched-bitmap word for the next frame's deposits.
+// 02's resolve half: SHaRC's Resolve at one thread per table entry — the
+// dirty-Region sweep, stale-aging eviction, and the blend of each touched
+// face's deposits against its stored state (the 02 ladder and impulse
+// clamp) in one pass, resetting accumulators for the next frame's deposits.
 pub struct CacheResolveTask {
     pub bindings: RegionBindings,
     pub pipeline: Option<Arc<ComputePipeline>>,
@@ -78,9 +78,7 @@ impl Task for CacheResolveTask {
                 self.pipeline.as_ref().unwrap().layout(),
                 0,
                 &cache_resolve::ResolvePushConstants {
-                    cache_table_buffer_id: self.bindings.cache_table_storage_id,
                     cache_state_buffer_id: self.bindings.cache_state_storage_id,
-                    dispatch_words: rcx.cache_resolve_dispatch,
                 },
             )
         };

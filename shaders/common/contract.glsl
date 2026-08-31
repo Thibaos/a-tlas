@@ -23,18 +23,24 @@
 
 #define ALBEDO_EPS 1e-3
 
-// Radiance cache per-face entries (ADR 0019): one entry per exposed voxel
-// face, block = the hit's AABB ordinal, entry = block*ENTRIES_PER_MC +
-// voxel*6 + face. Each entry carries 3 state words (2 packed-half u32 of
-// gamma-encoded irradiance rgb + a frame stamp; stamp 0 is absent) and 4
-// accumulator words (fixed-point rgb at ACC_SCALE + a chain count) that
-// deposits blend into and the resolve pass consumes and zeroes. STALE_T
-// bounds the age a face is trusted past its last blend; EVENT_* drive the
-// global light-change hysteresis reduction; LADDER_*/IMPULSE are 02's
-// per-frame change thresholds and brightness clamp on the resolve blend.
-#define CACHE_ENTRIES_PER_MC 3072u
-#define CACHE_ENTRY_STRIDE 7u
-#define CACHE_ACC_OFFSET 3u
+// Radiance cache: SHaRC's fixed sparse table (06) replaces the per-Region
+// slabs. One entry per exposed voxel face, keyed by the DDA's exact hit
+// (region 12 bits | Micro-chunk block 15 | voxel 9 | face 3), hashed into
+// CACHE_TABLE_ENTRIES slots and resolved through a fixed linear-probe
+// bucket. Three buffers per entry: an 8 B key, a 16 B accumulator (fixed-
+// point rgb at ACC_SCALE + a chain count) that deposits blend into, and a
+// 16 B resolved record (2 packed-half u32 of gamma-encoded irradiance rgb +
+// a frame stamp) that the resolve pass owns. The resolve also runs 02's
+// tiers: dirty-Region sweeps on edit frames (region bits ride the key) and
+// EVICT_T aging (an entry no deposit touched since its last blend leaves
+// the table). STALE_T bounds the age a face is trusted past its last
+// blend; EVENT_* drive the global light-change hysteresis reduction;
+// LADDER_*/IMPULSE are 02's per-frame change thresholds and brightness
+// clamp; DIRTY_WORDS is the per-frame edit bitset (one bit per Region).
+#define CACHE_TABLE_BITS 23u
+#define CACHE_TABLE_ENTRIES 8388608u
+#define CACHE_EVICT_T 1024u
+#define CACHE_DIRTY_WORDS 128u
 #define CACHE_ACC_SCALE 1024.0
 #define CACHE_ACC_TICK_CAP 1048575.0
 #define CACHE_BASE_HYSTERESIS 0.97
