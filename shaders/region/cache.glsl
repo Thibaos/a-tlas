@@ -112,8 +112,9 @@ bool cache_find(uint64_t key, uint base, out uint slot) {
 // The uncovered-region gate (ADR 0019): a face is covered when its entry
 // exists in the table, has been resolved (nonzero stamp), and its age is
 // inside CACHE_STALE_T. `immature` reports a young chain history — the
-// caller re-traces such faces at full rate until the resolve has sampled
-// enough chains (CACHE_MATURE_T).
+// caller renders such faces as uncovered (full-rate retrace, traced
+// radiance) until the resolve has sampled enough chains (CACHE_MATURE_T),
+// so coverage engages only at a converged mean.
 bool cache_fetch(uint region_id, uint mc_block, uint voxel_idx, uint face,
         out vec3 irradiance, out bool immature) {
     irradiance = vec3(0.0);

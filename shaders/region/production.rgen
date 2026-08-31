@@ -335,14 +335,16 @@ void main() {
                 // ADR 0019's read: the diffuse lobe's indirect from the
                 // previous frame's resolved entry, albedo/π-modulated at the
                 // hit (the direct term's demodulation stays untouched). An
-                // uncovered hit falls back to the traced BSDF estimate
-                // below, which also feeds this face's accumulator.
+                // uncovered or immature hit renders the traced BSDF estimate
+                // below — a young entry's mean is the claim-time pop's
+                // shape — and the trace feeds the face's accumulator either
+                // way.
                 vec3 cached = vec3(0.0);
                 bool immature = false;
                 bool covered = hit_faced
                     && cache_fetch(hit_region, hit_block, hit_slot, hit_face, cached, immature);
 
-                if (covered && (depth > 0 || !specular_lobe) && !feed_only) {
+                if (covered && !immature && (depth > 0 || !specular_lobe) && !feed_only) {
                     path += throughput * ((1.0 - metallic) * albedo * (1.0 / PI) * cached);
                 }
 
@@ -387,8 +389,8 @@ void main() {
                         weight = specular_weight(l_local, v_local, h, f0, alpha, pdf);
                         chain_p = max(dot(normal, wi), 0.0) / (LOBE_P * max(pdf, COS_EPS));
                         born = 0u;
-                    } else if (covered) {
-                        if (immature || rand_unit(seed, draw++) < CACHE_REFRESH_P) {
+                    } else if (covered && !immature) {
+                        if (rand_unit(seed, draw++) < CACHE_REFRESH_P) {
                             float pdf;
                             wi = sample_cosine(normal, t_axis, b_axis, rand_unit(seed, draw++),
                                     rand_unit(seed, draw++), pdf);
@@ -418,7 +420,7 @@ void main() {
                         wi = t_axis * l_local.x + b_axis * l_local.y + normal * l_local.z;
                         weight = 2.0 * specular_weight(l_local, v_local, h, f0, alpha, pdf);
                         chain_p = 2.0 * max(dot(normal, wi), 0.0) / max(pdf, COS_EPS);
-                    } else if (covered) {
+                    } else if (covered && !immature) {
                         trace_ray = false;
                     } else {
                         float pdf;

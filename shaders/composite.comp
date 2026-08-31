@@ -71,5 +71,11 @@ void main() {
 
     vec3 color = aces_fit(radiance * exp2(ev));
     color = pow(color, vec3(1.0 / 2.2));
+
+    // Interleaved gradient noise (Jimenez 2014): one display LSB of static
+    // per-pixel dither against the 8-bit store's gradient banding.
+    float dither = fract(52.9829189 * fract(0.06711056 * float(p.x)
+        + 0.00583715 * float(p.y)));
+    color += (dither - 0.5) / 255.0;
     imageStore(vko_image2D_rgba8(image_id), p, vec4(color, 1.0));
 }
