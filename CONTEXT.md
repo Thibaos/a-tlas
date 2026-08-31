@@ -219,6 +219,12 @@ radiance is attributed to the selected lobe's channel, the other channel gets
 _Avoid_: split path (per-pixel the path is single-lobe by design.
 subsequent Bounces sample the full BSDF)
 
+**Radiance cache**:
+A GPU store of indirect irradiance that lights traced-ray hit positions;
+multi-bounce is the cache's previous-frame temporal state, not a deeper
+trace. Never stamped into primary-surface radiance.
+_Avoid_: lightmap, probe grid, GI volume
+
 **Transmission**:
 Light passing through a Glass voxel (a voxel whose Material's MATL entry
 is the glass type): the ray continues in the same direction, losing only
