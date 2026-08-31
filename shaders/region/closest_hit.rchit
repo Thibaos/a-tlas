@@ -13,6 +13,8 @@
 layout(location = 0) rayPayloadInEXT MainPassPayload incoming_payload;
 
 void main() {
+    const bool glass = (material_table.flags[gl_HitKindEXT] & MATFLAG_GLASS) != 0u;
+
     incoming_payload.color = vec4(palette.colors[gl_HitKindEXT].rgb, 1.0);
     incoming_payload.t = gl_RayTmaxEXT;
     incoming_payload.hit_kind = gl_HitKindEXT;

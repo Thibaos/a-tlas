@@ -2,6 +2,7 @@ use super::format::get_palette;
 
 pub const DEFAULT_ROUGHNESS: f32 = 1.0;
 pub const EMISSION_SCALE: f32 = 1000.0;
+pub const MATFLAG_GLASS: u32 = 1;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Material {
@@ -9,6 +10,7 @@ pub struct Material {
     pub metallic: f32,
     pub roughness: f32,
     pub emission: [f32; 3],
+    pub glass: bool,
 }
 
 impl Material {
@@ -18,6 +20,7 @@ impl Material {
             metallic: 0.0,
             roughness: DEFAULT_ROUGHNESS,
             emission: [0.0; 3],
+            glass: false,
         }
     }
 }
@@ -58,6 +61,10 @@ pub fn get_material_table(data: &dot_vox::DotVoxData) -> MaterialTable {
             if let Some(roughness) = material.roughness() {
                 entry.roughness = roughness.clamp(0.0, 1.0);
             }
+        }
+
+        if material.material_type() == Some("_glass") {
+            entry.glass = true;
         }
 
         if let Some(emit) = material.emission() {
@@ -140,6 +147,7 @@ mod tests {
             assert_eq!(table[i].metallic, 0.0);
             assert_eq!(table[i].roughness, DEFAULT_ROUGHNESS);
             assert_eq!(table[i].emission, [0.0; 3]);
+            assert!(!table[i].glass, "missing MATL degrades to opaque");
         }
     }
 
@@ -168,6 +176,28 @@ mod tests {
         assert_eq!(
             table[9].roughness, DEFAULT_ROUGHNESS,
             "typeless _rough is the editor's untouched default, not authored data"
+        );
+    }
+
+    #[test]
+    fn glass_marker_sets_the_flag() {
+        let data = data_with(vec![
+            matl(5, &[("_type", "_glass"), ("_rough", "0.1")]),
+            matl(6, &[("_type", "_glass")]),
+            matl(8, &[("_type", "_metal")]),
+        ]);
+        let table = get_material_table(&data);
+
+        assert!(table[5].glass);
+        assert!(table[6].glass);
+
+        assert!(!table[8].glass, "non-glass presets stay opaque");
+        assert!(!table[1].glass, "missing MATL degrades to opaque");
+
+        assert_eq!(table[5].roughness, 0.1, "glass keeps _rough flowing");
+        assert_eq!(
+            table[6].roughness, DEFAULT_ROUGHNESS,
+            "glass without _rough keeps the default"
         );
     }
 

@@ -54,7 +54,7 @@ use crate::core::{
     world::{
         format::get_palette,
         grid::{REGION_LENGTH, region_id},
-        material::get_material_table,
+        material::{get_material_table, MATFLAG_GLASS},
     },
 };
 
@@ -360,6 +360,8 @@ impl RegionStore {
             let m = &material_table[i];
             [m.emission[0], m.emission[1], m.emission[2], m.roughness]
         });
+        let flags: [u32; 256] =
+            std::array::from_fn(|i| if material_table[i].glass { MATFLAG_GLASS } else { 0 });
 
         unsafe {
             vulkano_taskgraph::execute(
@@ -375,6 +377,7 @@ impl RegionStore {
                     ) = production_raygen::MaterialTable {
                         albedo_metallic,
                         rough_emit,
+                        flags,
                     };
                     *tcx.write_buffer::<production_raygen::Scene>(scene_buffer_id, ..) =
                         default_scene();

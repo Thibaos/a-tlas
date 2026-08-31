@@ -21,6 +21,10 @@
 #define MODE_VALIDATION 2u
 #define MODE_NORMAL 4u
 
+// Material-table flags word (uint[256] flags column, one per palette index):
+// bit set iff the MATL entry is the glass type (ADR 0012).
+#define MATFLAG_GLASS 1u
+
 #define ALBEDO_EPS 1e-3
 
 // Radiance cache: SHaRC's fixed sparse table (06) replaces the per-Region

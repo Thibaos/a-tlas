@@ -18,6 +18,7 @@ VKO_DECLARE_STORAGE_BUFFER(palette, Palette{
 VKO_DECLARE_STORAGE_BUFFER(material_table, MaterialTable{
     vec4[256] albedo_metallic;
     vec4[256] rough_emit;
+    uint[256] flags;
 })
 
 VKO_DECLARE_STORAGE_BUFFER(scene, Scene{

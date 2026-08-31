@@ -244,6 +244,7 @@ mod contract {
 
     use crate::core::render::region::task::RenderMode;
     use crate::core::render::pipeline::{CACHE_EVENT_FRAMES, CACHE_TABLE_ENTRIES};
+    use crate::core::world::material::MATFLAG_GLASS;
 
     use super::*;
 
@@ -264,6 +265,7 @@ mod contract {
         "MODE_HULL",
         "MODE_VALIDATION",
         "MODE_NORMAL",
+        "MATFLAG_GLASS",
         "ALBEDO_EPS",
         "VIEWZ_SKY",
         "SKY_VIEWZ",
@@ -321,6 +323,7 @@ mod contract {
         assert_eq!(uint("OFFSET_SENTINEL"), OFFSET_SENTINEL as u64);
 
         assert_eq!(uint("MODE_VOXEL"), RenderMode::Voxel as u32 as u64);
+        assert_eq!(uint("MATFLAG_GLASS"), MATFLAG_GLASS as u64);
 
         #[cfg(debug_assertions)]
         {

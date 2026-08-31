@@ -183,6 +183,7 @@ void main() {
         float primary_roughness = 1.0;
         vec3 primary_emission = vec3(0.0);
         vec3 primary_normal = vec3(0.0);
+        bool primary_glass = false;
 
         if (hit_t > 0.0) {
             vec4 albedo_metallic = material_table.albedo_metallic[payload.hit_kind];
@@ -191,6 +192,7 @@ void main() {
             primary_metallic = albedo_metallic.a;
             primary_roughness = rough_emit.a;
             primary_emission = rough_emit.rgb;
+            primary_glass = (material_table.flags[payload.hit_kind] & MATFLAG_GLASS) != 0u;
             primary_normal = normalize(payload.normal);
         }
 
