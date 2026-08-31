@@ -8,6 +8,7 @@
 #include <vulkano.glsl>
 #include "../common/contract.glsl"
 
+layout(local_size_x = 64) in;
 layout(push_constant) uniform ResolvePushConstants {
     StorageBufferId cache_state_buffer_id;
 };
@@ -16,9 +17,10 @@ layout(push_constant) uniform ResolvePushConstants {
 
 // SHaRC's Resolve, one thread per table entry: the edit-frame dirty sweep
 // and the stale-aging eviction clear entries away, a touched entry blends
-// its frame's deposits into the stored state under 02's ladder, and the
-// accumulator resets for the next frame. Untouched entries keep their
-// record — coverage is age-bounded by CACHE_EVICT_T, not by the sweep.
+// its frame's deposit mean into the stored state as a chain-count-weighted
+// incremental mean (event frames decay the history so the mean re-adapts),
+// and the accumulator resets for the next frame. Untouched entries keep
+// their record — coverage is age-bounded by CACHE_EVICT_T, not by the sweep.
 void main() {
     uint entry = gl_GlobalInvocationID.x;
 
@@ -50,6 +52,16 @@ void main() {
     uvec4 rec = resolved.recs[entry];
     uint count = ticks.w;
 
+    if (cache_state.stats_enabled != 0u) {
+        if (rec.z != 0u) {
+            atomicAdd(CacheStats(cache_state.stats_bda).live[region_id], 1u);
+
+            if (rec.w < CACHE_MATURE_T) {
+                atomicAdd(CacheStats(cache_state.stats_bda).young[region_id], 1u);
+            }
+        }
+    }
+
     if (count == 0u) {
         if (rec.z != 0u && cache_state.frame_index - rec.z >= CACHE_EVICT_T) {
             keys.keys[entry] = 0ul;
@@ -64,25 +76,15 @@ void main() {
     vec2 bz = unpackHalf2x16(rec.y);
     vec3 old = pow(vec3(rg.x, rg.y, bz.x), vec3(CACHE_IRRADIANCE_GAMMA));
 
-    // 02's ladder on the aggregate: a big move replaces, a moderate one
-    // sags the old weight, and a single-frame brightening impulse is
-    // clamped (absent entries skip the clamp so cold start fills).
-    float old_lum = (old.r + old.g + old.b) / 3.0;
-    float mean_lum = (mean.r + mean.g + mean.b) / 3.0;
-    float weight = cache_old_weight(CACHE_BASE_HYSTERESIS);
-    float change = abs(mean_lum - old_lum) / max(old_lum, 1e-6);
+    uint history = rec.w;
 
-    if (change > CACHE_LADDER_HIGH) {
-        weight = 0.0;
-    } else if (change > CACHE_LADDER_LOW) {
-        weight = max(weight - CACHE_LADDER_STEP, 0.0);
+    if (cache_state.event_frames > 0u) {
+        history = uint(float(history) * CACHE_EVENT_REDUCTION);
     }
 
-    if (old_lum > 0.0 && mean_lum > old_lum * CACHE_IMPULSE) {
-        mean *= old_lum * CACHE_IMPULSE / mean_lum;
-    }
+    float alpha = float(count) / float(history + count);
 
-    cache_store(entry, mix(mean, old, weight));
+    cache_store(entry, mix(old, mean, alpha), min(history + count, CACHE_HISTORY_MAX));
     cache_note_touched(region_id);
 
     accum.ticks[entry] = uvec4(0u);

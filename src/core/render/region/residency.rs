@@ -316,7 +316,7 @@ impl RegionStore {
                         | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
                     ..Default::default()
                 },
-                DeviceLayout::new_sized::<[u32; 5 * REGION_COUNT]>(),
+                DeviceLayout::new_sized::<[u32; 7 * REGION_COUNT]>(),
             )
             .unwrap();
 
@@ -1019,8 +1019,8 @@ impl RegionStore {
     // Sums the per-region counters and zeroes them; the frames are
     // serialized by the wait_idle at the top of run_frame, so the read
     // races nothing.
-    pub(crate) fn cache_stats_tick(&self, gpu: &GpuDesc) -> (u64, u64, u64, u64, u64) {
-        let mut sums = (0u64, 0u64, 0u64, 0u64, 0u64);
+    pub(crate) fn cache_stats_tick(&self, gpu: &GpuDesc) -> (u64, u64, u64, u64, u64, u64, u64) {
+        let mut sums = (0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64);
 
         unsafe {
             vulkano_taskgraph::execute(
@@ -1028,7 +1028,7 @@ impl RegionStore {
                 &gpu.resources,
                 gpu.graphics_flight_id,
                 |_cbf, tcx| {
-                    let words = tcx.read_buffer::<[u32; 5 * REGION_COUNT]>(
+                    let words = tcx.read_buffer::<[u32; 7 * REGION_COUNT]>(
                         self.cache_stats_buffer_id,
                         ..,
                     );
@@ -1039,11 +1039,13 @@ impl RegionStore {
                             1 => sums.1 += *word as u64,
                             2 => sums.2 += *word as u64,
                             3 => sums.3 += *word as u64,
-                            _ => sums.4 += *word as u64,
+                            4 => sums.4 += *word as u64,
+                            5 => sums.5 += *word as u64,
+                            _ => sums.6 += *word as u64,
                         }
                     }
 
-                    tcx.write_buffer::<[u32; 5 * REGION_COUNT]>(self.cache_stats_buffer_id, ..)
+                    tcx.write_buffer::<[u32; 7 * REGION_COUNT]>(self.cache_stats_buffer_id, ..)
                         .fill(0);
 
                     Ok(())

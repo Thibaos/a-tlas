@@ -204,6 +204,10 @@ void main() {
         vec3 throughput = vec3(1.0);
         bool specular_lobe = false;
 
+        // A refresh continuation at a covered face exists to feed deposits;
+        // its radiance is already paid for by the cache read.
+        bool feed_only = false;
+
         // Hit distance of the first in-lobe segment after the primary hit
         // (NRD's noisy-input contract); -1 until observed, meaning "no ray".
         float bounce_t = -1.0;
@@ -232,13 +236,31 @@ void main() {
 
             for (int depth = 0; depth <= int(MAX_BOUNCES); ++depth) {
                 if (depth > 0) {
-                    if (depth == 1 && bounce_t < 0.0) {
+                    if (depth == 1 && bounce_t < 0.0 && !feed_only) {
                         bounce_t = payload.t;
                     }
+
                     if (payload.t <= 0.0) {
                         float p_light = sky_light_pdf(rd);
-                        path += throughput * payload.color.rgb
+                        vec3 sky_est = payload.color.rgb
                                 * (next_p_bsdf / (p_light + next_p_bsdf));
+
+                        for (uint c = 0u; c < 2u; ++c) {
+                            if ((chain_flags[c] & 1u) == 0u) {
+                                continue;
+                            }
+
+                            cache_deposit(chain_key[c].x & REGION_ID_MASK,
+                                    chain_key[c].x >> 12, (chain_key[c].y & 511u),
+                                    (chain_key[c].y >> 9) & 7u, (chain_flags[c] & 2u) == 0u,
+                                    chain_tp[c] * sky_est);
+                            chain_flags[c] |= 2u;
+                        }
+
+                        if (!feed_only) {
+                            path += throughput * sky_est;
+                        }
+
                         break;
                     }
                     vec4 albedo_metallic = material_table.albedo_metallic[payload.hit_kind];
@@ -247,10 +269,23 @@ void main() {
                     metallic = albedo_metallic.a;
                     roughness = rough_emit.a;
                     hit_emission = rough_emit.rgb;
-                    path += throughput * rough_emit.rgb;
+                    if (!feed_only) {
+                        path += throughput * rough_emit.rgb;
+                    }
                 }
 
                 vec3 hit_point = ro + rd * payload.t;
+
+                // The hit's cache key, packed by closest_hit (the faced bit
+                // clears for no-face hits, misses, and hull/debug payloads).
+                uint hit_key = payload.cache_key;
+                uint hit_meta = payload.cache_meta;
+                uint hit_region = hit_key & REGION_ID_MASK;
+                uint hit_block = hit_key >> 12;
+                uint hit_slot = hit_meta & 511u;
+                uint hit_face = (hit_meta >> 9) & 7u;
+                bool hit_faced = (hit_meta & 4096u) != 0u;
+
                 vec3 nee_rad = vec3(0.0);
                 if (rand_unit(seed, draw++) < SUN_PICK_P) {
                     vec3 sun_dir = scene.sun_dir.xyz;
@@ -293,17 +328,9 @@ void main() {
                         nee_rad = f_nl * sky_radiance(light_dir) * w / p_light;
                     }
                 }
-                path += throughput * nee_rad;
-
-                // The hit's cache key, packed by closest_hit (the faced bit
-                // clears for no-face hits, misses, and hull/debug payloads).
-                uint hit_key = payload.cache_key;
-                uint hit_meta = payload.cache_meta;
-                uint hit_region = hit_key & REGION_ID_MASK;
-                uint hit_block = hit_key >> 12;
-                uint hit_slot = hit_meta & 511u;
-                uint hit_face = (hit_meta >> 9) & 7u;
-                bool hit_faced = (hit_meta & 4096u) != 0u;
+                if (!feed_only) {
+                    path += throughput * nee_rad;
+                }
 
                 // ADR 0019's read: the diffuse lobe's indirect from the
                 // previous frame's resolved entry, albedo/π-modulated at the
@@ -311,14 +338,16 @@ void main() {
                 // uncovered hit falls back to the traced BSDF estimate
                 // below, which also feeds this face's accumulator.
                 vec3 cached = vec3(0.0);
-                bool covered = hit_faced && cache_fetch(hit_region, hit_block, hit_slot, hit_face, cached);
+                bool immature = false;
+                bool covered = hit_faced
+                    && cache_fetch(hit_region, hit_block, hit_slot, hit_face, cached, immature);
 
-                if (covered && (depth > 0 || !specular_lobe)) {
+                if (covered && (depth > 0 || !specular_lobe) && !feed_only) {
                     path += throughput * ((1.0 - metallic) * albedo * (1.0 / PI) * cached);
                 }
 
                 // Deposits: every open chain samples this hit's unweighted
-                // local estimate (emission + NEE + cache term).
+                // local estimate (emission + NEE).
                 vec3 local_est = nee_rad + hit_emission;
 
                 for (uint c = 0u; c < 2u; ++c) {
@@ -359,7 +388,17 @@ void main() {
                         chain_p = max(dot(normal, wi), 0.0) / (LOBE_P * max(pdf, COS_EPS));
                         born = 0u;
                     } else if (covered) {
-                        trace_ray = false;
+                        if (immature || rand_unit(seed, draw++) < CACHE_REFRESH_P) {
+                            float pdf;
+                            wi = sample_cosine(normal, t_axis, b_axis, rand_unit(seed, draw++),
+                                    rand_unit(seed, draw++), pdf);
+                            weight = (1.0 - metallic) * albedo;
+                            chain_p = PI / (1.0 - LOBE_P);
+                            born = 0u;
+                            feed_only = true;
+                        } else {
+                            trace_ray = false;
+                        }
                     } else {
                         float pdf;
                         wi = sample_cosine(normal, t_axis, b_axis, rand_unit(seed, draw++),

@@ -30,6 +30,8 @@ layout(buffer_reference, std430) buffer CacheStats {
     uint touched[REGION_TABLE_ENTRIES];
     uint deposits[REGION_TABLE_ENTRIES];
     uint landed[REGION_TABLE_ENTRIES];
+    uint live[REGION_TABLE_ENTRIES];
+    uint young[REGION_TABLE_ENTRIES];
 };
 
 layout(buffer_reference, std430) buffer CacheKeys {
@@ -109,9 +111,13 @@ bool cache_find(uint64_t key, uint base, out uint slot) {
 
 // The uncovered-region gate (ADR 0019): a face is covered when its entry
 // exists in the table, has been resolved (nonzero stamp), and its age is
-// inside CACHE_STALE_T.
-bool cache_fetch(uint region_id, uint mc_block, uint voxel_idx, uint face, out vec3 irradiance) {
+// inside CACHE_STALE_T. `immature` reports a young chain history — the
+// caller re-traces such faces at full rate until the resolve has sampled
+// enough chains (CACHE_MATURE_T).
+bool cache_fetch(uint region_id, uint mc_block, uint voxel_idx, uint face,
+        out vec3 irradiance, out bool immature) {
     irradiance = vec3(0.0);
+    immature = false;
 
     uint64_t key = cache_key(region_id, mc_block, voxel_idx, face);
     uint slot;
@@ -125,6 +131,7 @@ bool cache_fetch(uint region_id, uint mc_block, uint voxel_idx, uint face, out v
     }
 
     uvec4 rec = CacheResolved(cache_state.resolved_bda).recs[slot];
+    immature = rec.w < CACHE_MATURE_T;
 
     if (rec.z == 0u || cache_state.frame_index - rec.z >= CACHE_STALE_T) {
         if (cache_state.stats_enabled != 0u) {
@@ -197,15 +204,17 @@ void cache_deposit(uint region_id, uint mc_block, uint voxel_idx, uint face, boo
     }
 }
 
-// Resolve-only store (02): gamma-encoded, the stamp renews coverage. Plain
-// writes — the resolve is the entry's single writer per frame.
-void cache_store(uint slot, vec3 irradiance) {
+// Resolve-only store (02): gamma-encoded, the stamp renews coverage and the
+// chain history feeds the next blend's step size. Plain writes — the
+// resolve is the entry's single writer per frame.
+void cache_store(uint slot, vec3 irradiance, uint history) {
     vec3 encoded = pow(max(irradiance, vec3(0.0)), vec3(1.0 / CACHE_IRRADIANCE_GAMMA));
     CacheResolved resolved = CacheResolved(cache_state.resolved_bda);
 
     resolved.recs[slot].x = packHalf2x16(encoded.rg);
     resolved.recs[slot].y = packHalf2x16(vec2(encoded.b, 0.0));
     resolved.recs[slot].z = cache_state.frame_index;
+    resolved.recs[slot].w = history;
 }
 
 // The resolve pass notes each blended entry once (unique touched faces).
@@ -213,10 +222,4 @@ void cache_note_touched(uint region_id) {
     if (cache_state.stats_enabled != 0u) {
         atomicAdd(CacheStats(cache_state.stats_bda).touched[region_id], 1u);
     }
-}
-
-// The transient gate (02): the Scene uniform-compare's reduction event
-// lowers the resolve's old-weight for CACHE_EVENT_FRAMES frames.
-float cache_old_weight(float base) {
-    return base * (cache_state.event_frames > 0u ? CACHE_EVENT_REDUCTION : 1.0);
 }

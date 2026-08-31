@@ -380,11 +380,12 @@ impl FramePipeline {
             .unwrap();
 
         if self.store.cache_stats_enabled() && self.region.cache_state.frame_index % 60 == 0 {
-            let (lookups, fallbacks, touched, deposits, landed) = self.store.cache_stats_tick(gpu);
+            let (lookups, fallbacks, touched, deposits, landed, live, young) =
+                self.store.cache_stats_tick(gpu);
 
             println!(
                 "cache stats: {lookups} lookups, {fallbacks} fallbacks, {touched} faces touched, \
-                 {deposits} deposits, {landed} landed"
+                 {deposits} deposits, {landed} landed, {live} live, {young} young"
             );
         }
 

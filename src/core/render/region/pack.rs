@@ -276,6 +276,9 @@ mod contract {
         "CACHE_TABLE_ENTRIES",
         "CACHE_EVICT_T",
         "CACHE_DIRTY_WORDS",
+        "CACHE_REFRESH_P",
+        "CACHE_MATURE_T",
+        "CACHE_HISTORY_MAX",
     ];
 
     fn define(name: &str) -> String {
@@ -341,11 +344,9 @@ mod contract {
         assert_eq!(uint("CACHE_DIRTY_WORDS"), REGION_COUNT as u64 / 32);
         assert_eq!(float("CACHE_ACC_SCALE"), 1024.0);
         assert_eq!(float("CACHE_ACC_TICK_CAP"), 1048575.0);
-        assert_eq!(float("CACHE_BASE_HYSTERESIS"), 0.97);
-        assert_eq!(float("CACHE_LADDER_LOW"), 0.25);
-        assert_eq!(float("CACHE_LADDER_HIGH"), 0.8);
-        assert_eq!(float("CACHE_LADDER_STEP"), 0.15);
-        assert_eq!(float("CACHE_IMPULSE"), 1.10);
+        assert_eq!(float("CACHE_REFRESH_P"), 0.0625);
+        assert_eq!(uint("CACHE_MATURE_T"), 4096);
+        assert_eq!(uint("CACHE_HISTORY_MAX"), 1048576);
         assert_eq!(uint("CACHE_STALE_T"), 4096);
         assert_eq!(float("CACHE_IRRADIANCE_GAMMA"), 5.0);
         assert_eq!(uint("CACHE_EVENT_FRAMES"), CACHE_EVENT_FRAMES as u64);
