@@ -24,6 +24,10 @@ const float RR_FLOOR = 0.05; // Russian-roulette survival floor (bounded varianc
 const float BOUNCE_OFFSET = 1e-3; // bounce origin nudged along the normal (self-intersection)
 const float ALPHA_MIN = 1e-4; // GGX alpha floor (perfect-mirror singularity guard)
 const float COS_EPS = 1e-6; // cos-term guard in the G1/pdf denominators (grazing NaN guard)
+const uint MAX_CROSSINGS = 32u; // hard cap of glass voxel crossings per path (ADR 0013; past it the hit shades opaque)
+const float CROSS_EPS = 1e-3; // glass advance nudged past the exit boundary, in t (ADR 0016)
+const float CROSS_RESTATE_T = 1e-4; // restated hit distance for origin-inside commits (keeps the offset origins on the crossed-boundary side)
+const uint WALK_GUARD = 512u; // bounds glass voxels walked per segment (loop safety; far above any real pane)
 
 const float PI = 3.14159265358979;
 const float TWO_PI = 6.28318530717959;
@@ -147,6 +151,120 @@ float sky_light_pdf(vec3 dir) {
     return SKY_PICK_P * sky_mu_pdf(dir.y) * (1.0 / TWO_PI);
 }
 
+// Straight-transmission walk (ADR 0013/0016): resolves committed glass
+// hits before shading. A Pane is a maximal same-index run of contiguous
+// glass cells along the ray; its Palette tint is paid once at entry, the
+// origin advances past each crossed cell (p + d·(t_exit + ε)), and the
+// ray re-traces in the same direction. Pane detection is raygen-local
+// successor comparison — exact across Micro-chunk and Region boundaries.
+// A Crossing is one pass through a glass voxel — the unit the cap
+// counts. Crossings consume no Bounces and draw no random numbers; past
+// MAX_CROSSINGS the current glass voxel stays committed and shades
+// opaque (fail-dark). Emission on a glass voxel rides the closed-pane
+// product (un-attenuated by its own Pane).
+struct GlassWalk {
+    uint crossings;
+    bool pane_open;
+    uint pane_index;
+    ivec3 pane_next;
+    vec3 pane_closed;
+    vec3 emission;
+};
+
+void walk_glass(inout vec3 ro, vec3 rd, uint ray_flags, uint sbt_offset,
+        inout vec3 throughput, inout GlassWalk gw) {
+    for (uint guard = 0u; guard < WALK_GUARD; ++guard) {
+        if (payload.t <= 0.0) {
+            return;
+        }
+
+        if ((material_table.flags[payload.hit_kind] & MATFLAG_GLASS) == 0u) {
+            return;
+        }
+
+        if (gw.crossings >= MAX_CROSSINGS) {
+            return;
+        }
+
+        uint idx = payload.hit_kind;
+        vec3 p = ro + rd * payload.t;
+        ivec3 cell = ivec3(floor(p));
+
+        // The committed cell: faced hits sit on the division-form entered
+        // boundary (same snap as closest-hit); origin-inside commits
+        // (mid-pane re-entry, interior camera) are already inside the cell.
+        if ((payload.cache_meta & 4096u) != 0u) {
+            vec3 n = payload.normal;
+            for (int a = 0; a < 3; ++a) {
+                if (n[a] != 0.0) {
+                    float eps = 32.0 * 1.1920929e-07 * max(abs(p[a]), 1.0);
+                    cell[a] = int(floor(p[a] + eps)) - ((n[a] < 0.0) ? 0 : 1);
+                    break;
+                }
+            }
+        }
+
+        bool mid_pane = gw.pane_open && (cell == gw.pane_next) && (idx == gw.pane_index);
+        if (!mid_pane) {
+            if (gw.pane_open) {
+                gw.pane_closed *= palette.colors[gw.pane_index].rgb;
+            }
+            gw.pane_index = idx;
+            gw.pane_open = true;
+            throughput *= palette.colors[idx].rgb;
+        }
+
+        gw.crossings++;
+        gw.emission += gw.pane_closed * material_table.rough_emit[idx].rgb;
+
+        // Amanatides-Woo exit boundary of the crossed cell from the entry
+        // point p; the argmin axis is the crossed boundary and the successor
+        // cell is the open pane's expected successor.
+        vec3 t_exit_per_axis = vec3(0.0);
+        for (int a = 0; a < 3; ++a) {
+            t_exit_per_axis[a] = (rd[a] == 0.0) ? 1e30
+                : (((rd[a] > 0.0) ? float(cell[a] + 1) : float(cell[a])) - p[a]) / rd[a];
+        }
+        float t_exit = min(t_exit_per_axis.x, min(t_exit_per_axis.y, t_exit_per_axis.z));
+        int crossed_axis;
+        ivec3 successor = cell;
+        if (t_exit == t_exit_per_axis.x) {
+            crossed_axis = 0;
+            successor.x += (rd.x > 0.0) ? 1 : -1;
+        } else if (t_exit == t_exit_per_axis.y) {
+            crossed_axis = 1;
+            successor.y += (rd.y > 0.0) ? 1 : -1;
+        } else {
+            crossed_axis = 2;
+            successor.z += (rd.z > 0.0) ? 1 : -1;
+        }
+        gw.pane_next = successor;
+
+        ro = p + rd * (t_exit + CROSS_EPS);
+
+        payload.color = vec4(0.0);
+        payload.t = -1.0;
+        payload.hit_kind = 0u;
+        payload.normal = vec3(0.0);
+        payload.cache_key = 0u;
+        payload.cache_meta = 0u;
+        traceRayEXT(vko_accelerationStructureEXT(acceleration_structure_id), ray_flags, 0xFFu, sbt_offset, 0u, 0u, ro, RAY_T_MIN, rd, RAY_T_MAX, 0);
+
+        // A no-face commit right after the advance is the origin-inside
+        // case: the ray is already past the crossed boundary, so the true
+        // entered face is the one just crossed. Restate the hit there —
+        // axis-aligned normal against the ray, origin rewound to the
+        // boundary, hit distance a hair past it — so the BOUNCE_OFFSET
+        // origins clear the voxel instead of re-committing it from inside.
+        if (payload.t > 0.0 && (payload.cache_meta & 4096u) == 0u) {
+            payload.normal = vec3(0.0);
+            payload.normal[crossed_axis] = (rd[crossed_axis] > 0.0) ? -1.0 : 1.0;
+            ro = p + rd * t_exit;
+            payload.t = CROSS_RESTATE_T;
+        }
+    }
+}
+
 bool shadowed(vec3 hit_point, vec3 normal, vec3 light_dir, uint ray_flags, uint sbt_offset) {
     payload.color = vec4(0.0);
     payload.t = -1.0;
@@ -221,14 +339,42 @@ void main() {
         uvec2 chain_key[2] = uvec2[2](uvec2(0u), uvec2(0u));
         vec3 chain_tp[2] = vec3[2](vec3(0.0), vec3(0.0));
         uint chain_flags[2] = uint[2](0u, 0u);
-        if (hit_t > 0.0) {
-            radiance += primary_emission;
+        // Primary glass walk (ADR 0016): resolve panes before shading.
+        GlassWalk gw = GlassWalk(0u, false, 0u, ivec3(0), vec3(1.0), vec3(0.0));
+        vec3 ro = origin;
+        vec3 rd = direction;
+        bool glass_primary = false; // primary surface revealed behind glass
+        bool cap_fail = false;      // past MAX_CROSSINGS: current voxel shades opaque
+        bool crossed_miss = false;  // path crossed only glass, then missed
 
-            specular_lobe = rand_unit(seed, draw++) < LOBE_P;
+        if (hit_t > 0.0) {
+            walk_glass(ro, rd, ray_flags, sbt_offset, throughput, gw);
+            if (!feed_only) {
+                path += gw.emission;
+            }
+
+            if (payload.t <= 0.0) {
+                crossed_miss = true;
+                hit_t = -1.0;
+                primary_albedo = vec3(0.0);
+                primary_metallic = 0.0;
+            } else if ((material_table.flags[payload.hit_kind] & MATFLAG_GLASS) != 0u) {
+                cap_fail = true;
+            } else if (gw.crossings > 0u) {
+                glass_primary = true;
+            }
+        }
+
+        if (hit_t > 0.0) {
+            if (!glass_primary && !cap_fail) {
+                radiance += primary_emission;
+            }
+
+            if (!glass_primary) {
+                specular_lobe = rand_unit(seed, draw++) < LOBE_P;
+            }
             float lobe_p = specular_lobe ? LOBE_P : (1.0 - LOBE_P);
 
-            vec3 ro = origin;
-            vec3 rd = direction;
             vec3 albedo = primary_albedo;
             float metallic = primary_metallic;
             float roughness = primary_roughness;
@@ -236,10 +382,33 @@ void main() {
             float next_p_bsdf = 0.0;
             vec3 hit_emission = vec3(0.0);
 
+            // A revealed surface behind glass (or the cap-fail voxel) shades
+            // from its own committed material with the pane product in the
+            // throughput; the g-buffer interim keeps describing the glass
+            // entry (slice 4 completes the contract).
+            if (glass_primary || cap_fail) {
+                vec4 albedo_metallic = material_table.albedo_metallic[payload.hit_kind];
+                vec4 rough_emit = material_table.rough_emit[payload.hit_kind];
+                albedo = albedo_metallic.rgb;
+                metallic = albedo_metallic.a;
+                roughness = rough_emit.a;
+                normal = normalize(payload.normal);
+                hit_emission = rough_emit.rgb;
+                if (!feed_only) {
+                    path += throughput * rough_emit.rgb;
+                }
+            }
+
             for (int depth = 0; depth <= int(MAX_BOUNCES); ++depth) {
                 if (depth > 0) {
-                    if (depth == 1 && bounce_t < 0.0 && !feed_only) {
-                        bounce_t = payload.t;
+                    // Resolve glass panes crossed by this segment (no RNG,
+                    // no depth); a walk-miss falls into the miss branch
+                    // below with the pane-tinted throughput.
+                    vec3 em_before = gw.emission;
+                    vec3 tp_before = throughput;
+                    walk_glass(ro, rd, ray_flags, sbt_offset, throughput, gw);
+                    if (!feed_only) {
+                        path += tp_before * (gw.emission - em_before);
                     }
 
                     if (payload.t <= 0.0) {
@@ -265,6 +434,10 @@ void main() {
 
                         break;
                     }
+                    if (depth == 1 && bounce_t < 0.0 && !feed_only) {
+                        bounce_t = payload.t;
+                    }
+
                     vec4 albedo_metallic = material_table.albedo_metallic[payload.hit_kind];
                     vec4 rough_emit = material_table.rough_emit[payload.hit_kind];
                     albedo = albedo_metallic.rgb;
@@ -300,7 +473,7 @@ void main() {
                         float alpha = max(roughness * roughness, ALPHA_MIN);
                         vec3 f0 = mix(vec3(0.04), albedo, metallic);
                         vec3 l_local = vec3(dot(sun_dir, t_axis), dot(sun_dir, b_axis), n_dot_l);
-                        vec3 f_nl = (depth == 0)
+                        vec3 f_nl = (depth == 0 && !glass_primary)
                             ? (specular_lobe
                             ? specular_nl(l_local, v_local, normalize(v_local + l_local), f0, alpha) : (1.0 - metallic) * albedo * (n_dot_l / PI)) : brdf_nl(l_local, v_local, f0, alpha, albedo, metallic);
                         nee_rad = f_nl * scene.sun_disk.x * (1.0 / SUN_PICK_P);
@@ -322,9 +495,9 @@ void main() {
                         float alpha = max(roughness * roughness, ALPHA_MIN);
                         vec3 f0 = mix(vec3(0.04), albedo, metallic);
                         vec3 l_local = vec3(dot(light_dir, t_axis), dot(light_dir, b_axis), n_dot_l);
-                        float p_bsdf = bsdf_mixture_pdf(l_local, v_local, alpha, depth);
+                        float p_bsdf = bsdf_mixture_pdf(l_local, v_local, alpha, (depth == 0 && !glass_primary) ? 0 : 1);
                         float w = p_light / (p_light + p_bsdf);
-                        vec3 f_nl = (depth == 0)
+                        vec3 f_nl = (depth == 0 && !glass_primary)
                             ? (specular_lobe
                             ? specular_nl(l_local, v_local, normalize(v_local + l_local), f0, alpha) : (1.0 - metallic) * albedo * (n_dot_l / PI)) : brdf_nl(l_local, v_local, f0, alpha, albedo, metallic);
                         nee_rad = f_nl * sky_radiance(light_dir) * w / p_light;
@@ -381,7 +554,7 @@ void main() {
                 bool trace_ray = true;
                 uint born = 2u;
 
-                if (depth == 0) {
+                if (depth == 0 && !glass_primary) {
                     if (specular_lobe) {
                         vec3 h;
                         float pdf;
@@ -433,13 +606,18 @@ void main() {
                     }
 
                     born = 1u;
+                    if (depth == 0) {
+                        // Revealed surface behind glass: its chain is the
+                        // newborn primary chain, ridden by the later hops.
+                        born = 0u;
+                    }
                 }
 
                 if (!trace_ray) {
                     break;
                 }
                 vec3 wi_local = vec3(dot(wi, t_axis), dot(wi, b_axis), dot(wi, normal));
-                next_p_bsdf = bsdf_mixture_pdf(wi_local, v_local, alpha, depth);
+                next_p_bsdf = bsdf_mixture_pdf(wi_local, v_local, alpha, (depth == 0 && !glass_primary) ? 0 : 1);
                 throughput *= weight;
 
                 // The standing chain rides this hop's weight and RR lottery;
@@ -475,11 +653,19 @@ void main() {
                 traceRayEXT(vko_accelerationStructureEXT(acceleration_structure_id), ray_flags, 0xFFu, sbt_offset, 0u, 0u, ro, RAY_T_MIN, rd, RAY_T_MAX, 0);
             }
 
-            if (specular_lobe) {
+            if (glass_primary) {
+                // Whole path to the specular channel at weight 1 (ADR 0013);
+                // the diffuse channel reports no-data (0 radiance, nhd 0).
+                specular = path;
+            } else if (specular_lobe) {
                 specular = path / lobe_p;
             } else {
                 radiance += path / lobe_p;
             }
+        } else if (crossed_miss) {
+            // Crossed-only miss: the pane-tinted Procedural sky with the Sun
+            // disk, plus emission collected on the glass voxels themselves.
+            radiance = path + throughput * sky_radiance_with_disk(direction);
         } else {
             radiance = sky_radiance_with_disk(direction);
         }
@@ -507,8 +693,8 @@ void main() {
         // length; the skipped lobe reports "no data" (NRD reconstructs it).
         float norm_hit_dist = (hit_t > 0.0 && bounce_t >= 0.0)
             ? nrd_get_norm_hit_dist(bounce_t, viewz, primary_roughness) : 0.0;
-        float diff_nhd = specular_lobe ? 0.0 : norm_hit_dist;
-        float spec_nhd = specular_lobe ? norm_hit_dist : 0.0;
+        float diff_nhd = (glass_primary || specular_lobe) ? 0.0 : norm_hit_dist;
+        float spec_nhd = (glass_primary || specular_lobe) ? norm_hit_dist : 0.0;
 
         imageStore(vko_image2D_rgba16f(diff_radiance_image_id), pixel, nrd_pack_radiance_and_norm_hit_dist(diffuse_de, diff_nhd));
         imageStore(vko_image2D_rgba16f(spec_radiance_image_id), pixel, nrd_pack_radiance_and_norm_hit_dist(specular, spec_nhd));
