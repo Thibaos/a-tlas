@@ -45,11 +45,13 @@ pub fn get_material_table(data: &dot_vox::DotVoxData) -> MaterialTable {
     for material in &data.materials {
         let id = material.id as usize;
 
-        if id >= 256 {
+        if id == 0 || id >= 256 {
             continue;
         }
 
-        let entry = &mut table[id];
+        // MagicaVoxel keys MATL ids by the 1-based color index while dot_vox
+        // hands the voxels' indices over 0-based.
+        let entry = &mut table[id - 1];
 
         if let Some(metallic) = material.metalness() {
             entry.metallic = metallic.clamp(0.0, 1.0);
@@ -164,17 +166,17 @@ mod tests {
         let table = get_material_table(&data);
 
         assert_eq!(table[1].metallic, 0.0);
-        assert_eq!(table[3].metallic, 0.5);
-        assert_eq!(table[3].roughness, 0.2);
-        assert_eq!(table[7].roughness, 0.9);
-        assert_eq!(table[7].metallic, 0.0, "missing _metal keeps the default");
-        assert_eq!(table[7].emission, [0.0; 3]);
+        assert_eq!(table[2].metallic, 0.5);
+        assert_eq!(table[2].roughness, 0.2);
+        assert_eq!(table[6].roughness, 0.9);
+        assert_eq!(table[6].metallic, 0.0, "missing _metal keeps the default");
+        assert_eq!(table[6].emission, [0.0; 3]);
         assert_eq!(
-            table[9].metallic, 0.5,
+            table[8].metallic, 0.5,
             "_metal is authored even without a preset"
         );
         assert_eq!(
-            table[9].roughness, DEFAULT_ROUGHNESS,
+            table[8].roughness, DEFAULT_ROUGHNESS,
             "typeless _rough is the editor's untouched default, not authored data"
         );
     }
@@ -188,15 +190,15 @@ mod tests {
         ]);
         let table = get_material_table(&data);
 
+        assert!(table[4].glass);
         assert!(table[5].glass);
-        assert!(table[6].glass);
 
-        assert!(!table[8].glass, "non-glass presets stay opaque");
+        assert!(!table[7].glass, "non-glass presets stay opaque");
         assert!(!table[1].glass, "missing MATL degrades to opaque");
 
-        assert_eq!(table[5].roughness, 0.1, "glass keeps _rough flowing");
+        assert_eq!(table[4].roughness, 0.1, "glass keeps _rough flowing");
         assert_eq!(
-            table[6].roughness, DEFAULT_ROUGHNESS,
+            table[5].roughness, DEFAULT_ROUGHNESS,
             "glass without _rough keeps the default"
         );
     }
@@ -211,7 +213,7 @@ mod tests {
         let palette = get_palette(&data);
 
         let scale = EMISSION_SCALE;
-        for (i, emit) in [(6usize, 1.0f32), (7, 0.25)] {
+        for (i, emit) in [(5usize, 1.0f32), (6, 0.25)] {
             for channel in 0..3 {
                 let expected = srgb_to_linear(palette[i][channel]) * emit * scale;
                 assert!(
@@ -237,18 +239,34 @@ mod tests {
             ],
         )]);
         let table = get_material_table(&data);
-        assert_eq!(table[4].metallic, 1.0);
-        assert_eq!(table[4].roughness, 0.0);
+        assert_eq!(table[3].metallic, 1.0);
+        assert_eq!(table[3].roughness, 0.0);
 
-        assert_eq!(table[4].emission[0], palette_red(4) * EMISSION_SCALE);
+        assert_eq!(table[3].emission[0], palette_red(3) * EMISSION_SCALE);
     }
 
     #[test]
-    fn out_of_range_matl_id_is_skipped() {
-        let data = data_with(vec![matl(300, &[("_metal", "1.0")])]);
+    fn unpaintable_matl_ids_are_skipped() {
+        let data = data_with(vec![
+            matl(0, &[("_metal", "1.0")]),
+            matl(300, &[("_metal", "1.0")]),
+        ]);
         let table = get_material_table(&data);
         for entry in &table {
             assert_eq!(entry.metallic, 0.0);
         }
+    }
+
+    #[test]
+    fn matl_id_is_the_one_based_color_index() {
+        // dot_vox hands the voxels' color indices over 0-based while the
+        // MATL id keeps MagicaVoxel's 1-based numbering: slot 2's material
+        // governs the voxels reported at i = 1.
+        let data = data_with(vec![matl(2, &[("_type", "_glass")])]);
+        let table = get_material_table(&data);
+
+        assert!(table[1].glass, "the material lands on the voxels' slot");
+
+        assert!(!table[2].glass, "the raw id is not a palette index");
     }
 }
