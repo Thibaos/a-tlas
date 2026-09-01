@@ -251,7 +251,7 @@ mod contract {
 
     use super::*;
 
-    const CONTRACT: &str = include_str!("../../../../shaders/common/contract.glsl");
+    const CONSTS: &str = include_str!("../../../../shaders/common/consts.glsl");
 
     const NAMES: &[&str] = &[
         "RAY_T_MIN",
@@ -270,7 +270,7 @@ mod contract {
     ];
 
     fn define(name: &str) -> String {
-        CONTRACT
+        CONSTS
             .lines()
             .find_map(|line| {
                 let mut parts = line.trim().split_whitespace();
@@ -278,7 +278,7 @@ mod contract {
                 (parts.next() == Some("#define") && parts.next() == Some(name))
                     .then(|| parts.next().expect("define without value").to_string())
             })
-            .unwrap_or_else(|| panic!("contract.glsl missing {name}"))
+            .unwrap_or_else(|| panic!("consts.glsl missing {name}"))
     }
 
     fn uint(name: &str) -> u64 {
@@ -329,7 +329,7 @@ mod contract {
         );
 
         for path in sources {
-            if path.file_name().is_some_and(|name| name == "contract.glsl") {
+            if path.file_name().is_some_and(|name| name == "consts.glsl") {
                 continue;
             }
 

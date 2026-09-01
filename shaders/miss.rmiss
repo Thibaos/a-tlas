@@ -5,10 +5,10 @@
 #extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
 #extension GL_EXT_buffer_reference2 : require
 
-#include "../common/common.glsl"
-#include "header.glsl"
-#include "common.glsl"
-#include "sky.glsl"
+#include "common/common.glsl"
+#include "common/header.glsl"
+#include "common/bindings.glsl"
+#include "common/sky.glsl"
 
 layout(location = 0) rayPayloadInEXT MainPassPayload incoming_payload;
 

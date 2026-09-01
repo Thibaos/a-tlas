@@ -1,7 +1,7 @@
 //! The Region pipeline's GPU half: the shared ray tracing pipeline and the
 //! per-frame render task that ray-passes the swapchain storage images with
 //! the production raygen. The miss/intersection/closest-hit stages are the
-//! Region path's own (shaders/region).
+//! Region path's own (shaders/, grouped per render mode).
 //!
 //! All per-Region GPU state: voxel pools, procedural AABB BLASes, the
 //! lattice-static instance set and the stable TLAS. Lives in
@@ -39,7 +39,7 @@ pub(crate) mod production_raygen {
     vulkano_shaders::shader! {
         root_path_env: "CARGO_MANIFEST_DIR",
         ty: "raygen",
-        path: "shaders/region/production.rgen",
+        path: "shaders/production.rgen",
         vulkan_version: "1.3"
     }
 }
@@ -48,7 +48,7 @@ pub(crate) mod intersect {
     vulkano_shaders::shader! {
         root_path_env: "CARGO_MANIFEST_DIR",
         ty: "intersection",
-        path: "shaders/region/intersect.rint",
+        path: "shaders/voxel/intersect.rint",
         vulkan_version: "1.3"
     }
 }
@@ -57,7 +57,7 @@ pub(crate) mod miss {
     vulkano_shaders::shader! {
         root_path_env: "CARGO_MANIFEST_DIR",
         ty: "miss",
-        path: "shaders/region/miss.rmiss",
+        path: "shaders/miss.rmiss",
         vulkan_version: "1.3"
     }
 }
@@ -66,7 +66,7 @@ pub(crate) mod closest_hit {
     vulkano_shaders::shader! {
         root_path_env: "CARGO_MANIFEST_DIR",
         ty: "closesthit",
-        path: "shaders/region/closest_hit.rchit",
+        path: "shaders/voxel/closest_hit.rchit",
         vulkan_version: "1.3"
     }
 }
@@ -76,7 +76,7 @@ pub(crate) mod hull_intersect {
     vulkano_shaders::shader! {
         root_path_env: "CARGO_MANIFEST_DIR",
         ty: "intersection",
-        path: "shaders/region/hull.rint",
+        path: "shaders/hull/intersect.rint",
         vulkan_version: "1.3"
     }
 }
@@ -86,7 +86,7 @@ pub(crate) mod hull_closest_hit {
     vulkano_shaders::shader! {
         root_path_env: "CARGO_MANIFEST_DIR",
         ty: "closesthit",
-        path: "shaders/region/hull.rchit",
+        path: "shaders/hull/closest_hit.rchit",
         vulkan_version: "1.3"
     }
 }

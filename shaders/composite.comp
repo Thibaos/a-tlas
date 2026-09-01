@@ -4,7 +4,7 @@
 #extension GL_EXT_GOOGLE_include_directive : enable
 
 #include <vulkano.glsl>
-#include "common/contract.glsl"
+#include "common/consts.glsl"
 
 layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 
@@ -25,8 +25,6 @@ vec3 aces_fit(vec3 x) {
     return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
 }
 
-// Scene-relative display mapping at a fixed identity exposure: the palette
-// and the sky gradient need no metering. Retune this one constant to taste.
 const float EXPOSURE_EV = 0.0;
 
 void main() {
@@ -45,7 +43,7 @@ void main() {
     // Interleaved gradient noise (Jimenez 2014): one display LSB of static
     // per-pixel dither against the 8-bit store's gradient banding.
     float dither = fract(52.9829189 * fract(0.06711056 * float(p.x)
-        + 0.00583715 * float(p.y)));
+                        + 0.00583715 * float(p.y)));
     color += (dither - 0.5) / 255.0;
     imageStore(vko_image2D_rgba8(image_id), p, vec4(color, 1.0));
 }

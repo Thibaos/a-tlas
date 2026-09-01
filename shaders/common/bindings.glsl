@@ -1,4 +1,4 @@
-#include "../common/contract.glsl"
+#include "consts.glsl"
 
 layout(buffer_reference, std430) readonly buffer RegionPool {
     uint words[];

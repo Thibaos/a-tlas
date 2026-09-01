@@ -6,8 +6,8 @@
 #extension GL_EXT_buffer_reference2 : require
 
 #include "../common/common.glsl"
-#include "header.glsl"
-#include "common.glsl"
+#include "../common/header.glsl"
+#include "../common/bindings.glsl"
 
 layout(location = 0) rayPayloadInEXT MainPassPayload incoming_payload;
 
