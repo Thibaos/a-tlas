@@ -295,7 +295,6 @@ impl Task for RegionRenderTask {
                     acceleration_structure_id: self.bindings.acceleration_structure_id,
                     camera_buffer_id: self.bindings.camera_storage_id,
                     palette_buffer_id: self.bindings.palette_storage_id,
-                    material_table_buffer_id: self.bindings.material_table_storage_id,
                     scene_buffer_id: self.bindings.scene_storage_id,
                     region_table_buffer_id: self.bindings.region_table_storage_id,
                     aabb_table_buffer_id: self.bindings.aabb_table_storage_id,

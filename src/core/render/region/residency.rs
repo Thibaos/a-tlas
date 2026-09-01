@@ -50,7 +50,6 @@ use crate::core::{
     world::{
         format::get_palette,
         grid::{REGION_LENGTH, region_id},
-        material::{get_material_table, MATFLAG_GLASS},
     },
 };
 
@@ -83,7 +82,6 @@ pub struct RegionBindings {
     pub camera_storage_id: StorageBufferId,
     pub scene_storage_id: StorageBufferId,
     pub palette_storage_id: StorageBufferId,
-    pub material_table_storage_id: StorageBufferId,
     pub acceleration_structure_id: AccelerationStructureId,
     pub aabb_table_storage_id: StorageBufferId,
     pub instance_buffer_id: Id<Buffer>,
@@ -176,22 +174,6 @@ impl RegionStore {
             )
             .unwrap();
 
-        let material_table_buffer_id = gpu
-            .resources
-            .create_buffer(
-                &BufferCreateInfo {
-                    usage: BufferUsage::STORAGE_BUFFER | BufferUsage::TRANSFER_DST,
-                    ..Default::default()
-                },
-                &AllocationCreateInfo {
-                    memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
-                        | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
-                    ..Default::default()
-                },
-                DeviceLayout::new_sized::<production_raygen::MaterialTable>(),
-            )
-            .unwrap();
-
         let region_table_buffer_id = gpu
             .resources
             .create_buffer(
@@ -255,18 +237,6 @@ impl RegionStore {
         let dummy_blas = create_dummy_blas(gpu);
 
         let palette = get_palette(voxel_data).map(|color| [color.x, color.y, color.z, 1.0]);
-        let material_table = get_material_table(voxel_data);
-        let albedo_metallic: [[f32; 4]; 256] = std::array::from_fn(|i| {
-            let m = &material_table[i];
-            [m.albedo[0], m.albedo[1], m.albedo[2], m.metallic]
-        });
-        let rough_emit: [[f32; 4]; 256] = std::array::from_fn(|i| {
-            let m = &material_table[i];
-            [m.emission[0], m.emission[1], m.emission[2], m.roughness]
-        });
-        let flags: [u32; 256] =
-            std::array::from_fn(|i| if material_table[i].glass { MATFLAG_GLASS } else { 0 });
-
         unsafe {
             vulkano_taskgraph::execute(
                 &gpu.transfer_queue,
@@ -275,14 +245,6 @@ impl RegionStore {
                 |_cbf, tcx| {
                     *tcx.write_buffer::<production_raygen::Palette>(palette_buffer_id, ..) =
                         production_raygen::Palette { colors: palette };
-                    *tcx.write_buffer::<production_raygen::MaterialTable>(
-                        material_table_buffer_id,
-                        ..,
-                    ) = production_raygen::MaterialTable {
-                        albedo_metallic,
-                        rough_emit,
-                        flags,
-                    };
                     *tcx.write_buffer::<production_raygen::Scene>(scene_buffer_id, ..) =
                         default_scene();
                     *tcx.write_buffer::<Exposure>(exposure_buffer_id, ..) =
@@ -296,7 +258,6 @@ impl RegionStore {
                 },
                 [
                     (palette_buffer_id, HostAccessType::Write),
-                    (material_table_buffer_id, HostAccessType::Write),
                     (scene_buffer_id, HostAccessType::Write),
                     (exposure_buffer_id, HostAccessType::Write),
                 ],
@@ -340,15 +301,6 @@ impl RegionStore {
             )
             .unwrap();
 
-        let material_table_storage_id = bcx
-            .global_set()
-            .create_storage_buffer(
-                material_table_buffer_id,
-                0,
-                Some(size_of::<production_raygen::MaterialTable>() as DeviceSize),
-            )
-            .unwrap();
-
         let scene_storage_id = bcx
             .global_set()
             .create_storage_buffer(
@@ -385,7 +337,6 @@ impl RegionStore {
             camera_storage_id,
             scene_storage_id,
             palette_storage_id,
-            material_table_storage_id,
             acceleration_structure_id,
             aabb_table_storage_id,
             instance_buffer_id,

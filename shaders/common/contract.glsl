@@ -18,7 +18,3 @@
 #define MODE_VOXEL 0u
 #define MODE_HULL 1u
 #define MODE_NORMAL 4u
-
-// Material-table flags word (uint[256] flags column, one per palette index):
-// bit set iff the MATL entry is the glass type (ADR 0012).
-#define MATFLAG_GLASS 1u

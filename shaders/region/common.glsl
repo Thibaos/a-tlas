@@ -21,7 +21,6 @@ layout(push_constant) uniform RegionPushConstants {
     AccelerationStructureId acceleration_structure_id;
     StorageBufferId camera_buffer_id;
     StorageBufferId palette_buffer_id;
-    StorageBufferId material_table_buffer_id;
     StorageBufferId scene_buffer_id;
     StorageBufferId region_table_buffer_id;
     StorageBufferId aabb_table_buffer_id;

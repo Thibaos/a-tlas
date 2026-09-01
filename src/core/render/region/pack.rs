@@ -243,7 +243,6 @@ mod contract {
     use std::path::{Path, PathBuf};
 
     use crate::core::render::region::task::RenderMode;
-    use crate::core::world::material::MATFLAG_GLASS;
 
     use super::*;
 
@@ -263,7 +262,6 @@ mod contract {
         "MODE_VOXEL",
         "MODE_HULL",
         "MODE_NORMAL",
-        "MATFLAG_GLASS",
     ];
 
     fn define(name: &str) -> String {
@@ -306,7 +304,6 @@ mod contract {
         assert_eq!(uint("OFFSET_SENTINEL"), OFFSET_SENTINEL as u64);
 
         assert_eq!(uint("MODE_VOXEL"), RenderMode::Voxel as u32 as u64);
-        assert_eq!(uint("MATFLAG_GLASS"), MATFLAG_GLASS as u64);
 
         #[cfg(debug_assertions)]
         {

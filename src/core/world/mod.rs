@@ -13,7 +13,6 @@ pub enum BoundsPolicy {
 
 pub mod format;
 pub mod grid;
-pub mod material;
 pub mod scene_graph;
 pub mod snapshot;
 
