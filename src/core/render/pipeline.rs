@@ -289,6 +289,7 @@ impl FramePipeline {
             denoiser_active: nrd.is_some(),
             nrd: NrdFrame::default(),
             albedo_metal_image_id: StorageImageId::INVALID,
+            disocclusion_mix_image_id: StorageImageId::INVALID,
             ev: default_ev(),
             mode: RenderMode::default(),
             frame_seed: 0,

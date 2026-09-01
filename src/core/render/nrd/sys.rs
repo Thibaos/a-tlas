@@ -30,6 +30,7 @@ pub mod resource_type {
     pub const IN_MV: u32 = 0;
     pub const IN_NORMAL_ROUGHNESS: u32 = 1;
     pub const IN_VIEWZ: u32 = 2;
+    pub const IN_DISOCCLUSION_THRESHOLD_MIX: u32 = 5;
     pub const IN_DIFF_RADIANCE_HITDIST: u32 = 6;
     pub const IN_SPEC_RADIANCE_HITDIST: u32 = 7;
     pub const OUT_DIFF_RADIANCE_HITDIST: u32 = 18;

@@ -53,6 +53,7 @@ pub struct NrdInputs {
     pub normal_roughness: Arc<ImageView>,
     pub viewz: Arc<ImageView>,
     pub mv: Arc<ImageView>,
+    pub disocclusion_mix: Arc<ImageView>,
     pub diff_out: Arc<ImageView>,
     pub spec_out: Arc<ImageView>,
     pub validation: Arc<ImageView>,
@@ -541,6 +542,9 @@ impl NrdInstance {
             sys::resource_type::IN_NORMAL_ROUGHNESS => Ok(inputs.normal_roughness.clone()),
             sys::resource_type::IN_VIEWZ => Ok(inputs.viewz.clone()),
             sys::resource_type::IN_MV => Ok(inputs.mv.clone()),
+            sys::resource_type::IN_DISOCCLUSION_THRESHOLD_MIX => {
+                Ok(inputs.disocclusion_mix.clone())
+            }
             sys::resource_type::OUT_DIFF_RADIANCE_HITDIST => Ok(inputs.diff_out.clone()),
             sys::resource_type::OUT_SPEC_RADIANCE_HITDIST => Ok(inputs.spec_out.clone()),
             sys::resource_type::OUT_VALIDATION => Ok(inputs.validation.clone()),
@@ -765,6 +769,7 @@ impl Task for DenoiseTask {
         };
 
         settings.enable_validation = validation;
+        settings.is_disocclusion_threshold_mix_available = true;
 
         if let Err(error) = unsafe { instance.record(cbf, &settings, inputs) } {
             eprintln!("{error}");

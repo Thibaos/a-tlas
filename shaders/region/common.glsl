@@ -34,4 +34,5 @@ layout(push_constant) uniform RegionPushConstants {
     StorageImageId viewz_image_id;
     StorageImageId mv_image_id;
     StorageImageId albedo_metal_image_id;
+    StorageImageId disocclusion_mix_image_id;
 };

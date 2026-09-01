@@ -28,6 +28,7 @@ pub enum FrameImageKind {
     ViewZ,
     Mv,
     AlbedoMetal,
+    DisocclusionMix,
     DenoisedDiff,
     DenoisedSpec,
     Validation,
@@ -35,13 +36,14 @@ pub enum FrameImageKind {
 
 use FrameImageKind::*;
 
-const KINDS: [FrameImageKind; 9] = [
+const KINDS: [FrameImageKind; 10] = [
     DiffRadiance,
     SpecRadiance,
     NormalRoughness,
     ViewZ,
     Mv,
     AlbedoMetal,
+    DisocclusionMix,
     DenoisedDiff,
     DenoisedSpec,
     Validation,
@@ -70,6 +72,7 @@ fn format_of(kind: FrameImageKind) -> Format {
         }
         NormalRoughness | AlbedoMetal | Validation => Format::R8G8B8A8_UNORM,
         ViewZ => Format::R32_SFLOAT,
+        DisocclusionMix => Format::R8_UNORM,
     }
 }
 
@@ -79,6 +82,7 @@ fn roles_of(kind: FrameImageKind) -> &'static [Role] {
         SpecRadiance | NormalRoughness | Mv => &[Role::TraceOutput, Role::DenoiserInput],
         ViewZ => &[Role::TraceOutput, Role::DenoiserInput, Role::CompositeRead],
         AlbedoMetal => &[Role::TraceOutput],
+        DisocclusionMix => &[Role::TraceOutput, Role::DenoiserInput],
         DenoisedDiff | DenoisedSpec | Validation => &[Role::DenoiserOutput, Role::CompositeRead],
     }
 }
@@ -195,6 +199,7 @@ impl FrameImages {
             normal_roughness: view(NormalRoughness),
             viewz: view(ViewZ),
             mv: view(Mv),
+            disocclusion_mix: view(DisocclusionMix),
             diff_out: view(DenoisedDiff),
             spec_out: view(DenoisedSpec),
             validation: view(Validation),
@@ -263,6 +268,7 @@ fn image_slot_mut(region: &mut RegionRenderContext, kind: FrameImageKind) -> &mu
         ViewZ => &mut region.viewz_image_id,
         Mv => &mut region.mv_image_id,
         AlbedoMetal => &mut region.albedo_metal_image_id,
+        DisocclusionMix => &mut region.disocclusion_mix_image_id,
         DenoisedDiff => &mut region.denoised_diff_image_id,
         DenoisedSpec => &mut region.denoised_spec_image_id,
         Validation => &mut region.validation_image_id,
@@ -345,6 +351,7 @@ mod tests {
             denoiser_active: false,
             nrd: NrdFrame::default(),
             albedo_metal_image_id: StorageImageId::INVALID,
+            disocclusion_mix_image_id: StorageImageId::INVALID,
             ev: 0.0,
             mode: RenderMode::default(),
             frame_seed: 0,
@@ -372,6 +379,7 @@ mod tests {
         assert_eq!(format_of(ViewZ), Format::R32_SFLOAT);
         assert_eq!(format_of(Mv), Format::R16G16B16A16_SFLOAT);
         assert_eq!(format_of(AlbedoMetal), Format::R8G8B8A8_UNORM);
+        assert_eq!(format_of(DisocclusionMix), Format::R8_UNORM);
         assert_eq!(format_of(DenoisedDiff), Format::R16G16B16A16_SFLOAT);
         assert_eq!(format_of(DenoisedSpec), Format::R16G16B16A16_SFLOAT);
         assert_eq!(format_of(Validation), Format::R8G8B8A8_UNORM);
@@ -385,7 +393,7 @@ mod tests {
     }
 
     #[test]
-    fn trace_outputs_are_the_six_production_writes() {
+    fn trace_outputs_are_the_seven_production_writes() {
         assert_eq!(
             with_role(Role::TraceOutput),
             vec![
@@ -394,7 +402,8 @@ mod tests {
                 NormalRoughness,
                 ViewZ,
                 Mv,
-                AlbedoMetal
+                AlbedoMetal,
+                DisocclusionMix
             ]
         );
     }
@@ -403,7 +412,14 @@ mod tests {
     fn denoiser_inputs_exclude_albedo_metal() {
         assert_eq!(
             with_role(Role::DenoiserInput),
-            vec![DiffRadiance, SpecRadiance, NormalRoughness, ViewZ, Mv]
+            vec![
+                DiffRadiance,
+                SpecRadiance,
+                NormalRoughness,
+                ViewZ,
+                Mv,
+                DisocclusionMix
+            ]
         );
     }
 

@@ -166,6 +166,7 @@ pub struct RegionRenderContext {
     pub denoiser_active: bool,
     pub nrd: NrdFrame,
     pub albedo_metal_image_id: StorageImageId,
+    pub disocclusion_mix_image_id: StorageImageId,
     pub ev: f32,
     pub mode: RenderMode,
     pub frame_seed: u32,
@@ -390,6 +391,7 @@ impl Task for RegionRenderTask {
                     viewz_image_id: rcx.viewz_image_id,
                     mv_image_id: rcx.mv_image_id,
                     albedo_metal_image_id: rcx.albedo_metal_image_id,
+                    disocclusion_mix_image_id: rcx.disocclusion_mix_image_id,
                 },
             )
         };

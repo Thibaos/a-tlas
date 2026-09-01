@@ -222,12 +222,14 @@ struct GlassWalk {
     uint pane_index;
     ivec3 pane_next;
     vec3 emission;
+    float advance;
 };
 
 void walk_glass(inout vec3 ro, vec3 rd, uint ray_flags, uint sbt_offset,
         inout vec3 throughput, inout GlassWalk gw) {
     vec3 closed_here = vec3(1.0);
     bool opened_here = false;
+    gw.advance = 0.0;
 
     for (uint guard = 0u; guard < WALK_GUARD; ++guard) {
         if (payload.t <= 0.0) {
@@ -266,6 +268,7 @@ void walk_glass(inout vec3 ro, vec3 rd, uint ray_flags, uint sbt_offset,
         gw.pane_next = successor;
 
         ro = p + rd * (t_exit + CROSS_EPS);
+        gw.advance += t_exit + CROSS_EPS;
 
         reset_payload();
         traceRayEXT(vko_accelerationStructureEXT(acceleration_structure_id), ray_flags, 0xFFu, sbt_offset, 0u, 0u, ro, RAY_T_MIN, rd, RAY_T_MAX, 0);
@@ -282,6 +285,7 @@ void walk_glass(inout vec3 ro, vec3 rd, uint ray_flags, uint sbt_offset,
             payload.normal[crossed_axis] = (rd[crossed_axis] > 0.0) ? -1.0 : 1.0;
             ro = p + rd * t_exit;
             payload.t = CROSS_RESTATE_T;
+            gw.advance -= CROSS_EPS;
         }
     }
 }
@@ -364,18 +368,6 @@ void main() {
         float primary_roughness = 1.0;
         vec3 primary_emission = vec3(0.0);
         vec3 primary_normal = vec3(0.0);
-        bool primary_glass = false;
-
-        if (hit_t > 0.0) {
-            vec4 albedo_metallic = material_table.albedo_metallic[payload.hit_kind];
-            vec4 rough_emit = material_table.rough_emit[payload.hit_kind];
-            primary_albedo = albedo_metallic.rgb;
-            primary_metallic = albedo_metallic.a;
-            primary_roughness = rough_emit.a;
-            primary_emission = rough_emit.rgb;
-            primary_glass = (material_table.flags[payload.hit_kind] & MATFLAG_GLASS) != 0u;
-            primary_normal = normalize(payload.normal);
-        }
 
         uint seed = pcg_hash((frame_seed * 0x9E3779B1u)
                     ^ (uint(gl_LaunchIDEXT.y) * gl_LaunchSizeEXT.x + uint(gl_LaunchIDEXT.x)));
@@ -403,7 +395,7 @@ void main() {
         vec3 chain_tp[2] = vec3[2](vec3(0.0), vec3(0.0));
         uint chain_flags[2] = uint[2](0u, 0u);
         // Primary glass walk (ADR 0016): resolve panes before shading.
-        GlassWalk gw = GlassWalk(0u, false, 0u, ivec3(0), vec3(0.0));
+        GlassWalk gw = GlassWalk(0u, false, 0u, ivec3(0), vec3(0.0), 0.0);
         vec3 ro = origin;
         vec3 rd = direction;
         bool glass_primary = false; // primary surface revealed behind glass
@@ -419,13 +411,28 @@ void main() {
             if (payload.t <= 0.0) {
                 crossed_miss = true;
                 hit_t = -1.0;
-                primary_albedo = vec3(0.0);
-                primary_metallic = 0.0;
             } else if ((material_table.flags[payload.hit_kind] & MATFLAG_GLASS) != 0u) {
                 cap_fail = true;
             } else if (gw.crossings > 0u) {
                 glass_primary = true;
             }
+        }
+
+        // The G-buffer surface is the committed hit (ADR 0015): B at a glass
+        // primary, the cap-fail voxel past the cap; the crossings' segment
+        // lengths fold into the accumulated primary t.
+        if (hit_t > 0.0) {
+            if (glass_primary || cap_fail) {
+                hit_t = dot(ro + rd * payload.t - origin, direction);
+            }
+
+            vec4 albedo_metallic = material_table.albedo_metallic[payload.hit_kind];
+            vec4 rough_emit = material_table.rough_emit[payload.hit_kind];
+            primary_albedo = albedo_metallic.rgb;
+            primary_metallic = albedo_metallic.a;
+            primary_roughness = rough_emit.a;
+            primary_emission = rough_emit.rgb;
+            primary_normal = normalize(payload.normal);
         }
 
         if (hit_t > 0.0) {
@@ -445,21 +452,11 @@ void main() {
             float next_p_bsdf = 0.0;
             vec3 hit_emission = vec3(0.0);
 
-            // A revealed surface behind glass (or the cap-fail voxel) shades
-            // from its own committed material with the pane product in the
-            // throughput; the aux buffers interim keeps describing the glass
-            // entry (slice 4 completes the contract).
             if (glass_primary || cap_fail) {
-                vec4 albedo_metallic = material_table.albedo_metallic[payload.hit_kind];
-                vec4 rough_emit = material_table.rough_emit[payload.hit_kind];
-                albedo = albedo_metallic.rgb;
-                metallic = albedo_metallic.a;
-                roughness = rough_emit.a;
-                normal = normalize(payload.normal);
-                hit_emission = rough_emit.rgb;
+                hit_emission = primary_emission;
 
                 if (!feed_only) {
-                    path += throughput * rough_emit.rgb;
+                    path += throughput * primary_emission;
                 }
             }
 
@@ -502,7 +499,7 @@ void main() {
                         break;
                     }
                     if (depth == 1 && bounce_t < 0.0 && !feed_only) {
-                        bounce_t = payload.t;
+                        bounce_t = payload.t + gw.advance;
                     }
 
                     vec4 albedo_metallic = material_table.albedo_metallic[payload.hit_kind];
@@ -772,6 +769,7 @@ void main() {
         imageStore(vko_image2D_r32f(viewz_image_id), pixel, vec4(viewz));
         imageStore(vko_image2D_rgba16f(mv_image_id), pixel, vec4(mv, 0.0));
         imageStore(vko_image2D_rgba8(albedo_metal_image_id), pixel, vec4(primary_albedo, primary_metallic));
+        imageStore(vko_image2D_r8(disocclusion_mix_image_id), pixel, vec4(glass_primary ? 1.0 : 0.0));
 
         return;
     }
