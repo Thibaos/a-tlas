@@ -18,7 +18,6 @@
 
 #define MODE_VOXEL 0u
 #define MODE_HULL 1u
-#define MODE_VALIDATION 2u
 #define MODE_NORMAL 4u
 
 // Material-table flags word (uint[256] flags column, one per palette index):

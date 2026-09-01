@@ -4,7 +4,6 @@
 #extension GL_EXT_GOOGLE_include_directive : enable
 
 #include <vulkano.glsl>
-#include "common/radiance.glsl"
 #include "common/contract.glsl"
 #include "common/exposure.glsl"
 
@@ -12,10 +11,7 @@ layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 
 layout(push_constant) uniform PushConstants {
     StorageImageId image_id;
-    StorageImageId radiance_id;
-    StorageImageId spec_radiance_id;
-    StorageImageId viewz_id;
-    StorageImageId albedo_metal_id;
+    StorageImageId color_id;
     StorageBufferId exposure_buffer_id;
     uint mode;
     uint width;
@@ -49,19 +45,9 @@ void main() {
     }
 
     vec3 radiance = vec3(0.0);
-    float viewz = 1.0e9;
-    bool is_sky = true;
 
     if (!oob) {
-        vec4 diff_raw = imageLoad(vko_image2D_rgba16f(radiance_id), p);
-        vec3 albedo = imageLoad(vko_image2D_rgba8(albedo_metal_id), p).rgb;
-
-        viewz = imageLoad(vko_image2D_r32f(viewz_id), p).x;
-        is_sky = viewz >= VIEWZ_SKY;
-
-        vec3 raw = unpack_radiance(diff_raw);
-        vec3 spec = unpack_radiance(imageLoad(vko_image2D_rgba16f(spec_radiance_id), p));
-        radiance = is_sky ? raw : raw * max(albedo, vec3(ALBEDO_EPS)) + spec;
+        radiance = imageLoad(vko_image2D_rgba16f(color_id), p).rgb;
     }
 
     if (!oob) {
@@ -69,7 +55,6 @@ void main() {
         uint bin = clamp(uint((log2(max(lum, exp2(EXPOSURE_BIN_LOG2_MIN)))- EXPOSURE_BIN_LOG2_MIN) / EXPOSURE_BIN_STEPS), 0u, uint(EXPOSURE_BINS - 1));
 
         atomicAdd(exposure_state.bins[bin], 1u);
-        atomicAdd(exposure_state.sky_count, uint(is_sky));
     }
 
     if (oob) {

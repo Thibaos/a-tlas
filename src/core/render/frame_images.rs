@@ -1,9 +1,8 @@
 //! The frame images (CONTEXT.md): every extent-bound image the frame's
-//! passes read and write. The set spans the Trace pass's outputs, the
-//! Denoise pass's outputs, and the swapchain's bindless storage views. The
-//! task graph references the set virtually; physical images and bindless
-//! registrations attach per extent, and a resize destroys and recreates the
-//! whole set in one deferred batch.
+//! passes read and write. The set spans the ray pass's color output and the
+//! swapchain's bindless storage views. The task graph references the set
+//! virtually; physical images and bindless registrations attach per extent,
+//! and a resize destroys and recreates the whole set in one deferred batch.
 
 use vulkano::{
     format::Format,
@@ -22,26 +21,12 @@ use crate::core::render::region::task::RegionRenderContext;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum FrameImageKind {
-    DiffRadiance,
-    SpecRadiance,
-    NormalRoughness,
-    ViewZ,
-    Mv,
-    AlbedoMetal,
-    DisocclusionMix,
+    Color,
 }
 
 use FrameImageKind::*;
 
-const KINDS: [FrameImageKind; 7] = [
-    DiffRadiance,
-    SpecRadiance,
-    NormalRoughness,
-    ViewZ,
-    Mv,
-    AlbedoMetal,
-    DisocclusionMix,
-];
+const KINDS: [FrameImageKind; 1] = [Color];
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Role {
@@ -59,19 +44,13 @@ struct Entry {
 
 fn format_of(kind: FrameImageKind) -> Format {
     match kind {
-        DiffRadiance | SpecRadiance | Mv => Format::R16G16B16A16_SFLOAT,
-        NormalRoughness | AlbedoMetal => Format::R8G8B8A8_UNORM,
-        ViewZ => Format::R32_SFLOAT,
-        DisocclusionMix => Format::R8_UNORM,
+        Color => Format::R16G16B16A16_SFLOAT,
     }
 }
 
 fn roles_of(kind: FrameImageKind) -> &'static [Role] {
     match kind {
-        DiffRadiance | ViewZ => &[Role::TraceOutput, Role::CompositeRead],
-        SpecRadiance | NormalRoughness | Mv | AlbedoMetal | DisocclusionMix => {
-            &[Role::TraceOutput]
-        }
+        Color => &[Role::TraceOutput, Role::CompositeRead],
     }
 }
 
@@ -204,13 +183,7 @@ impl FrameImages {
 
 fn image_slot_mut(region: &mut RegionRenderContext, kind: FrameImageKind) -> &mut StorageImageId {
     match kind {
-        DiffRadiance => &mut region.diff_radiance_image_id,
-        SpecRadiance => &mut region.spec_radiance_image_id,
-        NormalRoughness => &mut region.normal_roughness_image_id,
-        ViewZ => &mut region.viewz_image_id,
-        Mv => &mut region.mv_image_id,
-        AlbedoMetal => &mut region.albedo_metal_image_id,
-        DisocclusionMix => &mut region.disocclusion_mix_image_id,
+        Color => &mut region.color_image_id,
     }
 }
 
@@ -277,41 +250,11 @@ mod tests {
             },
             cache_dirty: [0; CACHE_DIRTY_WORDS],
             swapchain_storage_image_ids: Vec::new(),
-            diff_radiance_image_id: StorageImageId::INVALID,
-            spec_radiance_image_id: StorageImageId::INVALID,
-            normal_roughness_image_id: StorageImageId::INVALID,
-            viewz_image_id: StorageImageId::INVALID,
-            mv_image_id: StorageImageId::INVALID,
-            albedo_metal_image_id: StorageImageId::INVALID,
-            disocclusion_mix_image_id: StorageImageId::INVALID,
+            color_image_id: StorageImageId::INVALID,
             delta_time: 0.0,
             mode: RenderMode::default(),
-            frame_seed: 0,
             cache_resolve_dispatch: 0,
         }
-    }
-
-    #[test]
-    fn kinds_are_unique() {
-        let mut seen = Vec::new();
-
-        for kind in KINDS {
-            assert!(!seen.contains(&kind));
-            seen.push(kind);
-        }
-
-        assert_eq!(seen.len(), KINDS.len());
-    }
-
-    #[test]
-    fn formats_match_the_output_contract() {
-        assert_eq!(format_of(DiffRadiance), Format::R16G16B16A16_SFLOAT);
-        assert_eq!(format_of(SpecRadiance), Format::R16G16B16A16_SFLOAT);
-        assert_eq!(format_of(NormalRoughness), Format::R8G8B8A8_UNORM);
-        assert_eq!(format_of(ViewZ), Format::R32_SFLOAT);
-        assert_eq!(format_of(Mv), Format::R16G16B16A16_SFLOAT);
-        assert_eq!(format_of(AlbedoMetal), Format::R8G8B8A8_UNORM);
-        assert_eq!(format_of(DisocclusionMix), Format::R8_UNORM);
     }
 
     fn with_role(role: Role) -> Vec<FrameImageKind> {
@@ -322,24 +265,11 @@ mod tests {
     }
 
     #[test]
-    fn trace_outputs_are_the_seven_production_writes() {
-        assert_eq!(
-            with_role(Role::TraceOutput),
-            vec![
-                DiffRadiance,
-                SpecRadiance,
-                NormalRoughness,
-                ViewZ,
-                Mv,
-                AlbedoMetal,
-                DisocclusionMix
-            ]
-        );
-    }
-
-    #[test]
-    fn composite_reads_radiance_and_viewz() {
-        assert_eq!(with_role(Role::CompositeRead), vec![DiffRadiance, ViewZ]);
+    fn color_is_the_single_frame_image() {
+        assert_eq!(KINDS, [Color]);
+        assert_eq!(format_of(Color), Format::R16G16B16A16_SFLOAT);
+        assert_eq!(with_role(Role::TraceOutput), vec![Color]);
+        assert_eq!(with_role(Role::CompositeRead), vec![Color]);
     }
 
     #[test]

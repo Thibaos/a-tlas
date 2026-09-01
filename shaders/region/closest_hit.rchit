@@ -15,7 +15,8 @@ layout(location = 0) rayPayloadInEXT MainPassPayload incoming_payload;
 void main() {
     const bool glass = (material_table.flags[gl_HitKindEXT] & MATFLAG_GLASS) != 0u;
 
-    incoming_payload.color = vec4(palette.colors[gl_HitKindEXT].rgb, 1.0);
+    // Palette entries are sRGB; the display path (ACES + gamma) is linear.
+    incoming_payload.color = vec4(pow(palette.colors[gl_HitKindEXT].rgb, vec3(2.2)), 1.0);
     incoming_payload.t = gl_RayTmaxEXT;
     incoming_payload.hit_kind = gl_HitKindEXT;
 

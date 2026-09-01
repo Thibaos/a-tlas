@@ -168,7 +168,7 @@ impl FramePipeline {
                 .unwrap()
         };
 
-        let rt_pass = RegionRenderTask::new(gpu, &store, virtual_swapchain_id, &raygen, true);
+        let rt_pass = RegionRenderTask::new(gpu, &store, virtual_swapchain_id, &raygen);
         let instance_buffer_id = rt_pass.instance_buffer_id();
 
         let mut rt_node = task_graph.create_task_node("Render", QueueFamilyType::Graphics, rt_pass);
@@ -256,16 +256,9 @@ impl FramePipeline {
             cache_state: store.initial_cache_state(gpu),
             cache_dirty: [0; CACHE_DIRTY_WORDS],
             swapchain_storage_image_ids: Vec::new(),
-            diff_radiance_image_id: StorageImageId::INVALID,
-            spec_radiance_image_id: StorageImageId::INVALID,
-            normal_roughness_image_id: StorageImageId::INVALID,
-            viewz_image_id: StorageImageId::INVALID,
-            mv_image_id: StorageImageId::INVALID,
-            albedo_metal_image_id: StorageImageId::INVALID,
-            disocclusion_mix_image_id: StorageImageId::INVALID,
+            color_image_id: StorageImageId::INVALID,
             delta_time: 0.0,
             mode: RenderMode::default(),
-            frame_seed: 0,
             cache_resolve_dispatch: 0,
         };
 
@@ -366,8 +359,6 @@ impl FramePipeline {
         };
 
         self.region.delta_time = input.delta_time;
-
-        self.region.frame_seed = self.region.frame_seed.wrapping_add(1);
 
         if plan.resized {
             self.store.clear_cache_table(gpu);

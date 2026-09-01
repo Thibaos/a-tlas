@@ -27,12 +27,5 @@ layout(push_constant) uniform RegionPushConstants {
     StorageBufferId aabb_table_buffer_id;
     StorageBufferId cache_state_buffer_id;
     uint mode;
-    uint frame_seed;
-    StorageImageId diff_radiance_image_id;
-    StorageImageId spec_radiance_image_id;
-    StorageImageId normal_roughness_image_id;
-    StorageImageId viewz_image_id;
-    StorageImageId mv_image_id;
-    StorageImageId albedo_metal_image_id;
-    StorageImageId disocclusion_mix_image_id;
+    StorageImageId color_image_id;
 };

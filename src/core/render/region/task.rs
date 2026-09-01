@@ -62,15 +62,6 @@ pub(crate) mod miss {
     }
 }
 
-pub(crate) mod miss_sky {
-    vulkano_shaders::shader! {
-        root_path_env: "CARGO_MANIFEST_DIR",
-        ty: "miss",
-        path: "shaders/region/miss_sky.rmiss",
-        vulkan_version: "1.3"
-    }
-}
-
 pub(crate) mod closest_hit {
     vulkano_shaders::shader! {
         root_path_env: "CARGO_MANIFEST_DIR",
@@ -114,16 +105,9 @@ pub struct RegionRenderContext {
     pub camera: production_raygen::Camera,
     pub scene: production_raygen::Scene,
     pub swapchain_storage_image_ids: Vec<StorageImageId>,
-    pub diff_radiance_image_id: StorageImageId,
-    pub spec_radiance_image_id: StorageImageId,
-    pub normal_roughness_image_id: StorageImageId,
-    pub viewz_image_id: StorageImageId,
-    pub mv_image_id: StorageImageId,
-    pub albedo_metal_image_id: StorageImageId,
-    pub disocclusion_mix_image_id: StorageImageId,
+    pub color_image_id: StorageImageId,
     pub delta_time: f32,
     pub mode: RenderMode,
-    pub frame_seed: u32,
     pub cache_state: production_raygen::CacheState,
     pub cache_dirty: [u32; super::residency::CACHE_DIRTY_WORDS],
     pub cache_resolve_dispatch: u32,
@@ -139,30 +123,14 @@ pub struct RegionRenderTask {
 }
 
 impl RegionRenderTask {
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         gpu: &GpuDesc,
         store: &RegionStore,
         virtual_swapchain_id: Id<Swapchain>,
         raygen: &EntryPoint,
-        sky_background: bool,
     ) -> Self {
         let pipeline = {
-            let miss = if sky_background {
-                unsafe {
-                    miss_sky::load(&gpu.device)
-                        .unwrap()
-                        .entry_point("main")
-                        .unwrap()
-                }
-            } else {
-                unsafe {
-                    miss::load(&gpu.device)
-                        .unwrap()
-                        .entry_point("main")
-                        .unwrap()
-                }
-            };
+            let miss = unsafe { miss::load(&gpu.device).unwrap().entry_point("main").unwrap() };
 
             let intersection = unsafe {
                 intersect::load(&gpu.device)
@@ -338,14 +306,7 @@ impl Task for RegionRenderTask {
                     aabb_table_buffer_id: self.bindings.aabb_table_storage_id,
                     cache_state_buffer_id: self.bindings.cache_state_storage_id,
                     mode: rcx.mode as u32,
-                    frame_seed: rcx.frame_seed,
-                    diff_radiance_image_id: rcx.diff_radiance_image_id,
-                    spec_radiance_image_id: rcx.spec_radiance_image_id,
-                    normal_roughness_image_id: rcx.normal_roughness_image_id,
-                    viewz_image_id: rcx.viewz_image_id,
-                    mv_image_id: rcx.mv_image_id,
-                    albedo_metal_image_id: rcx.albedo_metal_image_id,
-                    disocclusion_mix_image_id: rcx.disocclusion_mix_image_id,
+                    color_image_id: rcx.color_image_id,
                 },
             )
         };

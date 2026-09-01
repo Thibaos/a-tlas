@@ -8,11 +8,12 @@
 #include "../common/common.glsl"
 #include "header.glsl"
 #include "common.glsl"
+#include "sky.glsl"
 
 layout(location = 0) rayPayloadInEXT MainPassPayload incoming_payload;
 
 void main() {
-    incoming_payload.color = vec4(vec3(0.0), 1.0);
+    incoming_payload.color = vec4(sky_radiance(gl_WorldRayDirectionEXT), 1.0);
     incoming_payload.t = 0.0;
     incoming_payload.hit_kind = 0u;
     incoming_payload.normal = vec3(0.0);
