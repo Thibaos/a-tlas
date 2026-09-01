@@ -9,7 +9,6 @@
 #include "header.glsl"
 #include "common.glsl"
 #include "../common/raygen_common.glsl"
-#include "cache.glsl"
 #include "sky.glsl"
 
 layout(location = 0) rayPayloadEXT MainPassPayload payload;
@@ -19,8 +18,6 @@ void reset_payload() {
     payload.t = -1.0;
     payload.hit_kind = 0u;
     payload.normal = vec3(0.0);
-    payload.cache_key = 0u;
-    payload.cache_meta = 0u;
 }
 
 void main() {

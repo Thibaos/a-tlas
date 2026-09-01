@@ -209,7 +209,6 @@ fn swapchain_storage_views(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::render::region::residency::CACHE_DIRTY_WORDS;
     use crate::core::render::region::task::{RenderMode, default_scene, production_raygen};
 
     fn test_images() -> FrameImages {
@@ -238,22 +237,10 @@ mod tests {
                 proj_prev: [[0.0; 4]; 4],
             },
             scene: default_scene(),
-            cache_state: production_raygen::CacheState {
-                stats_bda: 0,
-                keys_bda: 0,
-                accum_bda: 0,
-                resolved_bda: 0,
-                dirty_bda: 0,
-                frame_index: 1,
-                event_frames: 0,
-                stats_enabled: 0,
-            },
-            cache_dirty: [0; CACHE_DIRTY_WORDS],
             swapchain_storage_image_ids: Vec::new(),
             color_image_id: StorageImageId::INVALID,
             delta_time: 0.0,
             mode: RenderMode::default(),
-            cache_resolve_dispatch: 0,
         }
     }
 

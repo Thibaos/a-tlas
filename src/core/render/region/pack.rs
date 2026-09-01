@@ -243,7 +243,6 @@ mod contract {
     use std::path::{Path, PathBuf};
 
     use crate::core::render::region::task::RenderMode;
-    use crate::core::render::pipeline::{CACHE_EVENT_FRAMES, CACHE_TABLE_ENTRIES};
     use crate::core::world::material::MATFLAG_GLASS;
 
     use super::*;
@@ -263,24 +262,8 @@ mod contract {
         "OFFSET_SENTINEL",
         "MODE_VOXEL",
         "MODE_HULL",
-        "MODE_VALIDATION",
         "MODE_NORMAL",
         "MATFLAG_GLASS",
-        "ALBEDO_EPS",
-        "VIEWZ_SKY",
-        "SKY_VIEWZ",
-        "SKY_VIEWZ_NRD",
-        "CACHE_STALE_T",
-        "CACHE_IRRADIANCE_GAMMA",
-        "CACHE_EVENT_FRAMES",
-        "CACHE_EVENT_REDUCTION",
-        "CACHE_TABLE_BITS",
-        "CACHE_TABLE_ENTRIES",
-        "CACHE_EVICT_T",
-        "CACHE_DIRTY_WORDS",
-        "CACHE_REFRESH_P",
-        "CACHE_MATURE_T",
-        "CACHE_HISTORY_MAX",
     ];
 
     fn define(name: &str) -> String {
@@ -331,25 +314,8 @@ mod contract {
             assert_eq!(uint("MODE_NORMAL"), RenderMode::Normal as u32 as u64);
         }
 
-        assert_eq!(float("ALBEDO_EPS"), 1e-3);
-        assert_eq!(float("VIEWZ_SKY"), 1.0e6);
         assert_eq!(float("RAY_T_MIN"), 0.01);
         assert_eq!(float("RAY_T_MAX"), 10000.0);
-        assert!(float("VIEWZ_SKY") > float("RAY_T_MAX"));
-
-        assert_eq!(uint("CACHE_TABLE_BITS"), 23);
-        assert_eq!(uint("CACHE_TABLE_ENTRIES"), CACHE_TABLE_ENTRIES as u64);
-        assert_eq!(uint("CACHE_EVICT_T"), 1024);
-        assert_eq!(uint("CACHE_DIRTY_WORDS"), REGION_COUNT as u64 / 32);
-        assert_eq!(float("CACHE_ACC_SCALE"), 1024.0);
-        assert_eq!(float("CACHE_ACC_TICK_CAP"), 1048575.0);
-        assert_eq!(float("CACHE_REFRESH_P"), 0.0625);
-        assert_eq!(uint("CACHE_MATURE_T"), 4096);
-        assert_eq!(uint("CACHE_HISTORY_MAX"), 1048576);
-        assert_eq!(uint("CACHE_STALE_T"), 4096);
-        assert_eq!(float("CACHE_IRRADIANCE_GAMMA"), 5.0);
-        assert_eq!(uint("CACHE_EVENT_FRAMES"), CACHE_EVENT_FRAMES as u64);
-        assert_eq!(float("CACHE_EVENT_REDUCTION"), 0.5);
     }
 
     #[test]

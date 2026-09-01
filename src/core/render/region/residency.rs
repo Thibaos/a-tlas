@@ -12,11 +12,6 @@
 //! region id, mask 0xFF, added on residency, removed on region-empty, and
 //! rebuilt in place so the bindless acceleration-structure id never
 //! moves.
-pub(crate) const CACHE_TABLE_ENTRIES: u64 = 1 << 23;
-const CACHE_KEY_BYTES: u64 = CACHE_TABLE_ENTRIES * 8;
-const CACHE_RECORD_BYTES: u64 = CACHE_TABLE_ENTRIES * 16;
-pub(crate) const CACHE_DIRTY_WORDS: usize = 128;
-
 use std::sync::Arc;
 
 use dot_vox::DotVoxData;
@@ -84,7 +79,6 @@ pub struct ApplyReport {
 pub struct RegionBindings {
     pub camera_buffer_id: Id<Buffer>,
     pub scene_buffer_id: Id<Buffer>,
-    pub cache_state_buffer_id: Id<Buffer>,
     pub region_table_storage_id: StorageBufferId,
     pub camera_storage_id: StorageBufferId,
     pub scene_storage_id: StorageBufferId,
@@ -92,8 +86,6 @@ pub struct RegionBindings {
     pub material_table_storage_id: StorageBufferId,
     pub acceleration_structure_id: AccelerationStructureId,
     pub aabb_table_storage_id: StorageBufferId,
-    pub cache_dirty_buffer_id: Id<Buffer>,
-    pub cache_state_storage_id: StorageBufferId,
     pub instance_buffer_id: Id<Buffer>,
     pub exposure_storage_id: StorageBufferId,
 }
@@ -102,11 +94,6 @@ pub struct RegionStore {
     pub bindings: RegionBindings,
     region_table_buffer_id: Id<Buffer>,
     aabb_table_buffer_id: Id<Buffer>,
-    cache_keys_buffer_id: Id<Buffer>,
-    cache_accum_buffer_id: Id<Buffer>,
-    cache_resolved_buffer_id: Id<Buffer>,
-    cache_dirty_buffer_id: Id<Buffer>,
-    cache_stats_buffer_id: Id<Buffer>,
     instances: Vec<AccelerationStructureInstance>,
     resident_ids: Vec<u32>,
     tlas: Arc<AccelerationStructure>,
@@ -114,7 +101,6 @@ pub struct RegionStore {
     tlas_initialized: bool,
     regions: Vec<Option<ResidentRegion>>,
     table_addresses: Vec<u64>,
-    cache_stats_enabled: bool,
     free: FreeLists,
     pending_free: PendingFrees,
     dummy_blas: Arc<AccelerationStructure>,
@@ -238,106 +224,6 @@ impl RegionStore {
             )
             .unwrap();
 
-        let cache_keys_buffer_id = gpu
-            .resources
-            .create_buffer(
-                &BufferCreateInfo {
-                    usage: BufferUsage::SHADER_DEVICE_ADDRESS | BufferUsage::STORAGE_BUFFER,
-                    ..Default::default()
-                },
-                &AllocationCreateInfo {
-                    memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
-                        | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
-                    ..Default::default()
-                },
-                DeviceLayout::new_unsized::<[u8]>(CACHE_KEY_BYTES).unwrap(),
-            )
-            .unwrap();
-
-        let cache_accum_buffer_id = gpu
-            .resources
-            .create_buffer(
-                &BufferCreateInfo {
-                    usage: BufferUsage::SHADER_DEVICE_ADDRESS | BufferUsage::STORAGE_BUFFER,
-                    ..Default::default()
-                },
-                &AllocationCreateInfo {
-                    memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
-                        | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
-                    ..Default::default()
-                },
-                DeviceLayout::new_unsized::<[u8]>(CACHE_RECORD_BYTES).unwrap(),
-            )
-            .unwrap();
-
-        let cache_resolved_buffer_id = gpu
-            .resources
-            .create_buffer(
-                &BufferCreateInfo {
-                    usage: BufferUsage::SHADER_DEVICE_ADDRESS | BufferUsage::STORAGE_BUFFER,
-                    ..Default::default()
-                },
-                &AllocationCreateInfo {
-                    memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
-                        | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
-                    ..Default::default()
-                },
-                DeviceLayout::new_unsized::<[u8]>(CACHE_RECORD_BYTES).unwrap(),
-            )
-            .unwrap();
-
-        let cache_dirty_buffer_id = gpu
-            .resources
-            .create_buffer(
-                &BufferCreateInfo {
-                    usage: BufferUsage::SHADER_DEVICE_ADDRESS
-                        | BufferUsage::STORAGE_BUFFER
-                        | BufferUsage::TRANSFER_DST,
-                    ..Default::default()
-                },
-                &AllocationCreateInfo {
-                    memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
-                        | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
-                    ..Default::default()
-                },
-                DeviceLayout::new_sized::<[u32; CACHE_DIRTY_WORDS]>(),
-            )
-            .unwrap();
-
-        let cache_state_buffer_id = gpu
-            .resources
-            .create_buffer(
-                &BufferCreateInfo {
-                    usage: BufferUsage::STORAGE_BUFFER | BufferUsage::TRANSFER_DST,
-                    ..Default::default()
-                },
-                &AllocationCreateInfo {
-                    memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
-                        | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
-                    ..Default::default()
-                },
-                DeviceLayout::new_sized::<production_raygen::CacheState>(),
-            )
-            .unwrap();
-
-        let cache_stats_buffer_id = gpu
-            .resources
-            .create_buffer(
-                &BufferCreateInfo {
-                    usage: BufferUsage::SHADER_DEVICE_ADDRESS
-                        | BufferUsage::STORAGE_BUFFER
-                        | BufferUsage::TRANSFER_DST,
-                    ..Default::default()
-                },
-                &AllocationCreateInfo {
-                    memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
-                        | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
-                    ..Default::default()
-                },
-                DeviceLayout::new_sized::<[u32; 7 * REGION_COUNT]>(),
-            )
-            .unwrap();
-
         let instance_buffer_id = gpu
             .resources
             .create_buffer(
@@ -406,23 +292,12 @@ impl RegionStore {
                             sky_count: 0,
                             prev_sky: 0,
                         };
-                    tcx.write_buffer::<[u8]>(cache_keys_buffer_id, 0..CACHE_KEY_BYTES).fill(0);
-                    tcx.write_buffer::<[u8]>(cache_accum_buffer_id, 0..CACHE_RECORD_BYTES)
-                        .fill(0);
-                    tcx.write_buffer::<[u8]>(cache_resolved_buffer_id, 0..CACHE_RECORD_BYTES)
-                        .fill(0);
-                    tcx.write_buffer::<[u32; CACHE_DIRTY_WORDS]>(cache_dirty_buffer_id, ..)
-                        .fill(0);
                     Ok(())
                 },
                 [
                     (palette_buffer_id, HostAccessType::Write),
                     (material_table_buffer_id, HostAccessType::Write),
                     (scene_buffer_id, HostAccessType::Write),
-                    (cache_keys_buffer_id, HostAccessType::Write),
-                    (cache_accum_buffer_id, HostAccessType::Write),
-                    (cache_resolved_buffer_id, HostAccessType::Write),
-                    (cache_dirty_buffer_id, HostAccessType::Write),
                     (exposure_buffer_id, HostAccessType::Write),
                 ],
                 [],
@@ -494,15 +369,6 @@ impl RegionStore {
             )
             .unwrap();
 
-        let cache_state_storage_id = bcx
-            .global_set()
-            .create_storage_buffer(
-                cache_state_buffer_id,
-                0,
-                Some(size_of::<production_raygen::CacheState>() as DeviceSize),
-            )
-            .unwrap();
-
         let exposure_storage_id = bcx
             .global_set()
             .create_storage_buffer(
@@ -515,7 +381,6 @@ impl RegionStore {
         let bindings = RegionBindings {
             camera_buffer_id,
             scene_buffer_id,
-            cache_state_buffer_id,
             region_table_storage_id,
             camera_storage_id,
             scene_storage_id,
@@ -523,8 +388,6 @@ impl RegionStore {
             material_table_storage_id,
             acceleration_structure_id,
             aabb_table_storage_id,
-            cache_dirty_buffer_id,
-            cache_state_storage_id,
             instance_buffer_id,
             exposure_storage_id,
         };
@@ -533,11 +396,6 @@ impl RegionStore {
             bindings,
             region_table_buffer_id,
             aabb_table_buffer_id,
-            cache_keys_buffer_id,
-            cache_accum_buffer_id,
-            cache_resolved_buffer_id,
-            cache_dirty_buffer_id,
-            cache_stats_buffer_id,
             instances: static_instances(),
             resident_ids: Vec::new(),
             tlas,
@@ -545,7 +403,6 @@ impl RegionStore {
             tlas_initialized: false,
             regions: (0..REGION_COUNT).map(|_| None).collect(),
             table_addresses: vec![0; REGION_COUNT],
-            cache_stats_enabled: std::env::var("ATLAS_RT_CACHE_STATS").is_ok(),
             free: FreeLists::default(),
             pending_free: PendingFrees::default(),
             dummy_blas,
@@ -592,10 +449,6 @@ impl RegionStore {
         }
 
         store.write_aabb_table(gpu, aabb_table_buffer_id);
-
-        if store.cache_stats_enabled() {
-            store.print_table_stats();
-        }
 
         store
     }
@@ -976,147 +829,6 @@ impl RegionStore {
         self.free.blas.append(&mut self.pending_free.blas);
     }
 
-    pub(crate) fn cache_stats_enabled(&self) -> bool {
-        self.cache_stats_enabled
-    }
-
-    pub(crate) fn initial_cache_state(&self, gpu: &GpuDesc) -> production_raygen::CacheState {
-        production_raygen::CacheState {
-            stats_bda: gpu
-                .resources
-                .buffer(self.cache_stats_buffer_id)
-                .buffer()
-                .device_address()
-                .get(),
-            keys_bda: gpu
-                .resources
-                .buffer(self.cache_keys_buffer_id)
-                .buffer()
-                .device_address()
-                .get(),
-            accum_bda: gpu
-                .resources
-                .buffer(self.cache_accum_buffer_id)
-                .buffer()
-                .device_address()
-                .get(),
-            resolved_bda: gpu
-                .resources
-                .buffer(self.cache_resolved_buffer_id)
-                .buffer()
-                .device_address()
-                .get(),
-            dirty_bda: gpu
-                .resources
-                .buffer(self.cache_dirty_buffer_id)
-                .buffer()
-                .device_address()
-                .get(),
-            frame_index: 1,
-            event_frames: 0,
-            stats_enabled: self.cache_stats_enabled as u32,
-        }
-    }
-
-    // 02's global tier: whatever resets NRD's history clears the table, so
-    // no entry survives an event as fresh state.
-    pub(crate) fn clear_cache_table(&self, gpu: &GpuDesc) {
-        let clears: [(Id<Buffer>, u64); 3] = [
-            (self.cache_keys_buffer_id, CACHE_KEY_BYTES),
-            (self.cache_accum_buffer_id, CACHE_RECORD_BYTES),
-            (self.cache_resolved_buffer_id, CACHE_RECORD_BYTES),
-        ];
-
-        unsafe {
-            vulkano_taskgraph::execute(
-                &gpu.transfer_queue,
-                &gpu.resources,
-                gpu.graphics_flight_id,
-                |_cbf, tcx| {
-                    for (buffer_id, bytes) in &clears {
-                        tcx.write_buffer::<[u8]>(*buffer_id, 0..*bytes).fill(0);
-                    }
-
-                    Ok(())
-                },
-                clears
-                    .iter()
-                    .map(|(buffer_id, _)| (*buffer_id, HostAccessType::Write))
-                    .collect::<Vec<_>>(),
-                [],
-                [],
-            )
-            .unwrap();
-        }
-
-        gpu.resources
-            .flight(gpu.graphics_flight_id)
-            .wait_idle()
-            .unwrap();
-    }
-
-    // Sums the per-region counters and zeroes them; the frames are
-    // serialized by the wait_idle at the top of run_frame, so the read
-    // races nothing.
-    pub(crate) fn cache_stats_tick(&self, gpu: &GpuDesc) -> (u64, u64, u64, u64, u64, u64, u64) {
-        let mut sums = (0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64);
-
-        unsafe {
-            vulkano_taskgraph::execute(
-                &gpu.transfer_queue,
-                &gpu.resources,
-                gpu.graphics_flight_id,
-                |_cbf, tcx| {
-                    let words = tcx.read_buffer::<[u32; 7 * REGION_COUNT]>(
-                        self.cache_stats_buffer_id,
-                        ..,
-                    );
-
-                    for (index, word) in words.iter().enumerate() {
-                        match index / REGION_COUNT {
-                            0 => sums.0 += *word as u64,
-                            1 => sums.1 += *word as u64,
-                            2 => sums.2 += *word as u64,
-                            3 => sums.3 += *word as u64,
-                            4 => sums.4 += *word as u64,
-                            5 => sums.5 += *word as u64,
-                            _ => sums.6 += *word as u64,
-                        }
-                    }
-
-                    tcx.write_buffer::<[u32; 7 * REGION_COUNT]>(self.cache_stats_buffer_id, ..)
-                        .fill(0);
-
-                    Ok(())
-                },
-                [
-                    (self.cache_stats_buffer_id, HostAccessType::Read),
-
-                    (self.cache_stats_buffer_id, HostAccessType::Write),
-                ],
-                [],
-                [],
-            )
-            .unwrap();
-        }
-
-        gpu.resources
-            .flight(gpu.graphics_flight_id)
-            .wait_idle()
-            .unwrap();
-
-        sums
-    }
-
-    pub(crate) fn print_table_stats(&self) {
-        println!(
-            "cache table: {CACHE_TABLE_ENTRIES} entries — keys {} MiB, accumulation {} MiB, \
-             resolved {} MiB",
-            CACHE_KEY_BYTES >> 20,
-            CACHE_RECORD_BYTES >> 20,
-            CACHE_RECORD_BYTES >> 20,
-        );
-    }
 }
 
 fn resolve_blas_storage(
