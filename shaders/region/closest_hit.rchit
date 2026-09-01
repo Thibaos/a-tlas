@@ -65,5 +65,5 @@ void main() {
     }
 
     incoming_payload.cache_key = (gl_InstanceCustomIndexEXT & REGION_ID_MASK) | (uint(gl_PrimitiveID) << 12u);
-    incoming_payload.cache_meta = ((face >= 0) ? 4096u : 0u) | (face_id << 9u) | cache_voxel_slot(cell);
+    incoming_payload.cache_meta = ((face >= 0) ? CACHE_META_FACED : 0u) | (face_id << 9u) | cache_voxel_slot(cell);
 }

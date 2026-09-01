@@ -151,28 +151,40 @@ float sky_light_pdf(vec3 dir) {
     return SKY_PICK_P * sky_mu_pdf(dir.y) * (1.0 / TWO_PI);
 }
 
+void reset_payload() {
+    payload.color = vec4(0.0);
+    payload.t = -1.0;
+    payload.hit_kind = 0u;
+    payload.normal = vec3(0.0);
+    payload.cache_key = 0u;
+    payload.cache_meta = 0u;
+}
+
 // Straight-transmission walk (ADR 0013/0016): resolves committed glass
 // hits before shading. A Pane is a maximal same-index run of contiguous
-// glass cells along the ray; its Palette tint is paid once at entry, the
+// glass voxels along the ray; its Palette tint is paid once at entry, the
 // origin advances past each crossed cell (p + d·(t_exit + ε)), and the
 // ray re-traces in the same direction. Pane detection is raygen-local
 // successor comparison — exact across Micro-chunk and Region boundaries.
 // A Crossing is one pass through a glass voxel — the unit the cap
 // counts. Crossings consume no Bounces and draw no random numbers; past
 // MAX_CROSSINGS the current glass voxel stays committed and shades
-// opaque (fail-dark). Emission on a glass voxel rides the closed-pane
-// product (un-attenuated by its own Pane).
+// opaque (fail-dark). Emission on a glass voxel rides the panes its own
+// segment closed before it (un-attenuated by its own Pane; earlier
+// segments' panes ride the entry throughput).
 struct GlassWalk {
     uint crossings;
     bool pane_open;
     uint pane_index;
     ivec3 pane_next;
-    vec3 pane_closed;
     vec3 emission;
 };
 
 void walk_glass(inout vec3 ro, vec3 rd, uint ray_flags, uint sbt_offset,
         inout vec3 throughput, inout GlassWalk gw) {
+    vec3 closed_here = vec3(1.0);
+    bool opened_here = false;
+
     for (uint guard = 0u; guard < WALK_GUARD; ++guard) {
         if (payload.t <= 0.0) {
             return;
@@ -193,8 +205,9 @@ void walk_glass(inout vec3 ro, vec3 rd, uint ray_flags, uint sbt_offset,
         // The committed cell: faced hits sit on the division-form entered
         // boundary (same snap as closest-hit); origin-inside commits
         // (mid-pane re-entry, interior camera) are already inside the cell.
-        if ((payload.cache_meta & 4096u) != 0u) {
+        if ((payload.cache_meta & CACHE_META_FACED) != 0u) {
             vec3 n = payload.normal;
+
             for (int a = 0; a < 3; ++a) {
                 if (n[a] != 0.0) {
                     float eps = 32.0 * 1.1920929e-07 * max(abs(p[a]), 1.0);
@@ -206,16 +219,17 @@ void walk_glass(inout vec3 ro, vec3 rd, uint ray_flags, uint sbt_offset,
 
         bool mid_pane = gw.pane_open && (cell == gw.pane_next) && (idx == gw.pane_index);
         if (!mid_pane) {
-            if (gw.pane_open) {
-                gw.pane_closed *= palette.colors[gw.pane_index].rgb;
+            if (gw.pane_open && opened_here) {
+                closed_here *= palette.colors[gw.pane_index].rgb;
             }
             gw.pane_index = idx;
             gw.pane_open = true;
+            opened_here = true;
             throughput *= palette.colors[idx].rgb;
         }
 
         gw.crossings++;
-        gw.emission += gw.pane_closed * material_table.rough_emit[idx].rgb;
+        gw.emission += closed_here * material_table.rough_emit[idx].rgb;
 
         // Amanatides-Woo exit boundary of the crossed cell from the entry
         // point p; the argmin axis is the crossed boundary and the successor
@@ -242,12 +256,7 @@ void walk_glass(inout vec3 ro, vec3 rd, uint ray_flags, uint sbt_offset,
 
         ro = p + rd * (t_exit + CROSS_EPS);
 
-        payload.color = vec4(0.0);
-        payload.t = -1.0;
-        payload.hit_kind = 0u;
-        payload.normal = vec3(0.0);
-        payload.cache_key = 0u;
-        payload.cache_meta = 0u;
+        reset_payload();
         traceRayEXT(vko_accelerationStructureEXT(acceleration_structure_id), ray_flags, 0xFFu, sbt_offset, 0u, 0u, ro, RAY_T_MIN, rd, RAY_T_MAX, 0);
 
         // A no-face commit right after the advance is the origin-inside
@@ -256,7 +265,7 @@ void walk_glass(inout vec3 ro, vec3 rd, uint ray_flags, uint sbt_offset,
         // axis-aligned normal against the ray, origin rewound to the
         // boundary, hit distance a hair past it — so the BOUNCE_OFFSET
         // origins clear the voxel instead of re-committing it from inside.
-        if (payload.t > 0.0 && (payload.cache_meta & 4096u) == 0u) {
+        if (payload.t > 0.0 && (payload.cache_meta & CACHE_META_FACED) == 0u) {
             payload.normal = vec3(0.0);
             payload.normal[crossed_axis] = (rd[crossed_axis] > 0.0) ? -1.0 : 1.0;
             ro = p + rd * t_exit;
@@ -266,10 +275,7 @@ void walk_glass(inout vec3 ro, vec3 rd, uint ray_flags, uint sbt_offset,
 }
 
 bool shadowed(vec3 hit_point, vec3 normal, vec3 light_dir, uint ray_flags, uint sbt_offset) {
-    payload.color = vec4(0.0);
-    payload.t = -1.0;
-    payload.hit_kind = 0u;
-    payload.normal = vec3(0.0);
+    reset_payload();
     vec3 origin = hit_point + normal * BOUNCE_OFFSET;
     traceRayEXT(vko_accelerationStructureEXT(acceleration_structure_id), ray_flags, 0xFFu, sbt_offset, 0u, 0u, origin, RAY_T_MIN, light_dir, RAY_T_MAX, 0);
     return payload.t > 0.0;
@@ -282,12 +288,7 @@ void main() {
 
     const uint ray_flags = gl_RayFlagsOpaqueEXT;
 
-    payload.color = vec4(0.0);
-    payload.t = -1.0;
-    payload.hit_kind = 0u;
-    payload.normal = vec3(0.0);
-    payload.cache_key = 0u;
-    payload.cache_meta = 0u;
+    reset_payload();
 
     uint sbt_offset = (mode == MODE_HULL) ? 1u : 0u;
 
@@ -340,7 +341,7 @@ void main() {
         vec3 chain_tp[2] = vec3[2](vec3(0.0), vec3(0.0));
         uint chain_flags[2] = uint[2](0u, 0u);
         // Primary glass walk (ADR 0016): resolve panes before shading.
-        GlassWalk gw = GlassWalk(0u, false, 0u, ivec3(0), vec3(1.0), vec3(0.0));
+        GlassWalk gw = GlassWalk(0u, false, 0u, ivec3(0), vec3(0.0));
         vec3 ro = origin;
         vec3 rd = direction;
         bool glass_primary = false; // primary surface revealed behind glass
@@ -384,7 +385,7 @@ void main() {
 
             // A revealed surface behind glass (or the cap-fail voxel) shades
             // from its own committed material with the pane product in the
-            // throughput; the g-buffer interim keeps describing the glass
+            // throughput; the aux buffers interim keeps describing the glass
             // entry (slice 4 completes the contract).
             if (glass_primary || cap_fail) {
                 vec4 albedo_metallic = material_table.albedo_metallic[payload.hit_kind];
@@ -394,12 +395,16 @@ void main() {
                 roughness = rough_emit.a;
                 normal = normalize(payload.normal);
                 hit_emission = rough_emit.rgb;
+
                 if (!feed_only) {
                     path += throughput * rough_emit.rgb;
                 }
             }
 
             for (int depth = 0; depth <= int(MAX_BOUNCES); ++depth) {
+
+                bool primary_lobe = depth == 0 && !glass_primary;
+
                 if (depth > 0) {
                     // Resolve glass panes crossed by this segment (no RNG,
                     // no depth); a walk-miss falls into the miss branch
@@ -444,6 +449,7 @@ void main() {
                     metallic = albedo_metallic.a;
                     roughness = rough_emit.a;
                     hit_emission = rough_emit.rgb;
+
                     if (!feed_only) {
                         path += throughput * rough_emit.rgb;
                     }
@@ -459,7 +465,7 @@ void main() {
                 uint hit_block = hit_key >> 12;
                 uint hit_slot = hit_meta & 511u;
                 uint hit_face = (hit_meta >> 9) & 7u;
-                bool hit_faced = (hit_meta & 4096u) != 0u;
+                bool hit_faced = (hit_meta & CACHE_META_FACED) != 0u;
 
                 vec3 nee_rad = vec3(0.0);
                 if (rand_unit(seed, draw++) < SUN_PICK_P) {
@@ -473,7 +479,7 @@ void main() {
                         float alpha = max(roughness * roughness, ALPHA_MIN);
                         vec3 f0 = mix(vec3(0.04), albedo, metallic);
                         vec3 l_local = vec3(dot(sun_dir, t_axis), dot(sun_dir, b_axis), n_dot_l);
-                        vec3 f_nl = (depth == 0 && !glass_primary)
+                        vec3 f_nl = primary_lobe
                             ? (specular_lobe
                             ? specular_nl(l_local, v_local, normalize(v_local + l_local), f0, alpha) : (1.0 - metallic) * albedo * (n_dot_l / PI)) : brdf_nl(l_local, v_local, f0, alpha, albedo, metallic);
                         nee_rad = f_nl * scene.sun_disk.x * (1.0 / SUN_PICK_P);
@@ -495,9 +501,9 @@ void main() {
                         float alpha = max(roughness * roughness, ALPHA_MIN);
                         vec3 f0 = mix(vec3(0.04), albedo, metallic);
                         vec3 l_local = vec3(dot(light_dir, t_axis), dot(light_dir, b_axis), n_dot_l);
-                        float p_bsdf = bsdf_mixture_pdf(l_local, v_local, alpha, (depth == 0 && !glass_primary) ? 0 : 1);
+                        float p_bsdf = bsdf_mixture_pdf(l_local, v_local, alpha, primary_lobe ? 0 : 1);
                         float w = p_light / (p_light + p_bsdf);
-                        vec3 f_nl = (depth == 0 && !glass_primary)
+                        vec3 f_nl = primary_lobe
                             ? (specular_lobe
                             ? specular_nl(l_local, v_local, normalize(v_local + l_local), f0, alpha) : (1.0 - metallic) * albedo * (n_dot_l / PI)) : brdf_nl(l_local, v_local, f0, alpha, albedo, metallic);
                         nee_rad = f_nl * sky_radiance(light_dir) * w / p_light;
@@ -554,7 +560,7 @@ void main() {
                 bool trace_ray = true;
                 uint born = 2u;
 
-                if (depth == 0 && !glass_primary) {
+                if (primary_lobe) {
                     if (specular_lobe) {
                         vec3 h;
                         float pdf;
@@ -606,6 +612,7 @@ void main() {
                     }
 
                     born = 1u;
+
                     if (depth == 0) {
                         // Revealed surface behind glass: its chain is the
                         // newborn primary chain, ridden by the later hops.
@@ -617,7 +624,7 @@ void main() {
                     break;
                 }
                 vec3 wi_local = vec3(dot(wi, t_axis), dot(wi, b_axis), dot(wi, normal));
-                next_p_bsdf = bsdf_mixture_pdf(wi_local, v_local, alpha, (depth == 0 && !glass_primary) ? 0 : 1);
+                next_p_bsdf = bsdf_mixture_pdf(wi_local, v_local, alpha, primary_lobe ? 0 : 1);
                 throughput *= weight;
 
                 // The standing chain rides this hop's weight and RR lottery;
@@ -644,12 +651,7 @@ void main() {
 
                 ro = hit_point + normal * BOUNCE_OFFSET;
                 rd = wi;
-                payload.color = vec4(0.0);
-                payload.t = -1.0;
-                payload.hit_kind = 0u;
-                payload.normal = vec3(0.0);
-                payload.cache_key = 0u;
-                payload.cache_meta = 0u;
+                reset_payload();
                 traceRayEXT(vko_accelerationStructureEXT(acceleration_structure_id), ray_flags, 0xFFu, sbt_offset, 0u, 0u, ro, RAY_T_MIN, rd, RAY_T_MAX, 0);
             }
 

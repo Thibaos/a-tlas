@@ -60,6 +60,11 @@ uint cache_voxel_slot(ivec3 cell) {
     return uint(cell.x & 7) + VOXEL_STRIDE_Y * uint(cell.y & 7) + VOXEL_STRIDE_Z * uint(cell.z & 7);
 }
 
+// The payload's cache_meta word (closest_hit packs it, the raygen decodes
+// it): voxel slot 9 | face 3 | the faced bit, set iff the hit carries the
+// DDA's entered face — the only hits whose cache_key is a real entry key.
+#define CACHE_META_FACED 4096u
+
 uint64_t cache_key(uint region_id, uint mc_block, uint voxel_idx, uint face) {
     uint64_t key = uint64_t(region_id) | (uint64_t(mc_block) << 12)
         | (uint64_t(voxel_idx) << 27) | (uint64_t(face) << 36);
