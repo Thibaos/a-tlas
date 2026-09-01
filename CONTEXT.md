@@ -12,19 +12,17 @@ once at startup today.
 _Avoid_: Scene, level, map
 
 **Palette**:
-A 256-entry RGBA8 color table from the .vox file mapping Material indices to
-display colors; kept sRGB-encoded end to end (the debug paint and the byte
-comparison depend on it). Materials decode it to linear reflectance for
-lighting. GPU-side: a bindless vec4[256] storage buffer.
+A 256-entry RGBA8 color table from the .vox file mapping material indices to
+display colors; kept sRGB-encoded end to end. The ray pass converts a hit's
+entry to linear for the display path. GPU-side: a bindless vec4[256] storage
+buffer.
 _Avoid_: Color table, LUT
 
-**Material**:
-The per-palette-index surface properties: albedo (the Palette color),
-metallic, roughness, and Emission. Loaded from the .vox MATL chunk; one
-Material per Palette index (256 max); GPU-side a bindless table beside the
-Palette.
-_Avoid_: texture, material system (the PBR triad is a Material, not a
-system)
+**Material index**:
+The per-voxel u8 the voxel pool carries beside the Occupancy mask: the
+Palette entry the voxel paints with. There is no surface property table —
+the renderer shades from the Palette alone.
+_Avoid_: material id, MATL, material system
 
 **Normal**:
 The geometric surface normal at a voxel hit: the face the DDA's march
@@ -37,9 +35,9 @@ boundary crossing): p[a] is an integer, within epsilon, exactly on the
 crossed axis. Ties (edge/corner entries) break to the first axis in x, y, z
 order, the DDA's own preference order. A camera embedded in a voxel (the
 t_min commit, no crossed face) gets the camera-facing direction instead.
-Object space == world space up to the translation instance transform. Carried
-in the ray payload; the Normal debug Render mode paints it as a heatmap
-(x red, y green, z blue).
+Object space == world space up to the translation instance transform.
+Carried in the ray payload; the Normal debug Render mode paints it as a
+heatmap (x red, y green, z blue).
 _Avoid_: facet normal, interpolated normal (no raster interpolants exist)
 
 **Micro-chunk**:
@@ -67,7 +65,7 @@ _Avoid_: Voxel buffer, voxel data store
 
 **Occupancy mask**:
 The 512-bit presence bitmap of a Micro-chunk: one bit per voxel, set iff
-the voxel is occupied. The mask, not a sentinel material, defines which
+the voxel is occupied. The mask, not a sentinel index, defines which
 voxels exist (palette index 0 is a real color). Material indices hang off
 it.
 _Avoid_: Bitmask, presence bitmap
@@ -126,210 +124,47 @@ mechanism, a lower-res t pass, not an effect.
 _Avoid_: beam (classic beam tracing is secondary-ray cone tracing, out of
 scope), depth pre-pass (implies a raster depth buffer this renderer lacks)
 
+**Procedural sky**:
+The analytic Background: a piecewise-linear radiance gradient in
+μ = cos(elevation), knots at ground/horizon/zenith (all positive),
+evaluated by the miss shader. No assets, no Sun disk.
+_Avoid_: skybox, environment map (a sampled asset; the Procedural sky is
+analytic), sky
+
 **Background**:
 The radiance produced where no geometry is hit (the miss shader's output):
 the Procedural sky. Rays that leave the loaded world hit nothing and report
-the Background color. The ray pass's t-range equals the camera's near/far, so
-Background also appears beyond the far plane. The camera's direct view of the
-Background adds the Sun disk (the Sun's visual), evaluated by the raygen's
-primary-miss branch.
-A camera path that crosses only glass and then misses is Background too:
-the crossings leave no trace in the frame images.
-_Avoid_: skybox, environment map (a sampled asset; the Procedural sky is
-analytic)
+the Background color. The ray pass's t-range equals the camera's near/far,
+so Background also appears beyond the far plane.
+_Avoid_: empty space ("empty" is a property of the sparse world,
+not a place)
 
 **Void**:
 The space outside the loaded world; rays there hit nothing and report the
 Background color.
-_Avoid_: Sky, empty space ("empty" is a property of the sparse world,
-not a place)
+_Avoid_: Sky, empty space
 
-## Light transport
-
-**Path tracing**:
-The renderer's lighting algorithm: per-pixel light transport, a primary ray
-plus up to N BSDF-scattered Bounces, terminated by Russian roulette and a
-depth cap. Path tracing replaces flat palette shading as the default Render
-mode's output.
-_Avoid_: raytracing (that is the _mechanism_; path tracing is the algorithm),
-GI (an effect path tracing delivers. Describe what is seen)
-
-**Sample**:
-One path per pixel, produced once per frame (1 spp by design); samples become
-an image through the Denoise pass, never accumulation.
-_Avoid_: accumulation, spp ("per frame" is the point)
-
-**Bounce**:
-One BSDF-scattered secondary trace in a path; the default cap is depth 4 plus
-Russian roulette.
-
-**Emission**:
-The per-Material emissive radiance; a voxel whose Material has emission > 0
-is an Emissive voxel and a light source. Emissive light reaches pixels only
-via path hits. There is no next-event sampling of Emissive voxels.
-_Avoid_: light (say Sun, Procedural sky, or Emissive voxel, which one)
-
-**Sun**:
-The analytic directional light: a delta light at infinity, with fixed world
-direction and illuminance (`E_sun`, lux on a surface perpendicular to its
-rays) constants, sampled by NEE with MIS weight 1. A delta has no solid
-angle, so the BSDF sampler can never produce exactly its direction.
-
-**Procedural sky**:
-The analytic environment light, a piecewise-linear radiance gradient in
-μ = cos(elevation), knots at ground/horizon/zenith (all positive), evaluated
-by the miss shader; the Background. Importance-sampleable by analytic CDF
-inversion; no assets. The Sun disk (below) is the Sun's visual, not part of
-the transport radiance. NEE and BSDF-miss samples see the gradient only.
-_Avoid_: skybox, environment map
-
-**Sun disk**:
-The Sun's visual: the measure-zero radiance bump on the Procedural sky in
-the Sun's direction, detected by a dot test. Seen by the camera's direct
-view of the sky (the primary-miss branch, through glass tinted by the
-pane product); the transport never
-importance-samples it. The delta Sun light carries the light, and sampling
-a bright bump with a gradient-matched pdf would firefly at 1 spp.
-_Avoid_: the Sun (the disk is the look; the Sun is the light)
-
-**NEE**:
-Next-event estimation: a Bounce samples a light directly (Sun or Procedural
-sky) rather than waiting for a path hit; one light is picked per Bounce
-(equal probability), with a shadow ray against the world whose visibility
-carries the crossed Panes' Transmission (attenuated, colored shadows);
-combined with the BSDF estimate by MIS.
-_Avoid_: direct lighting (unqualified), light sampling (unqualified)
-
-**MIS**:
-Multiple importance sampling: the balance-heuristic weighting combining the
-NEE and BSDF estimators for the Sun and Procedural sky so neither dominates.
-The Sun's delta is NEE-only (weight 1); the sky and the BSDF split by their
-direction pdfs.
-
-**Russian roulette**:
-Probabilistic path termination: a Bounce continues with probability equal to
-its throughput weight, keeping the estimator unbiased.
-
-**Lobe selection**:
-The per-pixel coin flip at the primary hit that picks which of the diffuse
-or specular lobes the first Bounce samples (p = 0.5, inside NRD's [1/4, 3/4]
-clamp for its AREA_3X3 hit-distance reconstruction mode); the whole path's
-radiance is attributed to the selected lobe's channel, the other channel gets
-0 that frame, and the Denoise pass's temporal accumulation fills both.
-_Avoid_: split path (per-pixel the path is single-lobe by design.
-subsequent Bounces sample the full BSDF)
-
-**Radiance cache**:
-A GPU store of indirect irradiance that lights traced-ray hit positions;
-multi-bounce is the cache's previous-frame temporal state, not a deeper
-trace. Never stamped into primary-surface radiance.
-_Avoid_: lightmap, probe grid, GI volume
-
-**Resolve pass**:
-The Radiance cache's per-frame pass: aggregates the frame's accumulated
-samples per entry and blends them into stored state with hysteresis (DDGI's
-update policy). Distinct from v1's rejected accumulate→resolve→stamp: 0017's
-grounds were measured at the stamp into primary radiance, not at the resolve.
-_Avoid_: cache update (the policy is the resolve's job)
-
-**Transmission**:
-Light passing through a Glass voxel (a voxel whose Material's MATL entry
-is the glass type): the ray continues in the same direction, losing only
-the Pane's tint absorption along the way; no refraction, no reflection.
-_Avoid_: transparency, alpha blending, refraction
-
-**Pane**:
-A maximal run of contiguous glass voxels with the same palette index along
-a ray; tint absorption applies once per Pane, not per voxel, so thickness
-never darkens it. The run containing the camera counts.
-_Avoid_: slab, glass body
-
-**Crossing**:
-One pass of a path through a Glass voxel. The unit the 32-crossing cap
-counts; crossings consume no Bounces and draw no random numbers — the
-Pane's T applies deterministically.
-_Avoid_: transmission event, glass bounce
-
-**Revealed surface**:
-The first non-glass surface a glass-primary path reaches after crossing its
-Panes. At a glass primary the aux buffers describe it, not the glass entry
-face, and the in-lobe hit distance is measured from it — the Denoise pass
-sees the surface behind the glass (NRD's Primary Surface Replacement). Sky
-reached through glass with no scattering event in between is not one: that
-pixel is Background.
-_Avoid_: virtual surface (straight transmission keeps virtual == real),
-behind-glass surface
-
-**Trace pass**:
-The ray pass under the path-tracing output contract (ADR 0007): in Voxel
-mode it writes the Beauty buffer (the noisy radiance pair) and the
-auxiliary buffers instead of the swapchain; the debug Render modes still
-paint the swapchain directly.
-_Avoid_: g-buffer pass (a raster concept this renderer lacks)
-
-**Denoise pass**:
-The real-time denoiser (NRD ReBLUR, bound through FFI) turning the 1-Sample
-radiance into a clean image from the Beauty buffer, motion vectors, and the
-auxiliary buffers (normal+roughness, viewZ, motion vectors,
-albedo+metalness).
-_Avoid_: filter, temporal AA
-
-**Beauty buffer**:
-The trace pass's noisy radiance output, a diffuse + specular RGBA16F pair
-whose alpha holds the in-lobe hit distance, written per pixel and consumed by the
-Denoise pass; exposed to the swapchain after exposure and tonemap in the
-Composite.
-_Avoid_: render target, output image
-
-**De-modulation**:
-The removal of the surface's color response from radiance before denoising:
-the trace pass writes diffuse radiance divided by albedo (eps-guarded) and
-specular radiance divided by its BRDF average, so the Denoise pass filters
-pure light at a uniform noise level instead of albedo-tinted light; the
-Composite re-modulates (multiplies the color back) before exposure and
-tonemap. Emission is albedo-proportional, so it de-modulates to a constant
-and denoises as pure light.
-_Avoid_: unmodulated, normalized radiance ("de-modulated" names the NRD
-input contract specifically)
+## Display path
 
 **Composite**:
-The node that exposes the (denoised) radiance to the swapchain: re-modulation
-by albedo/metallic, auto exposure, and the ACES tonemap. Auto exposure meters
-the assembled pre-tonemap radiance into a per-frame log-luminance histogram
-and adapts the stored EV (see ADR 0020); debug Render modes paint the
-swapchain directly and bypass it.
-_Avoid_: post-processing (beyond exposure/tonemap, out of scope), final pass
-
-**Auto exposure (ADR 0020)**:
-The Composite's exposure control: a per-frame 64-bin log-luminance histogram
-of the assembled pre-tonemap radiance, integrated each frame into an
-exponentially adapted EV (all-sky frames hold it) read by the composite's
-display path from the exposure buffer.
-_Avoid_: eye adaptation, camera exposure (the meter is scene-relative, not
-photographic)
+The node that exposes the ray pass's color image to the swapchain: the ACES
+curve at a fixed identity exposure, gamma, and a one-LSB display dither.
+Debug Render modes paint the swapchain directly and bypass it.
+_Avoid_: post-processing (beyond exposure/tonemap, out of scope), final pass,
+eye adaptation (the exposure is a constant, not a meter)
 
 ## Frame lifecycle
 
 **Frame images**:
-The renderer's extent-bound image set: the Trace pass's outputs (the Beauty
-buffer pair plus the auxiliary buffers), the Denoise pass's outputs (the
-denoised diffuse/specular pair and the validation image), and the swapchain's
-bindless storage views. A resize destroys and recreates all of them together,
-and the denoiser's instance is recreated alongside.
+The renderer's extent-bound image set: the ray pass's color output and the
+swapchain's bindless storage views. A resize destroys and recreates them
+together.
 _Avoid_: render targets, trace-pass images, G-buffer
-
-**Frame history**:
-The Denoise pass's temporal memory: the previous frame's camera matrices and
-the accumulation frame index. The Denoise module owns it: the renderer
-reports camera updates, region edits, and swapchain resizes; the history
-decides each frame's clear, reset, and frame index. A resize clears it, a
-region edit resets it.
-_Avoid_: temporal state, NRD state, accumulation counter
 
 **Frame input**:
 What the app reports to the renderer each frame: the player's view, a
 swapchain resize, and a render-mode request. The renderer derives the
-projection, frame seed, and denoiser state itself.
+projection itself.
 _Avoid_: camera update, render parameters
 
 ## Render mode
@@ -338,8 +173,8 @@ _Avoid_: camera update, render parameters
 What the ray pass paints each pixel with: surface identity (`Voxel`, `Hull`) or
 a diagnostic quantity (the `Normal` heatmap).
 `Voxel` (default): the
-DDA commits the surface voxel, shaded by Path tracing from the surface's
-Material. `Hull`: each
+DDA commits the surface voxel, painted with its Palette entry.
+`Hull`: each
 Micro-chunk's trimmed AABB is the surface, colored by a coordinate hash, with
 no DDA. The diagnostic modes are debug-build-only.
 _Avoid_: shading mode, visualization mode
