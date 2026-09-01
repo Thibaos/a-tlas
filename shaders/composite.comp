@@ -6,6 +6,7 @@
 #include <vulkano.glsl>
 #include "common/nrd.glsl"
 #include "common/contract.glsl"
+#include "common/exposure.glsl"
 
 layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 
@@ -18,12 +19,21 @@ layout(push_constant) uniform PushConstants {
     StorageImageId viewz_id;
     StorageImageId albedo_metal_id;
     StorageImageId validation_id;
-    float ev;
+    StorageBufferId exposure_buffer_id;
     uint mode;
     uint denoiser;
     uint width;
     uint height;
 };
+
+VKO_DECLARE_STORAGE_BUFFER(exposure, Exposure{
+    uint bins[EXPOSURE_BINS];
+    uint ev;
+    uint sky_count;
+    uint prev_sky;
+})
+
+#define exposure_state vko_buffer(exposure, exposure_buffer_id)
 
 vec3 aces_fit(vec3 x) {
     const float a = 2.51;
@@ -36,13 +46,14 @@ vec3 aces_fit(vec3 x) {
 
 void main() {
     ivec2 p = ivec2(gl_GlobalInvocationID.xy);
-    if (uint(p.x) >= width || uint(p.y) >= height) {
-        return;
-    }
+    bool oob = uint(p.x) >= width || uint(p.y) >= height;
 
     if (mode == MODE_VALIDATION) {
-        vec4 overlay = imageLoad(vko_image2D_rgba8(validation_id), p);
-        imageStore(vko_image2D_rgba8(image_id), p, vec4(overlay.rgb, 1.0));
+        if (!oob) {
+            vec4 overlay = imageLoad(vko_image2D_rgba8(validation_id), p);
+            imageStore(vko_image2D_rgba8(image_id), p, vec4(overlay.rgb, 1.0));
+        }
+
         return;
     }
 
@@ -50,26 +61,43 @@ void main() {
         return;
     }
 
+    vec3 radiance = vec3(0.0);
+    vec3 raw = vec3(0.0);
+    float viewz = 1.0e9;
+    bool is_sky = true;
 
-    vec4 diff_raw = imageLoad(vko_image2D_rgba16f(radiance_id), p);
-    vec3 albedo = imageLoad(vko_image2D_rgba8(albedo_metal_id), p).rgb;
+    if (!oob) {
+        vec4 diff_raw = imageLoad(vko_image2D_rgba16f(radiance_id), p);
+        vec3 albedo = imageLoad(vko_image2D_rgba8(albedo_metal_id), p).rgb;
 
-    float viewz = imageLoad(vko_image2D_r32f(viewz_id), p).x;
-    bool is_sky = viewz >= VIEWZ_SKY;
+        viewz = imageLoad(vko_image2D_r32f(viewz_id), p).x;
+        is_sky = viewz >= VIEWZ_SKY;
 
-    vec3 radiance;
-    if (denoiser == 0u) {
-        vec3 diff_de = nrd_unpack_radiance(diff_raw);
-        vec3 spec = nrd_unpack_radiance(imageLoad(vko_image2D_rgba16f(spec_radiance_id), p));
-        radiance = is_sky ? diff_de : diff_de * max(albedo, vec3(ALBEDO_EPS)) + spec;
-    } else {
-        vec3 diffuse = nrd_unpack_radiance(imageLoad(vko_image2D_rgba16f(diff_denoised_id), p));
-        vec3 specular = nrd_unpack_radiance(imageLoad(vko_image2D_rgba16f(spec_denoised_id), p));
-        radiance = is_sky
-            ? nrd_unpack_radiance(diff_raw) : diffuse * max(albedo, vec3(ALBEDO_EPS)) + specular;
+        raw = nrd_unpack_radiance(diff_raw);
+
+        if (denoiser == 0u) {
+            vec3 spec = nrd_unpack_radiance(imageLoad(vko_image2D_rgba16f(spec_radiance_id), p));
+            radiance = is_sky ? raw : raw * max(albedo, vec3(ALBEDO_EPS)) + spec;
+        } else {
+            vec3 diffuse = nrd_unpack_radiance(imageLoad(vko_image2D_rgba16f(diff_denoised_id), p));
+            vec3 specular = nrd_unpack_radiance(imageLoad(vko_image2D_rgba16f(spec_denoised_id), p));
+            radiance = is_sky ? raw : diffuse * max(albedo, vec3(ALBEDO_EPS)) + specular;
+        }
     }
 
-    vec3 color = aces_fit(radiance * exp2(ev));
+    if (!oob) {
+        float lum = clamp(dot(radiance, vec3(0.2126, 0.7152, 0.0722)), 0.0, EXPOSURE_LUM_CLAMP);
+        uint bin = clamp(uint((log2(max(lum, exp2(EXPOSURE_BIN_LOG2_MIN)))- EXPOSURE_BIN_LOG2_MIN) / EXPOSURE_BIN_STEPS), 0u, uint(EXPOSURE_BINS - 1));
+
+        atomicAdd(exposure_state.bins[bin], 1u);
+        atomicAdd(exposure_state.sky_count, uint(is_sky));
+    }
+
+    if (oob) {
+        return;
+    }
+
+    vec3 color = aces_fit(radiance * exp2(uintBitsToFloat(exposure_state.ev)));
     color = pow(color, vec3(1.0 / 2.2));
 
     // Interleaved gradient noise (Jimenez 2014): one display LSB of static

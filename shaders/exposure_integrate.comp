@@ -1,0 +1,60 @@
+#version 460
+
+#extension GL_EXT_scalar_block_layout : enable
+#extension GL_EXT_GOOGLE_include_directive : enable
+
+#include <vulkano.glsl>
+#include "common/exposure.glsl"
+
+layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
+
+layout(push_constant) uniform PushConstants {
+    StorageBufferId exposure_buffer_id;
+    float dt;
+    uint width;
+    uint height;
+};
+
+VKO_DECLARE_STORAGE_BUFFER(exposure, Exposure{
+    uint bins[EXPOSURE_BINS];
+    uint ev;
+    uint sky_count;
+    uint prev_sky;
+})
+
+#define exposure_state vko_buffer(exposure, exposure_buffer_id)
+
+void main() {
+    float ev = uintBitsToFloat(exposure_state.ev);
+    uint sky = exposure_state.sky_count;
+    uint frame_sky = sky - exposure_state.prev_sky;
+    uint pixels = width * height;
+
+    float count = 0.0;
+    float moment = 0.0;
+
+    for (uint bin = 0u; bin < EXPOSURE_BINS; bin++) {
+        float c = float(exposure_state.bins[bin]);
+        count += c;
+        moment += c * exp2(EXPOSURE_BIN_LOG2_MIN + (float(bin) + 0.5) * EXPOSURE_BIN_STEPS);
+    }
+
+    bool adapt = count > 0.0 && frame_sky < pixels;
+
+    if (adapt) {
+        float mean = moment / count;
+        float target = log2(EXPOSURE_KEY / max(mean, 1e-8));
+        float tau = target < ev ? EXPOSURE_TAU_BRIGHT : EXPOSURE_TAU_DARK;
+        float blend = 1.0 - exp(-dt / tau);
+
+        ev = clamp(ev + (target - ev) * blend, EXPOSURE_EV_MIN, EXPOSURE_EV_MAX);
+    }
+
+    atomicExchange(exposure_state.ev, floatBitsToUint(ev));
+
+    for (uint bin = 0u; bin < EXPOSURE_BINS; bin++) {
+        atomicExchange(exposure_state.bins[bin], 0u);
+    }
+
+    atomicExchange(exposure_state.prev_sky, sky);
+}

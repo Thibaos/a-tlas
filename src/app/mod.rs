@@ -224,6 +224,7 @@ impl ApplicationHandler for App {
                         resized,
                         next_mode,
                         toggle_denoiser,
+                        delta_time: self.delta_time.as_secs_f32(),
                     },
                 );
             }

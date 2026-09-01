@@ -167,7 +167,7 @@ pub struct RegionRenderContext {
     pub nrd: NrdFrame,
     pub albedo_metal_image_id: StorageImageId,
     pub disocclusion_mix_image_id: StorageImageId,
-    pub ev: f32,
+    pub delta_time: f32,
     pub mode: RenderMode,
     pub frame_seed: u32,
     pub cache_state: production_raygen::CacheState,

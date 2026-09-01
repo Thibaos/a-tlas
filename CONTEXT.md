@@ -293,11 +293,20 @@ _Avoid_: unmodulated, normalized radiance ("de-modulated" names the NRD
 input contract specifically)
 
 **Composite**:
-The node that exposes the (denoised) radiance to the swapchain:
-re-modulation by albedo/metallic, manual EV exposure, and the ACES tonemap.
-A no-op for the debug Render modes, which paint the swapchain directly.
-_Avoid_: post-processing (beyond exposure/tonemap, out of scope), final
-pass
+The node that exposes the (denoised) radiance to the swapchain: re-modulation
+by albedo/metallic, auto exposure, and the ACES tonemap. Auto exposure meters
+the assembled pre-tonemap radiance into a per-frame log-luminance histogram
+and adapts the stored EV (see ADR 0020); debug Render modes paint the
+swapchain directly and bypass it.
+_Avoid_: post-processing (beyond exposure/tonemap, out of scope), final pass
+
+**Auto exposure (ADR 0020)**:
+The Composite's exposure control: a per-frame 64-bin log-luminance histogram
+of the assembled pre-tonemap radiance, integrated each frame into an
+exponentially adapted EV (all-sky frames hold it) read by the composite's
+display path from the exposure buffer.
+_Avoid_: eye adaptation, camera exposure (the meter is scene-relative, not
+photographic)
 
 ## Frame lifecycle
 

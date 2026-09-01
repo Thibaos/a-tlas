@@ -5,9 +5,12 @@ use vulkano::{
         ComputePipeline, PipelineShaderStageCreateInfo, compute::ComputePipelineCreateInfo,
     },
     swapchain::Swapchain,
+    sync::{AccessFlags, PipelineStages},
 };
 use vulkano_taskgraph::{
-    Id, Task, TaskContext, TaskResult, command_buffer::RecordingCommandBuffer,
+    Id, Task, TaskContext, TaskResult,
+    command_buffer::{DependencyInfo, MemoryBarrier, RecordingCommandBuffer},
+    descriptor_set::StorageBufferId,
 };
 
 use crate::core::render::{
@@ -23,6 +26,17 @@ pub mod composite {
         vulkan_version: "1.3"
     }
 }
+
+pub mod exposure_integrate {
+    vulkano_shaders::shader! {
+        root_path_env: "CARGO_MANIFEST_DIR",
+        ty: "compute",
+        path: "shaders/exposure_integrate.comp",
+        vulkan_version: "1.3"
+    }
+}
+
+pub const EXPOSURE_BINS: u32 = 64;
 
 pub fn create_composite_pipeline(gpu: &GpuDesc) -> Arc<ComputePipeline> {
     let shader = unsafe {
@@ -44,16 +58,40 @@ pub fn create_composite_pipeline(gpu: &GpuDesc) -> Arc<ComputePipeline> {
     .unwrap()
 }
 
+pub fn create_exposure_integrate_pipeline(gpu: &GpuDesc) -> Arc<ComputePipeline> {
+    let shader = unsafe {
+        exposure_integrate::load(&gpu.device)
+            .unwrap()
+            .entry_point("main")
+            .unwrap()
+    };
+    let stage = PipelineShaderStageCreateInfo::new(&shader);
+    let bcx = gpu.resources.bindless_context().unwrap();
+    let layout = bcx
+        .pipeline_layout_from_stages(slice::from_ref(&stage))
+        .unwrap();
+    ComputePipeline::new(
+        &gpu.device,
+        None,
+        &ComputePipelineCreateInfo::new(stage, &layout),
+    )
+    .unwrap()
+}
+
 pub struct CompositeTask {
     pub swapchain_id: Id<Swapchain>,
+    pub exposure_storage_id: StorageBufferId,
     pub pipeline: Option<Arc<ComputePipeline>>,
+    pub integrate_pipeline: Option<Arc<ComputePipeline>>,
 }
 
 impl CompositeTask {
-    pub fn new(swapchain_id: Id<Swapchain>) -> Self {
+    pub fn new(swapchain_id: Id<Swapchain>, exposure_storage_id: StorageBufferId) -> Self {
         Self {
             swapchain_id,
+            exposure_storage_id,
             pipeline: None,
+            integrate_pipeline: None,
         }
     }
 }
@@ -91,7 +129,7 @@ impl Task for CompositeTask {
                     viewz_id: rcx.viewz_image_id,
                     albedo_metal_id: rcx.albedo_metal_image_id,
                     validation_id: rcx.validation_image_id,
-                    ev: rcx.ev,
+                    exposure_buffer_id: self.exposure_storage_id,
                     mode: rcx.mode as u32,
                     denoiser: u32::from(rcx.denoiser_active),
                     width: extent[0],
@@ -100,6 +138,34 @@ impl Task for CompositeTask {
             )
         };
         unsafe { cbf.dispatch([extent[0].div_ceil(16), extent[1].div_ceil(16), 1]) };
+        unsafe {
+            cbf.pipeline_barrier(&DependencyInfo {
+                memory_barriers: &[MemoryBarrier {
+                    src_access: AccessFlags::SHADER_STORAGE_WRITE,
+                    dst_access: AccessFlags::SHADER_STORAGE_READ
+                        | AccessFlags::SHADER_STORAGE_WRITE,
+                    src_stages: PipelineStages::COMPUTE_SHADER,
+                    dst_stages: PipelineStages::COMPUTE_SHADER,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            })
+        };
+
+        unsafe { cbf.bind_pipeline(self.integrate_pipeline.as_ref().unwrap()) };
+        unsafe {
+            cbf.push_constants(
+                self.integrate_pipeline.as_ref().unwrap().layout(),
+                0,
+                &exposure_integrate::PushConstants {
+                    exposure_buffer_id: self.exposure_storage_id,
+                    dt: rcx.delta_time,
+                    width: extent[0],
+                    height: extent[1],
+                },
+            )
+        };
+        unsafe { cbf.dispatch([1, 1, 1]) };
 
         Ok(())
     }

@@ -22,7 +22,7 @@ use winit::window::Window;
 
 use crate::core::render::{
     cache_resolve::{CacheResolveTask, create_cache_resolve_pipeline},
-    composite::{CompositeTask, create_composite_pipeline},
+    composite::{CompositeTask, create_composite_pipeline, create_exposure_integrate_pipeline},
     frame_images::FrameImages,
     gpu::{GpuDesc, MIN_SWAPCHAIN_IMAGES},
     nrd::{DenoiseTask, NrdInstance, history::NrdHistory},
@@ -30,7 +30,7 @@ use crate::core::render::{
         feed::RendererInput,
         residency::{CACHE_DIRTY_WORDS, RegionStore},
         task::{
-            NrdFrame, RegionRenderContext, RegionRenderTask, RenderMode, default_ev, default_scene,
+            NrdFrame, RegionRenderContext, RegionRenderTask, RenderMode, default_scene,
             production_raygen,
         },
     },
@@ -72,6 +72,7 @@ pub struct FrameInput {
     pub resized: bool,
     pub next_mode: bool,
     pub toggle_denoiser: bool,
+    pub delta_time: f32,
 }
 
 #[derive(Default)]
@@ -201,7 +202,7 @@ impl FramePipeline {
         let mut composite_node = task_graph.create_task_node(
             "Composite",
             QueueFamilyType::Graphics,
-            CompositeTask::new(virtual_swapchain_id),
+            CompositeTask::new(virtual_swapchain_id, store.bindings.exposure_storage_id),
         );
         composite_node.image_access(
             virtual_swapchain_id.current_image_id(),
@@ -236,13 +237,17 @@ impl FramePipeline {
 
         {
             let composite_pipeline = create_composite_pipeline(gpu);
-            task_graph
+            let integrate_pipeline = create_exposure_integrate_pipeline(gpu);
+
+            let task = task_graph
                 .task_node_mut(composite_node_id)
                 .unwrap()
                 .task_mut()
                 .downcast_mut::<CompositeTask>()
-                .unwrap()
-                .pipeline = Some(composite_pipeline);
+                .unwrap();
+
+            task.pipeline = Some(composite_pipeline);
+            task.integrate_pipeline = Some(integrate_pipeline);
         }
 
         {
@@ -290,7 +295,7 @@ impl FramePipeline {
             nrd: NrdFrame::default(),
             albedo_metal_image_id: StorageImageId::INVALID,
             disocclusion_mix_image_id: StorageImageId::INVALID,
-            ev: default_ev(),
+            delta_time: 0.0,
             mode: RenderMode::default(),
             frame_seed: 0,
             cache_resolve_dispatch: 0,
@@ -427,6 +432,8 @@ impl FramePipeline {
             proj_prev: prev.proj.to_cols_array_2d(),
         };
 
+        self.region.delta_time = input.delta_time;
+
         self.region.frame_seed = self.region.frame_seed.wrapping_add(1);
 
         self.region.nrd = self.history.advance(edited, self.nrd.is_some());
@@ -449,6 +456,7 @@ impl FramePipeline {
             .wrapping_add(1);
         self.region.cache_state.event_frames = self.cache_event_frames;
         self.region.cache_resolve_dispatch = CACHE_TABLE_ENTRIES;
+
 
         self.execute();
 

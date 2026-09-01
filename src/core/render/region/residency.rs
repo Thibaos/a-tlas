@@ -36,6 +36,7 @@ use vulkano_taskgraph::{
 use crate::core::{
     render::{
         accel,
+        composite::{composite::Exposure, EXPOSURE_BINS},
         gpu::GpuDesc,
         region::{
             alloc::{
@@ -48,7 +49,7 @@ use crate::core::{
             rebuild::{
                 BlasBuild, RebuildGraph, RebuildLogEntry, RebuildPlan, RegionUpload, TlasBuild,
             },
-            task::{default_scene, production_raygen},
+            task::{default_ev, default_scene, production_raygen},
         },
     },
     world::{
@@ -94,6 +95,7 @@ pub struct RegionBindings {
     pub cache_dirty_buffer_id: Id<Buffer>,
     pub cache_state_storage_id: StorageBufferId,
     pub instance_buffer_id: Id<Buffer>,
+    pub exposure_storage_id: StorageBufferId,
 }
 
 pub struct RegionStore {
@@ -153,6 +155,22 @@ impl RegionStore {
                     ..Default::default()
                 },
                 DeviceLayout::new_sized::<production_raygen::Scene>(),
+            )
+            .unwrap();
+
+        let exposure_buffer_id = gpu
+            .resources
+            .create_buffer(
+                &BufferCreateInfo {
+                    usage: BufferUsage::STORAGE_BUFFER | BufferUsage::TRANSFER_DST,
+                    ..Default::default()
+                },
+                &AllocationCreateInfo {
+                    memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
+                        | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
+                    ..Default::default()
+                },
+                DeviceLayout::new_sized::<Exposure>(),
             )
             .unwrap();
 
@@ -381,6 +399,13 @@ impl RegionStore {
                     };
                     *tcx.write_buffer::<production_raygen::Scene>(scene_buffer_id, ..) =
                         default_scene();
+                    *tcx.write_buffer::<Exposure>(exposure_buffer_id, ..) =
+                        Exposure {
+                            bins: [0; EXPOSURE_BINS as usize],
+                            ev: default_ev().to_bits(),
+                            sky_count: 0,
+                            prev_sky: 0,
+                        };
                     tcx.write_buffer::<[u8]>(cache_keys_buffer_id, 0..CACHE_KEY_BYTES).fill(0);
                     tcx.write_buffer::<[u8]>(cache_accum_buffer_id, 0..CACHE_RECORD_BYTES)
                         .fill(0);
@@ -398,6 +423,7 @@ impl RegionStore {
                     (cache_accum_buffer_id, HostAccessType::Write),
                     (cache_resolved_buffer_id, HostAccessType::Write),
                     (cache_dirty_buffer_id, HostAccessType::Write),
+                    (exposure_buffer_id, HostAccessType::Write),
                 ],
                 [],
                 [],
@@ -477,6 +503,15 @@ impl RegionStore {
             )
             .unwrap();
 
+        let exposure_storage_id = bcx
+            .global_set()
+            .create_storage_buffer(
+                exposure_buffer_id,
+                0,
+                Some(size_of::<Exposure>() as DeviceSize),
+            )
+            .unwrap();
+
         let bindings = RegionBindings {
             camera_buffer_id,
             scene_buffer_id,
@@ -491,6 +526,7 @@ impl RegionStore {
             cache_dirty_buffer_id,
             cache_state_storage_id,
             instance_buffer_id,
+            exposure_storage_id,
         };
 
         let mut store = Self {
