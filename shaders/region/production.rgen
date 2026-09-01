@@ -25,6 +25,7 @@ const float BOUNCE_OFFSET = 1e-3; // bounce origin nudged along the normal (self
 const float ALPHA_MIN = 1e-4; // GGX alpha floor (perfect-mirror singularity guard)
 const float COS_EPS = 1e-6; // cos-term guard in the G1/pdf denominators (grazing NaN guard)
 const uint MAX_CROSSINGS = 32u; // hard cap of glass voxel crossings per path (ADR 0013; past it the hit shades opaque)
+const uint MAX_PANES = 32u; // hard cap of Panes per shadow segment (ADR 0014; past it shadow visibility is 0)
 const float CROSS_EPS = 1e-3; // glass advance nudged past the exit boundary, in t (ADR 0016)
 const float CROSS_RESTATE_T = 1e-4; // restated hit distance for origin-inside commits (keeps the offset origins on the crossed-boundary side)
 const uint WALK_GUARD = 512u; // bounds glass voxels walked per segment (loop safety; far above any real pane)
@@ -160,6 +161,49 @@ void reset_payload() {
     payload.cache_meta = 0u;
 }
 
+// The committed cell of a glass hit: faced hits sit on the division-form
+// entered boundary (the same snap closest-hit reconstructs the face from);
+// origin-inside commits (mid-pane re-entry, interior origin) are already
+// inside the cell.
+ivec3 glass_cell(vec3 p, uint cache_meta, vec3 n) {
+    ivec3 cell = ivec3(floor(p));
+
+    if ((cache_meta & CACHE_META_FACED) != 0u) {
+        for (int a = 0; a < 3; ++a) {
+            if (n[a] != 0.0) {
+                float eps = 32.0 * 1.1920929e-07 * max(abs(p[a]), 1.0);
+                cell[a] = int(floor(p[a] + eps)) - ((n[a] < 0.0) ? 0 : 1);
+                break;
+            }
+        }
+    }
+
+    return cell;
+}
+
+// Amanatides-Woo exit of the crossed cell from the entry point p: the
+// argmin axis is the crossed boundary, the successor cell the open pane's
+// expected successor.
+void glass_exit(vec3 p, vec3 d, ivec3 cell, out float t_exit, out ivec3 successor) {
+    vec3 t_exit_per_axis = vec3(0.0);
+
+    for (int a = 0; a < 3; ++a) {
+        t_exit_per_axis[a] = (d[a] == 0.0) ? 1e30
+            : (((d[a] > 0.0) ? float(cell[a] + 1) : float(cell[a])) - p[a]) / d[a];
+    }
+
+    t_exit = min(t_exit_per_axis.x, min(t_exit_per_axis.y, t_exit_per_axis.z));
+    successor = cell;
+
+    if (t_exit == t_exit_per_axis.x) {
+        successor.x += (d.x > 0.0) ? 1 : -1;
+    } else if (t_exit == t_exit_per_axis.y) {
+        successor.y += (d.y > 0.0) ? 1 : -1;
+    } else {
+        successor.z += (d.z > 0.0) ? 1 : -1;
+    }
+}
+
 // Straight-transmission walk (ADR 0013/0016): resolves committed glass
 // hits before shading. A Pane is a maximal same-index run of contiguous
 // glass voxels along the ray; its Palette tint is paid once at entry, the
@@ -200,22 +244,7 @@ void walk_glass(inout vec3 ro, vec3 rd, uint ray_flags, uint sbt_offset,
 
         uint idx = payload.hit_kind;
         vec3 p = ro + rd * payload.t;
-        ivec3 cell = ivec3(floor(p));
-
-        // The committed cell: faced hits sit on the division-form entered
-        // boundary (same snap as closest-hit); origin-inside commits
-        // (mid-pane re-entry, interior camera) are already inside the cell.
-        if ((payload.cache_meta & CACHE_META_FACED) != 0u) {
-            vec3 n = payload.normal;
-
-            for (int a = 0; a < 3; ++a) {
-                if (n[a] != 0.0) {
-                    float eps = 32.0 * 1.1920929e-07 * max(abs(p[a]), 1.0);
-                    cell[a] = int(floor(p[a] + eps)) - ((n[a] < 0.0) ? 0 : 1);
-                    break;
-                }
-            }
-        }
+        ivec3 cell = glass_cell(p, payload.cache_meta, payload.normal);
 
         bool mid_pane = gw.pane_open && (cell == gw.pane_next) && (idx == gw.pane_index);
         if (!mid_pane) {
@@ -231,27 +260,9 @@ void walk_glass(inout vec3 ro, vec3 rd, uint ray_flags, uint sbt_offset,
         gw.crossings++;
         gw.emission += closed_here * material_table.rough_emit[idx].rgb;
 
-        // Amanatides-Woo exit boundary of the crossed cell from the entry
-        // point p; the argmin axis is the crossed boundary and the successor
-        // cell is the open pane's expected successor.
-        vec3 t_exit_per_axis = vec3(0.0);
-        for (int a = 0; a < 3; ++a) {
-            t_exit_per_axis[a] = (rd[a] == 0.0) ? 1e30
-                : (((rd[a] > 0.0) ? float(cell[a] + 1) : float(cell[a])) - p[a]) / rd[a];
-        }
-        float t_exit = min(t_exit_per_axis.x, min(t_exit_per_axis.y, t_exit_per_axis.z));
-        int crossed_axis;
-        ivec3 successor = cell;
-        if (t_exit == t_exit_per_axis.x) {
-            crossed_axis = 0;
-            successor.x += (rd.x > 0.0) ? 1 : -1;
-        } else if (t_exit == t_exit_per_axis.y) {
-            crossed_axis = 1;
-            successor.y += (rd.y > 0.0) ? 1 : -1;
-        } else {
-            crossed_axis = 2;
-            successor.z += (rd.z > 0.0) ? 1 : -1;
-        }
+        float t_exit;
+        ivec3 successor;
+        glass_exit(p, rd, cell, t_exit, successor);
         gw.pane_next = successor;
 
         ro = p + rd * (t_exit + CROSS_EPS);
@@ -266,6 +277,7 @@ void walk_glass(inout vec3 ro, vec3 rd, uint ray_flags, uint sbt_offset,
         // boundary, hit distance a hair past it — so the BOUNCE_OFFSET
         // origins clear the voxel instead of re-committing it from inside.
         if (payload.t > 0.0 && (payload.cache_meta & CACHE_META_FACED) == 0u) {
+            int crossed_axis = (successor.x != cell.x) ? 0 : ((successor.y != cell.y) ? 1 : 2);
             payload.normal = vec3(0.0);
             payload.normal[crossed_axis] = (rd[crossed_axis] > 0.0) ? -1.0 : 1.0;
             ro = p + rd * t_exit;
@@ -274,11 +286,61 @@ void walk_glass(inout vec3 ro, vec3 rd, uint ray_flags, uint sbt_offset,
     }
 }
 
-bool shadowed(vec3 hit_point, vec3 normal, vec3 light_dir, uint ray_flags, uint sbt_offset) {
-    reset_payload();
+// Shadow-segment visibility (ADR 0014): the transport walk's pane law,
+// scored as transmittance. Crossed Panes multiply their Palette tint once
+// at entry — the origin run (a shading face opening into glass) pays at
+// its first observed crossing — an opaque hit reports 0, a miss the pane
+// product, and past MAX_PANES the segment fails dark. No random draws;
+// the trace stays Opaque-flagged and MIS is untouched.
+vec3 shadow_transmittance(vec3 hit_point, vec3 normal, vec3 light_dir,
+        uint ray_flags, uint sbt_offset) {
     vec3 origin = hit_point + normal * BOUNCE_OFFSET;
+    vec3 visibility = vec3(1.0);
+
+    bool pane_open = false;
+    uint pane_index = 0u;
+    ivec3 pane_next = ivec3(0);
+    uint panes = 0u;
+
+    reset_payload();
     traceRayEXT(vko_accelerationStructureEXT(acceleration_structure_id), ray_flags, 0xFFu, sbt_offset, 0u, 0u, origin, RAY_T_MIN, light_dir, RAY_T_MAX, 0);
-    return payload.t > 0.0;
+
+    for (uint guard = 0u; guard < WALK_GUARD; ++guard) {
+        if (payload.t <= 0.0) {
+            return visibility;
+        }
+
+        if ((material_table.flags[payload.hit_kind] & MATFLAG_GLASS) == 0u) {
+            return vec3(0.0);
+        }
+
+        uint idx = payload.hit_kind;
+        vec3 p = origin + light_dir * payload.t;
+        ivec3 cell = glass_cell(p, payload.cache_meta, payload.normal);
+
+        if (!(pane_open && (cell == pane_next) && (idx == pane_index))) {
+            if (panes >= MAX_PANES) {
+                return vec3(0.0);
+            }
+
+            pane_open = true;
+            pane_index = idx;
+            visibility *= palette.colors[idx].rgb;
+            panes++;
+        }
+
+        float t_exit;
+        ivec3 successor;
+        glass_exit(p, light_dir, cell, t_exit, successor);
+        pane_next = successor;
+
+        origin = p + light_dir * (t_exit + CROSS_EPS);
+
+        reset_payload();
+        traceRayEXT(vko_accelerationStructureEXT(acceleration_structure_id), ray_flags, 0xFFu, sbt_offset, 0u, 0u, origin, RAY_T_MIN, light_dir, RAY_T_MAX, 0);
+    }
+
+    return vec3(0.0);
 }
 
 void main() {
@@ -471,7 +533,10 @@ void main() {
                 if (rand_unit(seed, draw++) < SUN_PICK_P) {
                     vec3 sun_dir = scene.sun_dir.xyz;
                     float n_dot_l = max(dot(normal, sun_dir), 0.0);
-                    if (n_dot_l > 0.0 && !shadowed(hit_point, normal, sun_dir, ray_flags, sbt_offset)) {
+                    vec3 vis = (n_dot_l > 0.0)
+                        ? shadow_transmittance(hit_point, normal, sun_dir, ray_flags, sbt_offset)
+                        : vec3(0.0);
+                    if (any(greaterThan(vis, vec3(0.0)))) {
                         vec3 t_axis;
                         vec3 b_axis;
                         make_frame(normal, t_axis, b_axis);
@@ -482,7 +547,7 @@ void main() {
                         vec3 f_nl = primary_lobe
                             ? (specular_lobe
                             ? specular_nl(l_local, v_local, normalize(v_local + l_local), f0, alpha) : (1.0 - metallic) * albedo * (n_dot_l / PI)) : brdf_nl(l_local, v_local, f0, alpha, albedo, metallic);
-                        nee_rad = f_nl * scene.sun_disk.x * (1.0 / SUN_PICK_P);
+                        nee_rad = f_nl * scene.sun_disk.x * (1.0 / SUN_PICK_P) * vis;
                     }
                 } else {
                     float u1 = rand_unit(seed, draw++);
@@ -492,7 +557,10 @@ void main() {
                     float r = sqrt(max(0.0, 1.0 - mu * mu));
                     vec3 light_dir = vec3(r * cos(phi), mu, r * sin(phi));
                     float n_dot_l = max(dot(normal, light_dir), 0.0);
-                    if (n_dot_l > 0.0 && !shadowed(hit_point, normal, light_dir, ray_flags, sbt_offset)) {
+                    vec3 vis = (n_dot_l > 0.0)
+                        ? shadow_transmittance(hit_point, normal, light_dir, ray_flags, sbt_offset)
+                        : vec3(0.0);
+                    if (any(greaterThan(vis, vec3(0.0)))) {
                         float p_light = sky_light_pdf(light_dir);
                         vec3 t_axis;
                         vec3 b_axis;
@@ -506,7 +574,7 @@ void main() {
                         vec3 f_nl = primary_lobe
                             ? (specular_lobe
                             ? specular_nl(l_local, v_local, normalize(v_local + l_local), f0, alpha) : (1.0 - metallic) * albedo * (n_dot_l / PI)) : brdf_nl(l_local, v_local, f0, alpha, albedo, metallic);
-                        nee_rad = f_nl * sky_radiance(light_dir) * w / p_light;
+                        nee_rad = f_nl * sky_radiance(light_dir) * w / p_light * vis;
                     }
                 }
                 if (!feed_only) {
