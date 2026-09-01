@@ -5,27 +5,16 @@
 
 #include <vulkano.glsl>
 #include "common/contract.glsl"
-#include "common/exposure.glsl"
 
 layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 
 layout(push_constant) uniform PushConstants {
     StorageImageId image_id;
     StorageImageId color_id;
-    StorageBufferId exposure_buffer_id;
     uint mode;
     uint width;
     uint height;
 };
-
-VKO_DECLARE_STORAGE_BUFFER(exposure, Exposure{
-    uint bins[EXPOSURE_BINS];
-    uint ev;
-    uint sky_count;
-    uint prev_sky;
-})
-
-#define exposure_state vko_buffer(exposure, exposure_buffer_id)
 
 vec3 aces_fit(vec3 x) {
     const float a = 2.51;
@@ -36,32 +25,21 @@ vec3 aces_fit(vec3 x) {
     return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
 }
 
+// Scene-relative display mapping at a fixed identity exposure: the palette
+// and the sky gradient need no metering. Retune this one constant to taste.
+const float EXPOSURE_EV = 0.0;
+
 void main() {
     ivec2 p = ivec2(gl_GlobalInvocationID.xy);
     bool oob = uint(p.x) >= width || uint(p.y) >= height;
 
-    if (mode != MODE_VOXEL) {
+    if (mode != MODE_VOXEL || oob) {
         return;
     }
 
-    vec3 radiance = vec3(0.0);
+    vec3 radiance = imageLoad(vko_image2D_rgba16f(color_id), p).rgb;
 
-    if (!oob) {
-        radiance = imageLoad(vko_image2D_rgba16f(color_id), p).rgb;
-    }
-
-    if (!oob) {
-        float lum = clamp(dot(radiance, vec3(0.2126, 0.7152, 0.0722)), 0.0, EXPOSURE_LUM_CLAMP);
-        uint bin = clamp(uint((log2(max(lum, exp2(EXPOSURE_BIN_LOG2_MIN)))- EXPOSURE_BIN_LOG2_MIN) / EXPOSURE_BIN_STEPS), 0u, uint(EXPOSURE_BINS - 1));
-
-        atomicAdd(exposure_state.bins[bin], 1u);
-    }
-
-    if (oob) {
-        return;
-    }
-
-    vec3 color = aces_fit(radiance * exp2(uintBitsToFloat(exposure_state.ev)));
+    vec3 color = aces_fit(radiance * exp2(EXPOSURE_EV));
     color = pow(color, vec3(1.0 / 2.2));
 
     // Interleaved gradient noise (Jimenez 2014): one display LSB of static

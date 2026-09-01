@@ -10,7 +10,6 @@ use vulkano::{
 use vulkano_taskgraph::{
     Id, Task, TaskContext, TaskResult,
     command_buffer::{DependencyInfo, MemoryBarrier, RecordingCommandBuffer},
-    descriptor_set::StorageBufferId,
 };
 
 use crate::core::render::{
@@ -26,17 +25,6 @@ pub mod composite {
         vulkan_version: "1.3"
     }
 }
-
-pub mod exposure_integrate {
-    vulkano_shaders::shader! {
-        root_path_env: "CARGO_MANIFEST_DIR",
-        ty: "compute",
-        path: "shaders/exposure_integrate.comp",
-        vulkan_version: "1.3"
-    }
-}
-
-pub const EXPOSURE_BINS: u32 = 64;
 
 pub fn create_composite_pipeline(gpu: &GpuDesc) -> Arc<ComputePipeline> {
     let shader = unsafe {
@@ -58,40 +46,16 @@ pub fn create_composite_pipeline(gpu: &GpuDesc) -> Arc<ComputePipeline> {
     .unwrap()
 }
 
-pub fn create_exposure_integrate_pipeline(gpu: &GpuDesc) -> Arc<ComputePipeline> {
-    let shader = unsafe {
-        exposure_integrate::load(&gpu.device)
-            .unwrap()
-            .entry_point("main")
-            .unwrap()
-    };
-    let stage = PipelineShaderStageCreateInfo::new(&shader);
-    let bcx = gpu.resources.bindless_context().unwrap();
-    let layout = bcx
-        .pipeline_layout_from_stages(slice::from_ref(&stage))
-        .unwrap();
-    ComputePipeline::new(
-        &gpu.device,
-        None,
-        &ComputePipelineCreateInfo::new(stage, &layout),
-    )
-    .unwrap()
-}
-
 pub struct CompositeTask {
     pub swapchain_id: Id<Swapchain>,
-    pub exposure_storage_id: StorageBufferId,
     pub pipeline: Option<Arc<ComputePipeline>>,
-    pub integrate_pipeline: Option<Arc<ComputePipeline>>,
 }
 
 impl CompositeTask {
-    pub fn new(swapchain_id: Id<Swapchain>, exposure_storage_id: StorageBufferId) -> Self {
+    pub fn new(swapchain_id: Id<Swapchain>) -> Self {
         Self {
             swapchain_id,
-            exposure_storage_id,
             pipeline: None,
-            integrate_pipeline: None,
         }
     }
 }
@@ -123,7 +87,6 @@ impl Task for CompositeTask {
                 &composite::PushConstants {
                     image_id: rcx.swapchain_storage_image_ids[image_index as usize],
                     color_id: rcx.color_image_id,
-                    exposure_buffer_id: self.exposure_storage_id,
                     mode: rcx.mode as u32,
                     width: extent[0],
                     height: extent[1],
@@ -144,21 +107,6 @@ impl Task for CompositeTask {
                 ..Default::default()
             })
         };
-
-        unsafe { cbf.bind_pipeline(self.integrate_pipeline.as_ref().unwrap()) };
-        unsafe {
-            cbf.push_constants(
-                self.integrate_pipeline.as_ref().unwrap().layout(),
-                0,
-                &exposure_integrate::PushConstants {
-                    exposure_buffer_id: self.exposure_storage_id,
-                    dt: rcx.delta_time,
-                    width: extent[0],
-                    height: extent[1],
-                },
-            )
-        };
-        unsafe { cbf.dispatch([1, 1, 1]) };
 
         Ok(())
     }

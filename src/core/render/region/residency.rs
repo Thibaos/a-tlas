@@ -31,8 +31,7 @@ use vulkano_taskgraph::{
 use crate::core::{
     render::{
         accel,
-        composite::{composite::Exposure, EXPOSURE_BINS},
-        gpu::GpuDesc,
+            gpu::GpuDesc,
         region::{
             alloc::{
                 AllocStats, BlasAllocation, FreeLists, FreedBlas, FreedPool, PendingFrees,
@@ -44,7 +43,7 @@ use crate::core::{
             rebuild::{
                 BlasBuild, RebuildGraph, RebuildLogEntry, RebuildPlan, RegionUpload, TlasBuild,
             },
-            task::{default_ev, default_scene, production_raygen},
+            task::{default_scene, production_raygen},
         },
     },
     world::{
@@ -85,7 +84,6 @@ pub struct RegionBindings {
     pub acceleration_structure_id: AccelerationStructureId,
     pub aabb_table_storage_id: StorageBufferId,
     pub instance_buffer_id: Id<Buffer>,
-    pub exposure_storage_id: StorageBufferId,
 }
 
 pub struct RegionStore {
@@ -139,22 +137,6 @@ impl RegionStore {
                     ..Default::default()
                 },
                 DeviceLayout::new_sized::<production_raygen::Scene>(),
-            )
-            .unwrap();
-
-        let exposure_buffer_id = gpu
-            .resources
-            .create_buffer(
-                &BufferCreateInfo {
-                    usage: BufferUsage::STORAGE_BUFFER | BufferUsage::TRANSFER_DST,
-                    ..Default::default()
-                },
-                &AllocationCreateInfo {
-                    memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
-                        | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
-                    ..Default::default()
-                },
-                DeviceLayout::new_sized::<Exposure>(),
             )
             .unwrap();
 
@@ -247,19 +229,11 @@ impl RegionStore {
                         production_raygen::Palette { colors: palette };
                     *tcx.write_buffer::<production_raygen::Scene>(scene_buffer_id, ..) =
                         default_scene();
-                    *tcx.write_buffer::<Exposure>(exposure_buffer_id, ..) =
-                        Exposure {
-                            bins: [0; EXPOSURE_BINS as usize],
-                            ev: default_ev().to_bits(),
-                            sky_count: 0,
-                            prev_sky: 0,
-                        };
                     Ok(())
                 },
                 [
                     (palette_buffer_id, HostAccessType::Write),
                     (scene_buffer_id, HostAccessType::Write),
-                    (exposure_buffer_id, HostAccessType::Write),
                 ],
                 [],
                 [],
@@ -321,15 +295,6 @@ impl RegionStore {
             )
             .unwrap();
 
-        let exposure_storage_id = bcx
-            .global_set()
-            .create_storage_buffer(
-                exposure_buffer_id,
-                0,
-                Some(size_of::<Exposure>() as DeviceSize),
-            )
-            .unwrap();
-
         let bindings = RegionBindings {
             camera_buffer_id,
             scene_buffer_id,
@@ -340,7 +305,6 @@ impl RegionStore {
             acceleration_structure_id,
             aabb_table_storage_id,
             instance_buffer_id,
-            exposure_storage_id,
         };
 
         let mut store = Self {

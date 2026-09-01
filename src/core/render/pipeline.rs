@@ -21,7 +21,7 @@ use vulkano_taskgraph::{
 use winit::window::Window;
 
 use crate::core::render::{
-    composite::{CompositeTask, create_composite_pipeline, create_exposure_integrate_pipeline},
+    composite::{CompositeTask, create_composite_pipeline},
     frame_images::FrameImages,
     gpu::{GpuDesc, MIN_SWAPCHAIN_IMAGES},
     region::{
@@ -159,7 +159,7 @@ impl FramePipeline {
         let mut composite_node = task_graph.create_task_node(
             "Composite",
             QueueFamilyType::Graphics,
-            CompositeTask::new(virtual_swapchain_id, store.bindings.exposure_storage_id),
+            CompositeTask::new(virtual_swapchain_id),
         );
         composite_node.image_access(
             virtual_swapchain_id.current_image_id(),
@@ -183,7 +183,6 @@ impl FramePipeline {
 
         {
             let composite_pipeline = create_composite_pipeline(gpu);
-            let integrate_pipeline = create_exposure_integrate_pipeline(gpu);
 
             let task = task_graph
                 .task_node_mut(composite_node_id)
@@ -193,7 +192,6 @@ impl FramePipeline {
                 .unwrap();
 
             task.pipeline = Some(composite_pipeline);
-            task.integrate_pipeline = Some(integrate_pipeline);
         }
 
         let mut region = RegionRenderContext {

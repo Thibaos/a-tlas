@@ -16,9 +16,7 @@ VKO_DECLARE_STORAGE_BUFFER(palette, Palette{
 })
 
 VKO_DECLARE_STORAGE_BUFFER(scene, Scene{
-    vec4 sun_dir;
     vec4 sky_knots;
-    vec4 sun_disk;
 })
 
 #define camera vko_buffer(camera, camera_buffer_id)
