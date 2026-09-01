@@ -115,8 +115,7 @@ pub struct RegionRenderTask {
     bindings: RegionBindings,
     shader_binding_table: ShaderBindingTable,
     pipeline: Arc<RayTracingPipeline>,
-    #[allow(dead_code)]
-    blases: Vec<Arc<AccelerationStructure>>,
+    _blases: Vec<Arc<AccelerationStructure>>,
 }
 
 impl RegionRenderTask {
@@ -127,7 +126,12 @@ impl RegionRenderTask {
         raygen: &EntryPoint,
     ) -> Self {
         let pipeline = {
-            let miss = unsafe { miss::load(&gpu.device).unwrap().entry_point("main").unwrap() };
+            let miss = unsafe {
+                miss::load(&gpu.device)
+                    .unwrap()
+                    .entry_point("main")
+                    .unwrap()
+            };
 
             let intersection = unsafe {
                 intersect::load(&gpu.device)
@@ -153,7 +157,7 @@ impl RegionRenderTask {
             bindings: store.bindings,
             shader_binding_table,
             pipeline,
-            blases: store.blases(),
+            _blases: store.blases(),
         }
     }
 
@@ -195,27 +199,25 @@ pub(crate) fn build_ray_tracing_pipeline(
             .unwrap()
     };
 
-    #[cfg_attr(not(debug_assertions), allow(unused_mut))]
-    let mut stages = vec![
-        PipelineShaderStageCreateInfo::new(raygen),
-        PipelineShaderStageCreateInfo::new(miss),
-        PipelineShaderStageCreateInfo::new(intersection),
-        PipelineShaderStageCreateInfo::new(closest_hit),
-    ];
-
-    #[cfg_attr(not(debug_assertions), allow(unused_mut))]
-    let mut groups = vec![
-        RayTracingShaderGroupCreateInfo::General { general_shader: 0 },
-        RayTracingShaderGroupCreateInfo::General { general_shader: 1 },
-        RayTracingShaderGroupCreateInfo::ProceduralHit {
-            closest_hit_shader: Some(3),
-            any_hit_shader: None,
-            intersection_shader: 2,
-        },
-    ];
-
     #[cfg(debug_assertions)]
-    {
+    let (stages, groups) = {
+        let mut stages = vec![
+            PipelineShaderStageCreateInfo::new(raygen),
+            PipelineShaderStageCreateInfo::new(miss),
+            PipelineShaderStageCreateInfo::new(intersection),
+            PipelineShaderStageCreateInfo::new(closest_hit),
+        ];
+
+        let mut groups = vec![
+            RayTracingShaderGroupCreateInfo::General { general_shader: 0 },
+            RayTracingShaderGroupCreateInfo::General { general_shader: 1 },
+            RayTracingShaderGroupCreateInfo::ProceduralHit {
+                closest_hit_shader: Some(3),
+                any_hit_shader: None,
+                intersection_shader: 2,
+            },
+        ];
+
         let hull_intersection_idx = stages.len() as u32;
         let hull_closest_hit_idx = hull_intersection_idx + 1;
         stages.push(PipelineShaderStageCreateInfo::new(&hull_intersection));
@@ -225,7 +227,31 @@ pub(crate) fn build_ray_tracing_pipeline(
             any_hit_shader: None,
             intersection_shader: hull_intersection_idx,
         });
-    }
+
+        (stages, groups)
+    };
+
+    #[cfg(not(debug_assertions))]
+    let (mut stages, mut groups) = {
+        let mut stages = vec![
+            PipelineShaderStageCreateInfo::new(raygen),
+            PipelineShaderStageCreateInfo::new(miss),
+            PipelineShaderStageCreateInfo::new(intersection),
+            PipelineShaderStageCreateInfo::new(closest_hit),
+        ];
+
+        let mut groups = vec![
+            RayTracingShaderGroupCreateInfo::General { general_shader: 0 },
+            RayTracingShaderGroupCreateInfo::General { general_shader: 1 },
+            RayTracingShaderGroupCreateInfo::ProceduralHit {
+                closest_hit_shader: Some(3),
+                any_hit_shader: None,
+                intersection_shader: 2,
+            },
+        ];
+
+        (stages, groups)
+    };
 
     let layout = bcx.pipeline_layout_from_stages(&stages).unwrap();
 

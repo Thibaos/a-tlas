@@ -7,7 +7,6 @@ publish = false
 [dependencies]
 vulkano = { git = "https://github.com/vulkano-rs/vulkano" }
 vulkano-shaders = { git = "https://github.com/vulkano-rs/vulkano" }
-vulkano-util = { git = "https://github.com/vulkano-rs/vulkano" }
 vulkano-taskgraph = { git = "https://github.com/vulkano-rs/vulkano" }
 winit = "0.30"
 dot_vox = "*"

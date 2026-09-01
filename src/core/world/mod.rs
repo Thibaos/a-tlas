@@ -103,25 +103,12 @@ impl World {
         self.inner.get(position)
     }
 
-    #[allow(dead_code)]
-    pub(crate) fn try_get_voxel(&self, position: &IVec3) -> Option<&u32> {
-        if !grid::in_lattice(*position) {
-            return None;
-        }
-        self.inner.get(position)
-    }
-
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn insert_voxel_at(&mut self, position: IVec3, material_index: u32) {
         Self::assert_in_lattice(&position);
         self.inner.insert(position, material_index);
     }
 
-    #[allow(dead_code)]
-    pub(crate) fn remove_voxel_at(&mut self, position: IVec3) -> bool {
-        Self::assert_in_lattice(&position);
-        self.inner.remove(&position).is_some()
-    }
 
     pub fn iter_voxels(&self) -> impl Iterator<Item = (IVec3, &u32)> + '_ {
         self.inner

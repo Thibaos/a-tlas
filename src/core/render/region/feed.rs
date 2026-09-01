@@ -56,7 +56,7 @@ impl RegionMirror {
         self.microchunks.is_empty()
     }
 
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg(test)]
     pub fn microchunk(&self, global_coords: IVec3) -> Option<&MicroChunkSnapshot> {
         self.microchunks.get(&global_coords)
     }
@@ -119,7 +119,7 @@ impl ChangeQueue {
         }
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn submit_microchunk(&self, snapshot: MicroChunkSnapshot) {
         assert_region_index_in_lattice(region_index_of(snapshot.global_coords));
         self.inner
@@ -150,12 +150,12 @@ impl ChangeQueue {
         self.inner.wake_worker.notify_all();
     }
 
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg(test)]
     pub fn pending_count(&self) -> usize {
         self.inner.pending.lock().unwrap().len()
     }
 
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg(test)]
     pub(crate) fn drain_pending(&self) -> Vec<MicroChunkSnapshot> {
         let mut pending = self.inner.pending.lock().unwrap();
         std::mem::take(&mut *pending).into_values().collect()
@@ -186,12 +186,12 @@ impl RendererInput {
         }
     }
 
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg(test)]
     pub fn change_queue(&self) -> ChangeQueue {
         self.queue.clone()
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn submit_microchunk(&self, snapshot: MicroChunkSnapshot) {
         self.queue.submit_microchunk(snapshot);
     }
@@ -228,12 +228,12 @@ impl RendererInput {
         regions
     }
 
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg(test)]
     pub fn region_count(&self) -> usize {
         self.queue.inner.mirrors.lock().unwrap().len()
     }
 
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg(test)]
     pub fn worker_idle(&self) -> bool {
         self.queue.inner.idle.load(Ordering::SeqCst)
     }

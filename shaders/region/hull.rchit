@@ -21,7 +21,5 @@ void main() {
     float hue = fract(float(gl_HitKindEXT) * 0.618033988749895);
     vec3 rgb = hsv_to_rgb(vec3(hue, 1.0, 1.0));
     incoming_payload.color = vec4(rgb, 1.0);
-    incoming_payload.t = gl_RayTmaxEXT;
-    incoming_payload.hit_kind = gl_HitKindEXT;
     incoming_payload.normal = vec3(0.0);
 }

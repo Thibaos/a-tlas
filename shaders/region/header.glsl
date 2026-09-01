@@ -7,8 +7,6 @@
 VKO_DECLARE_STORAGE_BUFFER(camera, Camera{
     mat4 view_inverse;
     mat4 proj_inverse;
-    mat4 view_prev;
-    mat4 proj_prev;
 })
 
 VKO_DECLARE_STORAGE_BUFFER(palette, Palette{

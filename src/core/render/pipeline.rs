@@ -1,8 +1,3 @@
-//! The frame's one owner: the Change queue and RegionStore behind the
-//! swapchain and the task graph. The app reports events and per-frame
-//! inputs; the whole frame sequence (recreate, resize, flight wait, store
-//! drain, execute) lives here.
-
 use dot_vox::DotVoxData;
 use glam::{Mat4, camera::lh::proj::vulkan::perspective};
 use std::sync::Arc;
@@ -27,12 +22,13 @@ use crate::core::render::{
     region::{
         feed::RendererInput,
         residency::RegionStore,
-        task::{RegionRenderContext, RegionRenderTask, RenderMode, default_scene, production_raygen},
+        task::{
+            RegionRenderContext, RegionRenderTask, RenderMode, default_scene, production_raygen,
+        },
     },
 };
 use crate::core::world::{World, snapshot::emit_snapshots};
 
-// the camera's near/far are the ray pass's t-range (contract.glsl's RAY_T_MIN/MAX)
 const PROJ_FOV: f32 = std::f32::consts::FRAC_PI_2;
 const PROJ_NEAR: f32 = 0.01;
 const PROJ_FAR: f32 = 10000.0;
@@ -42,13 +38,6 @@ pub struct FrameInput {
     pub resized: bool,
     pub next_mode: bool,
     pub delta_time: f32,
-}
-
-#[derive(Default)]
-#[allow(dead_code)]
-pub struct FrameReport {
-    pub edited: bool,
-    pub resized: bool,
 }
 
 pub struct FramePipeline {
@@ -61,8 +50,6 @@ pub struct FramePipeline {
     region: RegionRenderContext,
     input: RendererInput,
     store: RegionStore,
-    prev_view: Mat4,
-    prev_proj: Mat4,
 }
 
 impl FramePipeline {
@@ -198,8 +185,6 @@ impl FramePipeline {
             camera: production_raygen::Camera {
                 proj_inverse: [[0.0; 4]; 4],
                 view_inverse: [[0.0; 4]; 4],
-                view_prev: glam::Mat4::IDENTITY.to_cols_array_2d(),
-                proj_prev: glam::Mat4::IDENTITY.to_cols_array_2d(),
             },
             scene: default_scene(),
             swapchain_storage_image_ids: Vec::new(),
@@ -220,8 +205,6 @@ impl FramePipeline {
             region,
             input,
             store,
-            prev_view: Mat4::IDENTITY,
-            prev_proj: Mat4::IDENTITY,
         }
     }
 
@@ -251,7 +234,7 @@ impl FramePipeline {
         true
     }
 
-    pub fn run_frame(&mut self, gpu: &GpuDesc, input: FrameInput) -> FrameReport {
+    pub fn run_frame(&mut self, gpu: &GpuDesc, input: FrameInput) {
         self.recreate_swapchain |= input.resized;
 
         let extent = self.window.inner_size();
@@ -262,7 +245,7 @@ impl FramePipeline {
         }
 
         if !plan.execute {
-            return FrameReport::default();
+            return;
         }
 
         gpu.resources
@@ -270,8 +253,7 @@ impl FramePipeline {
             .wait_idle()
             .unwrap();
 
-        let apply_report = self.store.apply(gpu, &self.input);
-        let edited = !apply_report.dirty.is_empty();
+        self.store.apply(gpu, &self.input);
 
         #[cfg(debug_assertions)]
         if input.next_mode {
@@ -280,25 +262,14 @@ impl FramePipeline {
 
         let aspect = extent.width as f32 / extent.height as f32;
         let proj = perspective(PROJ_FOV, aspect, PROJ_NEAR, PROJ_FAR);
-        let (view_prev, proj_prev) = (self.prev_view, self.prev_proj);
-        self.prev_view = input.view;
-        self.prev_proj = proj;
-
         self.region.camera = production_raygen::Camera {
             proj_inverse: proj.inverse().to_cols_array_2d(),
             view_inverse: input.view.inverse().to_cols_array_2d(),
-            view_prev: view_prev.to_cols_array_2d(),
-            proj_prev: proj_prev.to_cols_array_2d(),
         };
 
         self.region.delta_time = input.delta_time;
 
         self.execute();
-
-        FrameReport {
-            edited,
-            resized: plan.recreate,
-        }
     }
 
     fn execute(&mut self) {

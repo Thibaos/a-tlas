@@ -15,8 +15,6 @@ layout(location = 0) rayPayloadEXT MainPassPayload payload;
 
 void reset_payload() {
     payload.color = vec4(0.0);
-    payload.t = -1.0;
-    payload.hit_kind = 0u;
     payload.normal = vec3(0.0);
 }
 

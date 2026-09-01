@@ -12,15 +12,19 @@
 //! intersection shader resolves micro_chunk = floor(hit/8) and
 //! cell = floor(hit) mod 8 with zero per-AABB metadata.
 
+#[cfg(test)]
 use std::collections::HashMap;
 
 use glam::IVec3;
 use vulkano::acceleration_structure::AabbPositions;
 
 use crate::core::world::{
-    grid::{MICRO_CHUNK_LENGTH, REGION_HALF_EXTENT, REGION_LENGTH, region_id, region_index_of},
+    grid::{MICRO_CHUNK_LENGTH, REGION_HALF_EXTENT, REGION_LENGTH, region_id},
     snapshot::MicroChunkSnapshot,
 };
+
+#[cfg(test)]
+use crate::core::world::grid::region_index_of;
 
 pub const MC_PER_REGION_SIDE: usize = (REGION_LENGTH / MICRO_CHUNK_LENGTH) as usize;
 pub const MICRO_CHUNKS_PER_REGION: usize =
@@ -31,7 +35,7 @@ pub const REGION_COUNT: usize = (2 * REGION_HALF_EXTENT as usize).pow(3);
 
 pub struct RegionData {
     pub region_index: IVec3,
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg(test)]
     pub offset_table: Vec<u32>,
     pub blocks: Vec<u8>,
     pub aabbs: Vec<AabbPositions>,
@@ -42,13 +46,13 @@ impl RegionData {
         region_id(self.region_index)
     }
 
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg(test)]
     pub fn origin(&self) -> IVec3 {
         self.region_index * REGION_LENGTH
     }
 }
 
-#[allow(dead_code)]
+#[cfg(test)]
 pub fn pack_regions(snapshots: &[MicroChunkSnapshot]) -> Vec<RegionData> {
     let mut by_region: HashMap<IVec3, Vec<&MicroChunkSnapshot>> = HashMap::new();
     for snapshot in snapshots {
@@ -125,6 +129,7 @@ pub(crate) fn pack_region(region_index: IVec3, snapshots: &[&MicroChunkSnapshot]
 
     RegionData {
         region_index,
+        #[cfg(test)]
         offset_table,
         blocks,
         aabbs,

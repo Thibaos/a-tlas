@@ -233,8 +233,6 @@ mod tests {
             camera: production_raygen::Camera {
                 proj_inverse: [[0.0; 4]; 4],
                 view_inverse: [[0.0; 4]; 4],
-                view_prev: [[0.0; 4]; 4],
-                proj_prev: [[0.0; 4]; 4],
             },
             scene: default_scene(),
             swapchain_storage_image_ids: Vec::new(),

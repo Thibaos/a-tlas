@@ -1,7 +1,3 @@
-// The Rust↔GLSL seam: constants the CPU writer (pack.rs, task.rs RenderMode)
-// and the GPU readers must agree on. pack.rs cross-checks every value;
-// declare none of these anywhere else.
-
 #define RAY_T_MIN 0.01
 #define RAY_T_MAX 10000.0
 
