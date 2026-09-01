@@ -107,48 +107,7 @@ pub enum RenderMode {
     #[cfg(debug_assertions)]
     Hull = 1,
     #[cfg(debug_assertions)]
-    NrdValidation = 2,
-    #[cfg(debug_assertions)]
     Normal = 4,
-}
-
-impl RenderMode {
-    pub fn is_nrd_validation(self) -> bool {
-        match self {
-            #[cfg(debug_assertions)]
-            RenderMode::NrdValidation => true,
-            _ => false,
-        }
-    }
-}
-
-#[derive(Clone, Copy)]
-pub struct NrdFrame {
-    pub view_to_clip: [f32; 16],
-    pub view_to_clip_prev: [f32; 16],
-    pub world_to_view: [f32; 16],
-    pub world_to_view_prev: [f32; 16],
-    pub frame_index: u32,
-    pub reset: bool,
-    pub clear: bool,
-}
-
-impl Default for NrdFrame {
-    fn default() -> Self {
-        Self {
-            view_to_clip: [0.0; 16],
-            view_to_clip_prev: [0.0; 16],
-            world_to_view: identity_cols(),
-            world_to_view_prev: identity_cols(),
-            frame_index: 0,
-            reset: false,
-            clear: true,
-        }
-    }
-}
-
-fn identity_cols() -> [f32; 16] {
-    glam::Mat4::IDENTITY.to_cols_array()
 }
 
 pub struct RegionRenderContext {
@@ -160,11 +119,6 @@ pub struct RegionRenderContext {
     pub normal_roughness_image_id: StorageImageId,
     pub viewz_image_id: StorageImageId,
     pub mv_image_id: StorageImageId,
-    pub denoised_diff_image_id: StorageImageId,
-    pub denoised_spec_image_id: StorageImageId,
-    pub validation_image_id: StorageImageId,
-    pub denoiser_active: bool,
-    pub nrd: NrdFrame,
     pub albedo_metal_image_id: StorageImageId,
     pub disocclusion_mix_image_id: StorageImageId,
     pub delta_time: f32,

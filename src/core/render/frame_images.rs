@@ -18,7 +18,7 @@ use vulkano_taskgraph::{
     resource::{AccessTypes, ImageLayoutType, Resources},
 };
 
-use crate::core::render::{nrd::NrdInputs, region::task::RegionRenderContext};
+use crate::core::render::region::task::RegionRenderContext;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum FrameImageKind {
@@ -29,14 +29,11 @@ pub enum FrameImageKind {
     Mv,
     AlbedoMetal,
     DisocclusionMix,
-    DenoisedDiff,
-    DenoisedSpec,
-    Validation,
 }
 
 use FrameImageKind::*;
 
-const KINDS: [FrameImageKind; 10] = [
+const KINDS: [FrameImageKind; 7] = [
     DiffRadiance,
     SpecRadiance,
     NormalRoughness,
@@ -44,16 +41,11 @@ const KINDS: [FrameImageKind; 10] = [
     Mv,
     AlbedoMetal,
     DisocclusionMix,
-    DenoisedDiff,
-    DenoisedSpec,
-    Validation,
 ];
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Role {
     TraceOutput,
-    DenoiserInput,
-    DenoiserOutput,
     CompositeRead,
 }
 
@@ -67,10 +59,8 @@ struct Entry {
 
 fn format_of(kind: FrameImageKind) -> Format {
     match kind {
-        DiffRadiance | SpecRadiance | Mv | DenoisedDiff | DenoisedSpec => {
-            Format::R16G16B16A16_SFLOAT
-        }
-        NormalRoughness | AlbedoMetal | Validation => Format::R8G8B8A8_UNORM,
+        DiffRadiance | SpecRadiance | Mv => Format::R16G16B16A16_SFLOAT,
+        NormalRoughness | AlbedoMetal => Format::R8G8B8A8_UNORM,
         ViewZ => Format::R32_SFLOAT,
         DisocclusionMix => Format::R8_UNORM,
     }
@@ -78,12 +68,10 @@ fn format_of(kind: FrameImageKind) -> Format {
 
 fn roles_of(kind: FrameImageKind) -> &'static [Role] {
     match kind {
-        DiffRadiance => &[Role::TraceOutput, Role::DenoiserInput, Role::CompositeRead],
-        SpecRadiance | NormalRoughness | Mv => &[Role::TraceOutput, Role::DenoiserInput],
-        ViewZ => &[Role::TraceOutput, Role::DenoiserInput, Role::CompositeRead],
-        AlbedoMetal => &[Role::TraceOutput],
-        DisocclusionMix => &[Role::TraceOutput, Role::DenoiserInput],
-        DenoisedDiff | DenoisedSpec | Validation => &[Role::DenoiserOutput, Role::CompositeRead],
+        DiffRadiance | ViewZ => &[Role::TraceOutput, Role::CompositeRead],
+        SpecRadiance | NormalRoughness | Mv | AlbedoMetal | DisocclusionMix => {
+            &[Role::TraceOutput]
+        }
     }
 }
 
@@ -187,53 +175,11 @@ impl FrameImages {
         self.entries.iter().map(|e| (e.virtual_id, e.physical_id))
     }
 
-    pub fn nrd_inputs(&self, resources: &Resources) -> NrdInputs {
-        let view = |kind: FrameImageKind| {
-            let physical_id = self.get(kind).physical_id;
-            ImageView::new_default(&resources.image(physical_id).image().clone()).unwrap()
-        };
-
-        NrdInputs {
-            diff_radiance: view(DiffRadiance),
-            spec_radiance: view(SpecRadiance),
-            normal_roughness: view(NormalRoughness),
-            viewz: view(ViewZ),
-            mv: view(Mv),
-            disocclusion_mix: view(DisocclusionMix),
-            diff_out: view(DenoisedDiff),
-            spec_out: view(DenoisedSpec),
-            validation: view(Validation),
-        }
-    }
-
     pub fn declare_trace_outputs(&self, node: &mut TaskNodeBuilder<'_>) {
         for entry in self.entries_with_role(Role::TraceOutput) {
             node.image_access(
                 entry.virtual_id,
                 AccessTypes::RAY_TRACING_SHADER_STORAGE_WRITE,
-                ImageLayoutType::General,
-            );
-        }
-    }
-
-    /// The NRD constants buffer stays undeclared on purpose: declaring the
-    /// physical id here trips ResourceMap validation (InvalidSlotError). Its
-    /// hazards are covered anyway: update_buffer lands in the same recording
-    /// as the dispatches behind an explicit TRANSFER_WRITE barrier, and
-    /// frames are serialized by the per-frame wait_idle.
-    pub fn declare_denoise_io(&self, node: &mut TaskNodeBuilder<'_>) {
-        for entry in self.entries_with_role(Role::DenoiserInput) {
-            node.image_access(
-                entry.virtual_id,
-                AccessTypes::COMPUTE_SHADER_SAMPLED_READ,
-                ImageLayoutType::General,
-            );
-        }
-
-        for entry in self.entries_with_role(Role::DenoiserOutput) {
-            node.image_access(
-                entry.virtual_id,
-                AccessTypes::COMPUTE_SHADER_STORAGE_WRITE,
                 ImageLayoutType::General,
             );
         }
@@ -254,10 +200,6 @@ impl FrameImages {
             .iter()
             .filter(move |e| roles_of(e.kind).contains(&role))
     }
-
-    fn get(&self, kind: FrameImageKind) -> &Entry {
-        self.entries.iter().find(|e| e.kind == kind).unwrap()
-    }
 }
 
 fn image_slot_mut(region: &mut RegionRenderContext, kind: FrameImageKind) -> &mut StorageImageId {
@@ -269,9 +211,6 @@ fn image_slot_mut(region: &mut RegionRenderContext, kind: FrameImageKind) -> &mu
         Mv => &mut region.mv_image_id,
         AlbedoMetal => &mut region.albedo_metal_image_id,
         DisocclusionMix => &mut region.disocclusion_mix_image_id,
-        DenoisedDiff => &mut region.denoised_diff_image_id,
-        DenoisedSpec => &mut region.denoised_spec_image_id,
-        Validation => &mut region.validation_image_id,
     }
 }
 
@@ -298,9 +237,7 @@ fn swapchain_storage_views(
 mod tests {
     use super::*;
     use crate::core::render::region::residency::CACHE_DIRTY_WORDS;
-    use crate::core::render::region::task::{
-        NrdFrame, RenderMode, default_scene, production_raygen,
-    };
+    use crate::core::render::region::task::{RenderMode, default_scene, production_raygen};
 
     fn test_images() -> FrameImages {
         FrameImages {
@@ -345,14 +282,9 @@ mod tests {
             normal_roughness_image_id: StorageImageId::INVALID,
             viewz_image_id: StorageImageId::INVALID,
             mv_image_id: StorageImageId::INVALID,
-            denoised_diff_image_id: StorageImageId::INVALID,
-            denoised_spec_image_id: StorageImageId::INVALID,
-            validation_image_id: StorageImageId::INVALID,
-            denoiser_active: false,
-            nrd: NrdFrame::default(),
             albedo_metal_image_id: StorageImageId::INVALID,
             disocclusion_mix_image_id: StorageImageId::INVALID,
-            ev: 0.0,
+            delta_time: 0.0,
             mode: RenderMode::default(),
             frame_seed: 0,
             cache_resolve_dispatch: 0,
@@ -380,9 +312,6 @@ mod tests {
         assert_eq!(format_of(Mv), Format::R16G16B16A16_SFLOAT);
         assert_eq!(format_of(AlbedoMetal), Format::R8G8B8A8_UNORM);
         assert_eq!(format_of(DisocclusionMix), Format::R8_UNORM);
-        assert_eq!(format_of(DenoisedDiff), Format::R16G16B16A16_SFLOAT);
-        assert_eq!(format_of(DenoisedSpec), Format::R16G16B16A16_SFLOAT);
-        assert_eq!(format_of(Validation), Format::R8G8B8A8_UNORM);
     }
 
     fn with_role(role: Role) -> Vec<FrameImageKind> {
@@ -409,34 +338,8 @@ mod tests {
     }
 
     #[test]
-    fn denoiser_inputs_exclude_albedo_metal() {
-        assert_eq!(
-            with_role(Role::DenoiserInput),
-            vec![
-                DiffRadiance,
-                SpecRadiance,
-                NormalRoughness,
-                ViewZ,
-                Mv,
-                DisocclusionMix
-            ]
-        );
-    }
-
-    #[test]
-    fn denoiser_outputs_are_the_denoised_pair_plus_validation() {
-        assert_eq!(
-            with_role(Role::DenoiserOutput),
-            vec![DenoisedDiff, DenoisedSpec, Validation]
-        );
-    }
-
-    #[test]
-    fn composite_reads_radiance_viewz_and_denoiser_outputs() {
-        assert_eq!(
-            with_role(Role::CompositeRead),
-            vec![DiffRadiance, ViewZ, DenoisedDiff, DenoisedSpec, Validation]
-        );
+    fn composite_reads_radiance_and_viewz() {
+        assert_eq!(with_role(Role::CompositeRead), vec![DiffRadiance, ViewZ]);
     }
 
     #[test]

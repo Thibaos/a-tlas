@@ -9,7 +9,7 @@
 #include "header.glsl"
 #include "common.glsl"
 #include "../common/raygen_common.glsl"
-#include "../common/nrd.glsl"
+#include "../common/radiance.glsl"
 #include "cache.glsl"
 #include "sky.glsl"
 
@@ -754,17 +754,17 @@ void main() {
         }
 
         vec4 normal_roughness = (hit_t > 0.0)
-            ? nrd_pack_normal_and_roughness(primary_normal, primary_roughness) : vec4(0.0);
+            ? pack_normal_and_roughness(primary_normal, primary_roughness) : vec4(0.0);
 
         // The lobe that continued past the primary hit carries its segment
         // length; the skipped lobe reports "no data" (NRD reconstructs it).
         float norm_hit_dist = (hit_t > 0.0 && bounce_t >= 0.0)
-            ? nrd_get_norm_hit_dist(bounce_t, viewz, primary_roughness) : 0.0;
+            ? get_norm_hit_dist(bounce_t, viewz, primary_roughness) : 0.0;
         float diff_nhd = (glass_primary || specular_lobe) ? 0.0 : norm_hit_dist;
         float spec_nhd = (glass_primary || specular_lobe) ? norm_hit_dist : 0.0;
 
-        imageStore(vko_image2D_rgba16f(diff_radiance_image_id), pixel, nrd_pack_radiance_and_norm_hit_dist(diffuse_de, diff_nhd));
-        imageStore(vko_image2D_rgba16f(spec_radiance_image_id), pixel, nrd_pack_radiance_and_norm_hit_dist(specular, spec_nhd));
+        imageStore(vko_image2D_rgba16f(diff_radiance_image_id), pixel, pack_radiance_and_norm_hit_dist(diffuse_de, diff_nhd));
+        imageStore(vko_image2D_rgba16f(spec_radiance_image_id), pixel, pack_radiance_and_norm_hit_dist(specular, spec_nhd));
         imageStore(vko_image2D_rgba8(normal_roughness_image_id), pixel, normal_roughness);
         imageStore(vko_image2D_r32f(viewz_image_id), pixel, vec4(viewz));
         imageStore(vko_image2D_rgba16f(mv_image_id), pixel, vec4(mv, 0.0));

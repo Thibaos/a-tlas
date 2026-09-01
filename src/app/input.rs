@@ -14,7 +14,6 @@ pub enum InputKey {
     Up,
     Down,
     ToggleRenderMode,
-    ToggleDenoiser,
     Close,
 }
 
@@ -49,7 +48,6 @@ pub fn map_key(key: &Key) -> Option<InputKey> {
             "s" => Some(InputKey::Backward),
             "q" => Some(InputKey::Left),
             "d" => Some(InputKey::Right),
-            "a" => Some(InputKey::ToggleDenoiser),
             _ => None,
         },
         Key::Named(NamedKey::Space) => Some(InputKey::Up),
@@ -132,7 +130,6 @@ mod tests {
             Some(InputKey::ToggleRenderMode)
         );
 
-        assert_eq!(map_key(&char_key("a")), Some(InputKey::ToggleDenoiser));
         assert_eq!(map_key(&char_key("w")), None);
         assert_eq!(map_key(&Key::Named(NamedKey::Enter)), None);
     }

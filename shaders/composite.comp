@@ -4,7 +4,7 @@
 #extension GL_EXT_GOOGLE_include_directive : enable
 
 #include <vulkano.glsl>
-#include "common/nrd.glsl"
+#include "common/radiance.glsl"
 #include "common/contract.glsl"
 #include "common/exposure.glsl"
 
@@ -14,14 +14,10 @@ layout(push_constant) uniform PushConstants {
     StorageImageId image_id;
     StorageImageId radiance_id;
     StorageImageId spec_radiance_id;
-    StorageImageId diff_denoised_id;
-    StorageImageId spec_denoised_id;
     StorageImageId viewz_id;
     StorageImageId albedo_metal_id;
-    StorageImageId validation_id;
     StorageBufferId exposure_buffer_id;
     uint mode;
-    uint denoiser;
     uint width;
     uint height;
 };
@@ -48,21 +44,11 @@ void main() {
     ivec2 p = ivec2(gl_GlobalInvocationID.xy);
     bool oob = uint(p.x) >= width || uint(p.y) >= height;
 
-    if (mode == MODE_VALIDATION) {
-        if (!oob) {
-            vec4 overlay = imageLoad(vko_image2D_rgba8(validation_id), p);
-            imageStore(vko_image2D_rgba8(image_id), p, vec4(overlay.rgb, 1.0));
-        }
-
-        return;
-    }
-
     if (mode != MODE_VOXEL) {
         return;
     }
 
     vec3 radiance = vec3(0.0);
-    vec3 raw = vec3(0.0);
     float viewz = 1.0e9;
     bool is_sky = true;
 
@@ -73,16 +59,9 @@ void main() {
         viewz = imageLoad(vko_image2D_r32f(viewz_id), p).x;
         is_sky = viewz >= VIEWZ_SKY;
 
-        raw = nrd_unpack_radiance(diff_raw);
-
-        if (denoiser == 0u) {
-            vec3 spec = nrd_unpack_radiance(imageLoad(vko_image2D_rgba16f(spec_radiance_id), p));
-            radiance = is_sky ? raw : raw * max(albedo, vec3(ALBEDO_EPS)) + spec;
-        } else {
-            vec3 diffuse = nrd_unpack_radiance(imageLoad(vko_image2D_rgba16f(diff_denoised_id), p));
-            vec3 specular = nrd_unpack_radiance(imageLoad(vko_image2D_rgba16f(spec_denoised_id), p));
-            radiance = is_sky ? raw : diffuse * max(albedo, vec3(ALBEDO_EPS)) + specular;
-        }
+        vec3 raw = unpack_radiance(diff_raw);
+        vec3 spec = unpack_radiance(imageLoad(vko_image2D_rgba16f(spec_radiance_id), p));
+        radiance = is_sky ? raw : raw * max(albedo, vec3(ALBEDO_EPS)) + spec;
     }
 
     if (!oob) {

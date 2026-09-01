@@ -328,10 +328,6 @@ mod contract {
         #[cfg(debug_assertions)]
         {
             assert_eq!(uint("MODE_HULL"), RenderMode::Hull as u32 as u64);
-            assert_eq!(
-                uint("MODE_VALIDATION"),
-                RenderMode::NrdValidation as u32 as u64
-            );
             assert_eq!(uint("MODE_NORMAL"), RenderMode::Normal as u32 as u64);
         }
 

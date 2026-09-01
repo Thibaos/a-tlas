@@ -1,7 +1,7 @@
-//! The frame's one owner: the Change queue, RegionStore, and Frame history
-//! behind the swapchain, task graph, and NRD lifecycle. The app reports
-//! events and per-frame inputs; the whole frame sequence — recreate,
-//! resize, flight wait, store drain, history advance, execute — lives here.
+//! The frame's one owner: the Change queue and RegionStore behind the
+//! swapchain and the task graph. The app reports events and per-frame
+//! inputs; the whole frame sequence (recreate, resize, flight wait, store
+//! drain, execute) lives here.
 
 use dot_vox::DotVoxData;
 use glam::{IVec3, Mat4, camera::lh::proj::vulkan::perspective};
@@ -15,7 +15,7 @@ use vulkano::{
 use vulkano_taskgraph::{
     Id, QueueFamilyType,
     descriptor_set::StorageImageId,
-    graph::{CompileInfo, ExecutableTaskGraph, ExecuteError, NodeId, ResourceMap, TaskGraph},
+    graph::{CompileInfo, ExecutableTaskGraph, ExecuteError, ResourceMap, TaskGraph},
     resource::{AccessTypes, ImageLayoutType},
 };
 use winit::window::Window;
@@ -25,14 +25,10 @@ use crate::core::render::{
     composite::{CompositeTask, create_composite_pipeline, create_exposure_integrate_pipeline},
     frame_images::FrameImages,
     gpu::{GpuDesc, MIN_SWAPCHAIN_IMAGES},
-    nrd::{DenoiseTask, NrdInstance, history::NrdHistory},
     region::{
         feed::RendererInput,
         residency::{CACHE_DIRTY_WORDS, RegionStore},
-        task::{
-            NrdFrame, RegionRenderContext, RegionRenderTask, RenderMode, default_scene,
-            production_raygen,
-        },
+        task::{RegionRenderContext, RegionRenderTask, RenderMode, default_scene, production_raygen},
     },
 };
 use crate::core::world::grid::region_id;
@@ -71,7 +67,6 @@ pub struct FrameInput {
     pub view: Mat4,
     pub resized: bool,
     pub next_mode: bool,
-    pub toggle_denoiser: bool,
     pub delta_time: f32,
 }
 
@@ -89,12 +84,11 @@ pub struct FramePipeline {
     recreate_swapchain: bool,
     task_graph: ExecutableTaskGraph<RegionRenderContext>,
     frame_images: FrameImages,
-    denoise_node_id: NodeId,
     region: RegionRenderContext,
-    nrd: Option<Arc<NrdInstance>>,
     input: RendererInput,
     store: RegionStore,
-    history: NrdHistory,
+    prev_view: Mat4,
+    prev_proj: Mat4,
     prev_scene: production_raygen::Scene,
     cache_event_frames: u32,
 }
@@ -105,7 +99,6 @@ impl FramePipeline {
         input.submit_batch(emit_snapshots(world));
 
         let store = RegionStore::new(gpu, voxel_data, &input);
-        let history = NrdHistory::new();
 
         let surface = Surface::from_window(&gpu.instance, &window).unwrap();
 
@@ -167,7 +160,6 @@ impl FramePipeline {
         let mut frame_images = FrameImages::declare(&mut task_graph);
         let extent = gpu.resources.swapchain(swapchain_id).images()[0].extent();
         frame_images.recreate(&gpu.resources, swapchain_id, extent);
-        let nrd = NrdInstance::recreate(None, gpu, extent);
 
         let raygen = unsafe {
             production_raygen::load(&gpu.device)
@@ -212,17 +204,9 @@ impl FramePipeline {
         frame_images.declare_composite_reads(&mut composite_node);
         let composite_node_id = composite_node.build();
 
-        let mut denoise_node =
-            task_graph.create_task_node("Denoise", QueueFamilyType::Graphics, DenoiseTask::new());
-        frame_images.declare_denoise_io(&mut denoise_node);
-        let denoise_node_id = denoise_node.build();
-
         task_graph.add_edge(rt_node_id, resolve_node_id).unwrap();
         task_graph
-            .add_edge(resolve_node_id, denoise_node_id)
-            .unwrap();
-        task_graph
-            .add_edge(denoise_node_id, composite_node_id)
+            .add_edge(resolve_node_id, composite_node_id)
             .unwrap();
 
         let mut task_graph = unsafe {
@@ -261,17 +245,6 @@ impl FramePipeline {
                 .pipeline = Some(resolve_pipeline);
         }
 
-        if let Some(nrd) = nrd.clone() {
-            let task = task_graph
-                .task_node_mut(denoise_node_id)
-                .unwrap()
-                .task_mut()
-                .downcast_mut::<DenoiseTask>()
-                .unwrap();
-            task.instance = Some(nrd.clone());
-            task.inputs = Some(frame_images.nrd_inputs(&gpu.resources));
-        }
-
         let mut region = RegionRenderContext {
             camera: production_raygen::Camera {
                 proj_inverse: [[0.0; 4]; 4],
@@ -288,11 +261,6 @@ impl FramePipeline {
             normal_roughness_image_id: StorageImageId::INVALID,
             viewz_image_id: StorageImageId::INVALID,
             mv_image_id: StorageImageId::INVALID,
-            denoised_diff_image_id: StorageImageId::INVALID,
-            denoised_spec_image_id: StorageImageId::INVALID,
-            validation_image_id: StorageImageId::INVALID,
-            denoiser_active: nrd.is_some(),
-            nrd: NrdFrame::default(),
             albedo_metal_image_id: StorageImageId::INVALID,
             disocclusion_mix_image_id: StorageImageId::INVALID,
             delta_time: 0.0,
@@ -310,12 +278,11 @@ impl FramePipeline {
             recreate_swapchain: false,
             task_graph,
             frame_images,
-            denoise_node_id,
             region,
-            nrd,
             input,
             store,
-            history,
+            prev_view: Mat4::IDENTITY,
+            prev_proj: Mat4::IDENTITY,
             prev_scene: default_scene(),
             cache_event_frames: 0,
         }
@@ -338,24 +305,9 @@ impl FramePipeline {
 
         let extent = gpu.resources.swapchain(self.swapchain_id).images()[0].extent();
 
-        self.nrd = NrdInstance::recreate(self.nrd.take(), gpu, extent);
-
         self.frame_images
             .recreate(&gpu.resources, self.swapchain_id, extent);
         self.frame_images.bind_into(&mut self.region);
-        self.region.denoiser_active = self.nrd.is_some();
-
-        if let Some(nrd) = &self.nrd {
-            if let Some(task) = self
-                .task_graph
-                .task_node_mut(self.denoise_node_id)
-                .ok()
-                .and_then(|node| node.task_mut().downcast_mut::<DenoiseTask>())
-            {
-                task.instance = Some(nrd.clone());
-                task.inputs = Some(self.frame_images.nrd_inputs(&gpu.resources));
-            }
-        }
 
         self.recreate_swapchain = false;
 
@@ -370,10 +322,6 @@ impl FramePipeline {
 
         if plan.recreate {
             self.recreate_if_needed(gpu);
-        }
-
-        if plan.resized {
-            self.history.resized();
         }
 
         if !plan.execute {
@@ -401,44 +349,27 @@ impl FramePipeline {
 
         #[cfg(debug_assertions)]
         if input.next_mode {
-            self.region.mode = next_render_mode(self.region.mode, self.nrd.is_some());
-        }
-
-        if input.toggle_denoiser && self.nrd.is_some() {
-            self.region.denoiser_active = !self.region.denoiser_active;
-
-            if self.region.denoiser_active {
-                self.history.request_clear();
-            }
-
-            println!(
-                "denoiser: {}",
-                if self.region.denoiser_active {
-                    "on"
-                } else {
-                    "raw"
-                }
-            );
+            self.region.mode = next_render_mode(self.region.mode);
         }
 
         let aspect = extent.width as f32 / extent.height as f32;
         let proj = perspective(PROJ_FOV, aspect, PROJ_NEAR, PROJ_FAR);
-        let prev = self.history.observe_camera(input.view, proj);
+        let (view_prev, proj_prev) = (self.prev_view, self.prev_proj);
+        self.prev_view = input.view;
+        self.prev_proj = proj;
 
         self.region.camera = production_raygen::Camera {
             proj_inverse: proj.inverse().to_cols_array_2d(),
             view_inverse: input.view.inverse().to_cols_array_2d(),
-            view_prev: prev.view.to_cols_array_2d(),
-            proj_prev: prev.proj.to_cols_array_2d(),
+            view_prev: view_prev.to_cols_array_2d(),
+            proj_prev: proj_prev.to_cols_array_2d(),
         };
 
         self.region.delta_time = input.delta_time;
 
         self.region.frame_seed = self.region.frame_seed.wrapping_add(1);
 
-        self.region.nrd = self.history.advance(edited, self.nrd.is_some());
-
-        if plan.resized || self.region.nrd.clear {
+        if plan.resized {
             self.store.clear_cache_table(gpu);
         }
 
@@ -510,19 +441,11 @@ fn frame_plan(recreate_requested: bool, width: u32, height: u32) -> FramePlan {
 }
 
 #[cfg(debug_assertions)]
-fn next_render_mode(mode: RenderMode, denoiser_present: bool) -> RenderMode {
+fn next_render_mode(mode: RenderMode) -> RenderMode {
     match mode {
         RenderMode::Voxel => RenderMode::Hull,
         RenderMode::Hull => RenderMode::Normal,
-        RenderMode::Normal => {
-            if denoiser_present {
-                RenderMode::NrdValidation
-            } else {
-                eprintln!("render mode: NRD validation unavailable, denoiser inactive");
-                RenderMode::Voxel
-            }
-        }
-        RenderMode::NrdValidation => RenderMode::Voxel,
+        RenderMode::Normal => RenderMode::Voxel,
     }
 }
 
@@ -559,21 +482,10 @@ mod tests {
 
     #[cfg(debug_assertions)]
     #[test]
-    fn mode_cycle_gates_nrd_validation_on_denoiser_presence() {
-        assert_eq!(next_render_mode(RenderMode::Voxel, true), RenderMode::Hull);
-        assert_eq!(next_render_mode(RenderMode::Hull, true), RenderMode::Normal);
-        assert_eq!(
-            next_render_mode(RenderMode::Normal, true),
-            RenderMode::NrdValidation
-        );
-        assert_eq!(
-            next_render_mode(RenderMode::NrdValidation, true),
-            RenderMode::Voxel
-        );
-        assert_eq!(
-            next_render_mode(RenderMode::Normal, false),
-            RenderMode::Voxel
-        );
+    fn mode_cycle_returns_to_voxel() {
+        assert_eq!(next_render_mode(RenderMode::Voxel), RenderMode::Hull);
+        assert_eq!(next_render_mode(RenderMode::Hull), RenderMode::Normal);
+        assert_eq!(next_render_mode(RenderMode::Normal), RenderMode::Voxel);
     }
 
     #[test]
