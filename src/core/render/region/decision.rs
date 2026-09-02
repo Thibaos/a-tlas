@@ -1,7 +1,4 @@
-//! The residency state machine over plain data: what each packed Region does
-//! to the lattice's resident set, decided without a device. [`RegionStore`]
-//! executes the decision's effects; only device work lives there.
-
+use anyhow::Context;
 use glam::IVec3;
 
 use crate::core::render::region::pack::RegionData;
@@ -49,16 +46,19 @@ pub fn decide(
     slots: &[Option<RegionSlot>],
     resident_ids: &[u32],
     packs: impl IntoIterator<Item = (IVec3, Option<RegionData>)>,
-) -> ResidencyDecision {
+) -> anyhow::Result<ResidencyDecision> {
     let mut decision = ResidencyDecision {
         resident_ids: resident_ids.to_vec(),
-        ..Default::default()
+        ..ResidencyDecision::default()
     };
 
     for (region_index, pack) in packs {
         let id = region_id(region_index);
 
-        let was_resident = slots[id as usize].is_some();
+        let was_resident = slots
+            .get(usize::try_from(id)?)
+            .context(format!("slot {id} not found"))?
+            .is_some();
 
         let effect = match (was_resident, pack) {
             (false, None) => RegionEffect::Ignore,
@@ -76,11 +76,17 @@ pub fn decide(
             }
 
             (true, None) => {
-                let slot = slots[id as usize].as_ref().unwrap();
+                let slot = slots
+                    .get(usize::try_from(id)?)
+                    .context(format!("slot {id} not found"))?
+                    .as_ref()
+                    .context(format!("slot {id} is None"))?;
+
                 remove_resident(&mut decision.resident_ids, id);
                 decision.left_resident.push(region_index);
                 decision.tlas_dirty = true;
                 decision.table_changed = true;
+
                 RegionEffect::Exit {
                     retire_pool: slot.pool_capacity,
                     retire_blas: slot.aabb_capacity,
@@ -88,7 +94,12 @@ pub fn decide(
             }
 
             (true, Some(pack)) => {
-                let slot = slots[id as usize].as_ref().unwrap();
+                let slot = slots
+                    .get(usize::try_from(id)?)
+                    .context(format!("slot {id} not found"))?
+                    .as_ref()
+                    .context(format!("slot {id} is None"))?;
+
                 let pool_grows = slot.pool_capacity < pack.blocks.len() as u64;
                 let blas_grows = slot.aabb_capacity < pack.aabbs.len() as u32;
 
@@ -115,7 +126,7 @@ pub fn decide(
         decision.effects.push((id, effect));
     }
 
-    decision
+    Ok(decision)
 }
 
 fn insert_resident(resident_ids: &mut Vec<u32>, id: u32) {
@@ -170,7 +181,7 @@ mod tests {
         let index = IVec3::new(1, 2, 3);
         let packs = [(index, pack(512, 4))];
 
-        let decision = decide(&empty_slots(), &[], packs);
+        let decision = decide(&empty_slots(), &[], packs).unwrap();
 
         assert!(matches!(
             &decision.effects[0].1,
@@ -193,7 +204,7 @@ mod tests {
         let mut slots = empty_slots();
         slots[id as usize] = slot(256, 8);
 
-        let decision = decide(&slots, &[id], [(index, None)]);
+        let decision = decide(&slots, &[id], [(index, None)]).unwrap();
 
         assert!(matches!(
             &decision.effects[0].1,
@@ -215,7 +226,7 @@ mod tests {
         let mut slots = empty_slots();
         slots[id as usize] = slot(256, 8);
 
-        let decision = decide(&slots, &[id], [(index, pack(512, 4))]);
+        let decision = decide(&slots, &[id], [(index, pack(512, 4))]).unwrap();
 
         assert!(matches!(
             &decision.effects[0].1,
@@ -240,7 +251,7 @@ mod tests {
         let mut slots = empty_slots();
         slots[id as usize] = slot(256, 8);
 
-        let decision = decide(&slots, &[id], [(index, pack(128, 16))]);
+        let decision = decide(&slots, &[id], [(index, pack(128, 16))]).unwrap();
 
         assert!(matches!(
             &decision.effects[0].1,
@@ -264,7 +275,7 @@ mod tests {
         let mut slots = empty_slots();
         slots[id as usize] = slot(256, 8);
 
-        let decision = decide(&slots, &[id], [(index, pack(128, 4))]);
+        let decision = decide(&slots, &[id], [(index, pack(128, 4))]).unwrap();
 
         assert!(matches!(
             &decision.effects[0].1,
@@ -294,7 +305,7 @@ mod tests {
 
         let packs = [(left, None), (grown, pack(256, 8)), (entered, pack(32, 1))];
 
-        let decision = decide(&slots, &resident, packs);
+        let decision = decide(&slots, &resident, packs).unwrap();
 
         let effect_ids: Vec<u32> = decision.effects.iter().map(|&(id, _)| id).collect();
         assert_eq!(
@@ -329,7 +340,7 @@ mod tests {
     fn an_empty_region_with_no_pack_is_ignored() {
         let index = IVec3::new(2, 3, 4);
 
-        let decision = decide(&empty_slots(), &[], [(index, None)]);
+        let decision = decide(&empty_slots(), &[], [(index, None)]).unwrap();
 
         assert!(matches!(&decision.effects[0].1, RegionEffect::Ignore));
         assert!(decision.resident_ids.is_empty());

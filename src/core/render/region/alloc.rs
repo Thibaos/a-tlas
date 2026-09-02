@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use anyhow::Context;
 use vulkano::{
     acceleration_structure::{AabbPositions, AccelerationStructure},
     buffer::{Buffer, BufferCreateInfo, BufferUsage},
@@ -9,12 +10,12 @@ use vulkano_taskgraph::Id;
 
 use crate::core::render::gpu::GpuDesc;
 
-pub(crate) struct FreedPool {
+pub struct FreedPool {
     pub(crate) buffer_id: Id<Buffer>,
     pub(crate) capacity: u64,
 }
 
-pub(crate) struct FreedBlas {
+pub struct FreedBlas {
     pub(crate) aabb_buffer_id: Id<Buffer>,
     pub(crate) aabb_capacity: u32,
     pub(crate) blas: Arc<AccelerationStructure>,
@@ -22,13 +23,13 @@ pub(crate) struct FreedBlas {
 }
 
 #[derive(Default)]
-pub(crate) struct FreeLists {
+pub struct FreeLists {
     pub(crate) pools: Vec<FreedPool>,
     pub(crate) blas: Vec<FreedBlas>,
 }
 
 #[derive(Default)]
-pub(crate) struct PendingFrees {
+pub struct PendingFrees {
     pub(crate) pools: Vec<FreedPool>,
     pub(crate) blas: Vec<FreedBlas>,
 }
@@ -52,95 +53,93 @@ fn take_best_fit<T>(entries: &mut Vec<T>, needed: u64, capacity: impl Fn(&T) -> 
     best.map(|(i, _)| entries.swap_remove(i))
 }
 
-pub(crate) struct PoolAllocation {
+pub struct PoolAllocation {
     pub(crate) buffer_id: Id<Buffer>,
     pub(crate) capacity: u64,
 }
 
-pub(crate) struct BlasAllocation {
+pub struct BlasAllocation {
     pub(crate) aabb_buffer_id: Id<Buffer>,
     pub(crate) aabb_capacity: u32,
     pub(crate) as_storage: Option<(Arc<AccelerationStructure>, u64)>,
 }
 
-pub(crate) fn allocate_pool(
+pub fn allocate_pool(
     gpu: &GpuDesc,
     free: &mut FreeLists,
     stats: &mut AllocStats,
     needed: u64,
-) -> PoolAllocation {
+) -> anyhow::Result<PoolAllocation> {
     if let Some(freed) = take_best_fit(&mut free.pools, needed, |f| f.capacity) {
-        stats.pool_reuses += 1;
-        PoolAllocation {
+        stats.pool_reuses = stats.pool_reuses.saturating_add(1);
+
+        Ok(PoolAllocation {
             buffer_id: freed.buffer_id,
             capacity: freed.capacity,
-        }
+        })
     } else {
-        let buffer_id = gpu
-            .resources
-            .create_buffer(
-                &BufferCreateInfo {
-                    usage: BufferUsage::SHADER_DEVICE_ADDRESS | BufferUsage::STORAGE_BUFFER,
-                    ..Default::default()
-                },
-                &AllocationCreateInfo {
-                    memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
-                        | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
-                    ..Default::default()
-                },
-                DeviceLayout::new_unsized::<[u8]>(needed).unwrap(),
-            )
-            .unwrap();
-        stats.pool_allocations += 1;
-        PoolAllocation {
+        let buffer_id = gpu.resources.create_buffer(
+            &BufferCreateInfo {
+                usage: BufferUsage::SHADER_DEVICE_ADDRESS | BufferUsage::STORAGE_BUFFER,
+                ..Default::default()
+            },
+            &AllocationCreateInfo {
+                memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
+                    | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
+                ..Default::default()
+            },
+            DeviceLayout::new_unsized::<[u8]>(needed).context("device layout creation failed")?,
+        )?;
+
+        stats.pool_allocations = stats.pool_allocations.saturating_add(1);
+
+        Ok(PoolAllocation {
             buffer_id,
             capacity: needed,
-        }
+        })
     }
 }
 
-pub(crate) fn allocate_blas(
+pub fn allocate_blas(
     gpu: &GpuDesc,
     free: &mut FreeLists,
     stats: &mut AllocStats,
     aabb_count: u32,
-) -> BlasAllocation {
-    if let Some(freed) = take_best_fit(&mut free.blas, aabb_count as u64, |f| {
-        f.aabb_capacity as u64
+) -> anyhow::Result<BlasAllocation> {
+    if let Some(freed) = take_best_fit(&mut free.blas, u64::from(aabb_count), |f| {
+        u64::from(f.aabb_capacity)
     }) {
-        stats.blas_reuses += 1;
+        stats.blas_reuses = stats.blas_reuses.strict_add(1);
 
-        BlasAllocation {
+        Ok(BlasAllocation {
             aabb_buffer_id: freed.aabb_buffer_id,
             aabb_capacity: freed.aabb_capacity,
             as_storage: Some((freed.blas, freed.blas_storage_size)),
-        }
+        })
     } else {
-        let aabb_buffer_id = gpu
-            .resources
-            .create_buffer(
-                &BufferCreateInfo {
-                    usage: BufferUsage::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY
-                        | BufferUsage::SHADER_DEVICE_ADDRESS
-                        | BufferUsage::STORAGE_BUFFER,
-                    ..Default::default()
-                },
-                &AllocationCreateInfo {
-                    memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
-                        | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
-                    ..Default::default()
-                },
-                DeviceLayout::new_unsized::<[AabbPositions]>(aabb_count as u64).unwrap(),
-            )
-            .unwrap();
+        let aabb_buffer_id = gpu.resources.create_buffer(
+            &BufferCreateInfo {
+                usage: BufferUsage::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY
+                    | BufferUsage::SHADER_DEVICE_ADDRESS
+                    | BufferUsage::STORAGE_BUFFER,
+                ..Default::default()
+            },
+            &AllocationCreateInfo {
+                memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
+                    | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
+                ..Default::default()
+            },
+            DeviceLayout::new_unsized::<[AabbPositions]>(u64::from(aabb_count))
+                .context("device layout creation failed")?,
+        )?;
 
-        stats.blas_allocations += 1;
+        stats.blas_allocations = stats.blas_allocations.saturating_add(1);
 
-        BlasAllocation {
+        Ok(BlasAllocation {
             aabb_buffer_id,
             aabb_capacity: aabb_count,
             as_storage: None,
-        }
+        })
     }
 }
 
@@ -189,5 +188,4 @@ mod tests {
         assert_eq!(taken.capacity, 64);
         assert!(pending.pools.is_empty());
     }
-
 }

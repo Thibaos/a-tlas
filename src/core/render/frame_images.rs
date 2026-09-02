@@ -1,9 +1,4 @@
-//! The frame images (CONTEXT.md): every extent-bound image the frame's
-//! passes read and write. The set spans the ray pass's color output and the
-//! swapchain's bindless storage views. The task graph references the set
-//! virtually; physical images and bindless registrations attach per extent,
-//! and a resize destroys and recreates the whole set in one deferred batch.
-
+use anyhow::Context;
 use vulkano::{
     format::Format,
     image::{Image, ImageCreateInfo, ImageLayout, ImageType, ImageUsage, view::ImageView},
@@ -24,9 +19,7 @@ pub enum FrameImageKind {
     Color,
 }
 
-use FrameImageKind::*;
-
-const KINDS: [FrameImageKind; 1] = [Color];
+const KINDS: [FrameImageKind; 1] = [FrameImageKind::Color];
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Role {
@@ -42,15 +35,15 @@ struct Entry {
     storage_id: StorageImageId,
 }
 
-fn format_of(kind: FrameImageKind) -> Format {
+const fn format_of(kind: FrameImageKind) -> Format {
     match kind {
-        Color => Format::R16G16B16A16_SFLOAT,
+        FrameImageKind::Color => Format::R16G16B16A16_SFLOAT,
     }
 }
 
-fn roles_of(kind: FrameImageKind) -> &'static [Role] {
+const fn roles_of(kind: FrameImageKind) -> &'static [Role] {
     match kind {
-        Color => &[Role::TraceOutput, Role::CompositeRead],
+        FrameImageKind::Color => &[Role::TraceOutput, Role::CompositeRead],
     }
 }
 
@@ -96,7 +89,7 @@ impl FrameImages {
         resources: &Resources,
         swapchain_id: Id<Swapchain>,
         extent: [u32; 3],
-    ) {
+    ) -> anyhow::Result<()> {
         if self.attached {
             let mut batch = resources.create_deferred_batch();
 
@@ -112,26 +105,26 @@ impl FrameImages {
             batch.enqueue();
         }
 
-        self.swapchain_storage = swapchain_storage_views(resources, swapchain_id);
+        self.swapchain_storage = swapchain_storage_views(resources, swapchain_id)?;
 
-        let bcx = resources.bindless_context().unwrap();
+        let bcx = resources
+            .bindless_context()
+            .context("no bindless context")?;
 
         for entry in &mut self.entries {
-            let physical_id = resources
-                .create_image(
-                    &ImageCreateInfo {
-                        image_type: ImageType::Dim2d,
-                        format: entry.format,
-                        extent: [extent[0], extent[1], 1],
-                        usage: ImageUsage::STORAGE | ImageUsage::SAMPLED,
-                        ..Default::default()
-                    },
-                    &AllocationCreateInfo::default(),
-                )
-                .unwrap();
+            let physical_id = resources.create_image(
+                &ImageCreateInfo {
+                    image_type: ImageType::Dim2d,
+                    format: entry.format,
+                    extent: [extent[0], extent[1], 1],
+                    usage: ImageUsage::STORAGE | ImageUsage::SAMPLED,
+                    ..Default::default()
+                },
+                &AllocationCreateInfo::default(),
+            )?;
 
             let image = resources.image(physical_id).image().clone();
-            let view = ImageView::new_default(&image).unwrap();
+            let view = ImageView::new_default(&image)?;
 
             entry.physical_id = physical_id;
             entry.storage_id = bcx
@@ -140,6 +133,8 @@ impl FrameImages {
         }
 
         self.attached = true;
+
+        Ok(())
     }
 
     pub fn bind_into(&self, region: &mut RegionRenderContext) {
@@ -147,7 +142,9 @@ impl FrameImages {
             *image_slot_mut(region, entry.kind) = entry.storage_id;
         }
 
-        region.swapchain_storage_image_ids = self.swapchain_storage.clone();
+        region
+            .swapchain_storage_image_ids
+            .clone_from(&self.swapchain_storage);
     }
 
     pub fn resource_pairs(&self) -> impl Iterator<Item = (Id<Image>, Id<Image>)> + '_ {
@@ -181,27 +178,33 @@ impl FrameImages {
     }
 }
 
-fn image_slot_mut(region: &mut RegionRenderContext, kind: FrameImageKind) -> &mut StorageImageId {
+const fn image_slot_mut(
+    region: &mut RegionRenderContext,
+    kind: FrameImageKind,
+) -> &mut StorageImageId {
     match kind {
-        Color => &mut region.color_image_id,
+        FrameImageKind::Color => &mut region.color_image_id,
     }
 }
 
 fn swapchain_storage_views(
     resources: &Resources,
     swapchain_id: Id<Swapchain>,
-) -> Vec<StorageImageId> {
-    let bcx = resources.bindless_context().unwrap();
+) -> anyhow::Result<Vec<StorageImageId>> {
+    let bcx = resources
+        .bindless_context()
+        .context("no bindless context")?;
     let swapchain_state = resources.swapchain(swapchain_id);
     let images = swapchain_state.images();
 
     images
         .iter()
         .map(|image| {
-            let view = ImageView::new_default(image).unwrap();
+            let view = ImageView::new_default(image)?;
 
-            bcx.global_set()
-                .add_storage_image(view, ImageLayout::General)
+            Ok(bcx
+                .global_set()
+                .add_storage_image(view, ImageLayout::General))
         })
         .collect()
 }
@@ -251,10 +254,13 @@ mod tests {
 
     #[test]
     fn color_is_the_single_frame_image() {
-        assert_eq!(KINDS, [Color]);
-        assert_eq!(format_of(Color), Format::R16G16B16A16_SFLOAT);
-        assert_eq!(with_role(Role::TraceOutput), vec![Color]);
-        assert_eq!(with_role(Role::CompositeRead), vec![Color]);
+        assert_eq!(KINDS, [FrameImageKind::Color]);
+        assert_eq!(
+            format_of(FrameImageKind::Color),
+            Format::R16G16B16A16_SFLOAT
+        );
+        assert_eq!(with_role(Role::TraceOutput), vec![FrameImageKind::Color]);
+        assert_eq!(with_role(Role::CompositeRead), vec![FrameImageKind::Color]);
     }
 
     #[test]

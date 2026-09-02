@@ -1,3 +1,4 @@
+use anyhow::Context;
 use dot_vox::DotVoxData;
 use glam::{Mat4, camera::lh::proj::vulkan::perspective};
 use std::sync::Arc;
@@ -5,7 +6,7 @@ use std::sync::Arc;
 use vulkano::{
     VulkanError,
     image::{ImageFormatInfo, ImageUsage},
-    swapchain::{PresentMode, Surface, Swapchain, SwapchainCreateInfo},
+    swapchain::{PresentMode, Surface, SurfaceInfo, Swapchain, SwapchainCreateInfo},
 };
 use vulkano_taskgraph::{
     Id, QueueFamilyType,
@@ -13,7 +14,7 @@ use vulkano_taskgraph::{
     graph::{CompileInfo, ExecutableTaskGraph, ExecuteError, ResourceMap, TaskGraph},
     resource::{AccessTypes, ImageLayoutType},
 };
-use winit::window::Window;
+use winit::{dpi::PhysicalSize, window::Window};
 
 use crate::core::render::{
     composite::{CompositeTask, create_composite_pipeline},
@@ -52,6 +53,56 @@ pub struct FramePipeline {
     store: RegionStore,
 }
 
+fn create_swapchain(
+    gpu: &GpuDesc,
+    surface: &Arc<Surface>,
+    window_size: PhysicalSize<u32>,
+) -> anyhow::Result<Id<Swapchain>> {
+    let surface_capabilities = gpu
+        .device
+        .physical_device()
+        .surface_capabilities(surface, &SurfaceInfo::default())?;
+
+    let (image_format, image_color_space) = gpu
+        .device
+        .physical_device()
+        .surface_formats(surface, &SurfaceInfo::default())?
+        .into_iter()
+        .find(|(format, _)| {
+            gpu.device
+                .physical_device()
+                .image_format_properties(&ImageFormatInfo {
+                    format: *format,
+                    usage: ImageUsage::STORAGE | ImageUsage::COLOR_ATTACHMENT,
+                    ..ImageFormatInfo::default()
+                })
+                .is_ok_and(|i| i.is_some())
+        })
+        .context("surface does not support storage usage")?;
+
+    let swapchain_id = gpu.resources.create_swapchain(
+        surface,
+        &SwapchainCreateInfo {
+            present_mode: PresentMode::Immediate,
+            min_image_count: surface_capabilities
+                .min_image_count
+                .max(MIN_SWAPCHAIN_IMAGES),
+            image_format,
+            image_extent: window_size.into(),
+            image_usage: ImageUsage::STORAGE | ImageUsage::COLOR_ATTACHMENT,
+            image_color_space,
+            composite_alpha: surface_capabilities
+                .supported_composite_alpha
+                .into_iter()
+                .next()
+                .context("surface does not support composite alpha")?,
+            ..SwapchainCreateInfo::default()
+        },
+    )?;
+
+    Ok(swapchain_id)
+}
+
 impl FramePipeline {
     pub fn new(
         gpu: &GpuDesc,
@@ -63,74 +114,27 @@ impl FramePipeline {
         input.submit_batch(emit_snapshots(world));
 
         let store = RegionStore::new(gpu, voxel_data, &input)?;
-
-        let surface = Surface::from_window(&gpu.instance, &window).unwrap();
-
+        let surface = Surface::from_window(&gpu.instance, &window)?;
         let window_size = window.inner_size();
-
-        let swapchain_id = {
-            let surface_capabilities = gpu
-                .device
-                .physical_device()
-                .surface_capabilities(&surface, &Default::default())
-                .unwrap();
-
-            let (image_format, image_color_space) = gpu
-                .device
-                .physical_device()
-                .surface_formats(&surface, &Default::default())
-                .unwrap()
-                .into_iter()
-                .find(|(format, _)| {
-                    gpu.device
-                        .physical_device()
-                        .image_format_properties(&ImageFormatInfo {
-                            format: *format,
-                            usage: ImageUsage::STORAGE | ImageUsage::COLOR_ATTACHMENT,
-                            ..Default::default()
-                        })
-                        .unwrap()
-                        .is_some()
-                })
-                .unwrap();
-
-            gpu.resources
-                .create_swapchain(
-                    &surface,
-                    &SwapchainCreateInfo {
-                        present_mode: PresentMode::Immediate,
-                        min_image_count: surface_capabilities
-                            .min_image_count
-                            .max(MIN_SWAPCHAIN_IMAGES),
-                        image_format,
-                        image_extent: window_size.into(),
-                        image_usage: ImageUsage::STORAGE | ImageUsage::COLOR_ATTACHMENT,
-                        image_color_space,
-                        composite_alpha: surface_capabilities
-                            .supported_composite_alpha
-                            .into_iter()
-                            .next()
-                            .unwrap(),
-                        ..Default::default()
-                    },
-                )
-                .unwrap()
-        };
+        let swapchain_id = create_swapchain(gpu, &surface, window_size)?;
 
         let mut task_graph = TaskGraph::new(&gpu.resources);
 
         let virtual_swapchain_id = task_graph.add_swapchain(&SwapchainCreateInfo::default());
 
         let mut frame_images = FrameImages::declare(&mut task_graph);
-        let extent = gpu.resources.swapchain(swapchain_id).images()[0].extent();
-        frame_images.recreate(&gpu.resources, swapchain_id, extent);
+        let extent = gpu
+            .resources
+            .swapchain(swapchain_id)
+            .images()
+            .first()
+            .context("no swapchain image")?
+            .extent();
+        frame_images.recreate(&gpu.resources, swapchain_id, extent)?;
 
-        let raygen = unsafe {
-            production_raygen::load(&gpu.device)
-                .unwrap()
-                .entry_point("main")
-                .unwrap()
-        };
+        let raygen = unsafe { production_raygen::load(&gpu.device)? }
+            .entry_point("main")
+            .context("entry point not found")?;
 
         let rt_pass = RegionRenderTask::new(gpu, &store, virtual_swapchain_id, &raygen);
         let instance_buffer_id = rt_pass.instance_buffer_id();
@@ -161,27 +165,25 @@ impl FramePipeline {
         frame_images.declare_composite_reads(&mut composite_node);
         let composite_node_id = composite_node.build();
 
-        task_graph.add_edge(rt_node_id, composite_node_id).unwrap();
+        task_graph.add_edge(rt_node_id, composite_node_id)?;
 
         let mut task_graph = unsafe {
             task_graph.compile(&CompileInfo {
                 queues: &[&gpu.graphics_queue],
                 present_queue: Some(&gpu.graphics_queue),
                 flight_id: gpu.graphics_flight_id,
-                ..Default::default()
+                ..CompileInfo::default()
             })
-        }
-        .unwrap();
+        }?;
 
         {
-            let composite_pipeline = create_composite_pipeline(gpu);
+            let composite_pipeline = create_composite_pipeline(gpu)?;
 
             let task = task_graph
-                .task_node_mut(composite_node_id)
-                .unwrap()
+                .task_node_mut(composite_node_id)?
                 .task_mut()
                 .downcast_mut::<CompositeTask>()
-                .unwrap();
+                .context("composite task cast failed")?;
 
             task.pipeline = Some(composite_pipeline);
         }
@@ -213,9 +215,9 @@ impl FramePipeline {
         })
     }
 
-    fn recreate_if_needed(&mut self, gpu: &GpuDesc) -> bool {
+    fn recreate_if_needed(&mut self, gpu: &GpuDesc) -> anyhow::Result<bool> {
         if !self.recreate_swapchain {
-            return false;
+            return Ok(false);
         }
 
         let window = self.window.clone();
@@ -225,38 +227,41 @@ impl FramePipeline {
             .recreate_swapchain(self.swapchain_id, |create_info| SwapchainCreateInfo {
                 image_extent: window.inner_size().into(),
                 ..create_info.clone()
-            })
-            .expect("failed to recreate swapchain");
+            })?;
 
-        let extent = gpu.resources.swapchain(self.swapchain_id).images()[0].extent();
+        let extent = gpu
+            .resources
+            .swapchain(self.swapchain_id)
+            .images()
+            .first()
+            .context("no swapchain image")?
+            .extent();
 
         self.frame_images
-            .recreate(&gpu.resources, self.swapchain_id, extent);
+            .recreate(&gpu.resources, self.swapchain_id, extent)?;
         self.frame_images.bind_into(&mut self.region);
 
         self.recreate_swapchain = false;
 
-        true
+        Ok(true)
     }
 
-    pub fn run_frame(&mut self, gpu: &GpuDesc, input: FrameInput) -> anyhow::Result<()> {
+    #[allow(clippy::as_conversions, clippy::cast_precision_loss)]
+    pub fn run_frame(&mut self, gpu: &GpuDesc, input: &FrameInput) -> anyhow::Result<()> {
         self.recreate_swapchain |= input.resized;
 
         let extent = self.window.inner_size();
         let plan = frame_plan(self.recreate_swapchain, extent.width, extent.height);
 
         if plan.recreate {
-            self.recreate_if_needed(gpu);
+            self.recreate_if_needed(gpu)?;
         }
 
         if !plan.execute {
             return Ok(());
         }
 
-        gpu.resources
-            .flight(gpu.graphics_flight_id)
-            .wait_idle()
-            .unwrap();
+        gpu.resources.flight(gpu.graphics_flight_id).wait_idle()?;
 
         self.store.apply(gpu, &self.input)?;
 
@@ -274,18 +279,17 @@ impl FramePipeline {
 
         self.region.delta_time = input.delta_time;
 
-        self.execute();
+        self.execute()?;
 
         Ok(())
     }
 
-    fn execute(&mut self) {
-        let mut map = ResourceMap::new(&self.task_graph).unwrap();
-        map.insert(self.virtual_swapchain_id, self.swapchain_id)
-            .unwrap();
+    fn execute(&mut self) -> anyhow::Result<()> {
+        let mut map = ResourceMap::new(&self.task_graph)?;
+        map.insert(self.virtual_swapchain_id, self.swapchain_id)?;
 
         for (virtual_id, physical_id) in self.frame_images.resource_pairs() {
-            map.insert(virtual_id, physical_id).unwrap();
+            map.insert(virtual_id, physical_id)?;
         }
 
         let window = self.window.clone();
@@ -295,14 +299,18 @@ impl FramePipeline {
                 .execute(map, &self.region, move || window.pre_present_notify())
         };
 
-        match result {
-            Ok(()) => {}
-            Err(ExecuteError::Swapchain {
-                error: VulkanError::OutOfDate,
-                ..
-            }) => self.recreate_swapchain = true,
-            Err(error) => panic!("failed to execute next frame: {error:?}"),
+        if let Err(ExecuteError::Swapchain {
+            error: VulkanError::OutOfDate,
+            ..
+        }) = result
+        {
+            self.recreate_swapchain = true;
+            return Ok(());
         }
+
+        result?;
+
+        Ok(())
     }
 }
 
@@ -311,7 +319,7 @@ struct FramePlan {
     execute: bool,
 }
 
-fn frame_plan(recreate_requested: bool, width: u32, height: u32) -> FramePlan {
+const fn frame_plan(recreate_requested: bool, width: u32, height: u32) -> FramePlan {
     let drawable = width > 0 && height > 0;
 
     FramePlan {
@@ -321,7 +329,7 @@ fn frame_plan(recreate_requested: bool, width: u32, height: u32) -> FramePlan {
 }
 
 #[cfg(debug_assertions)]
-fn next_render_mode(mode: RenderMode) -> RenderMode {
+const fn next_render_mode(mode: RenderMode) -> RenderMode {
     match mode {
         RenderMode::Voxel => RenderMode::Hull,
         RenderMode::Hull => RenderMode::Normal,

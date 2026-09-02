@@ -1,8 +1,7 @@
 use atlas_rt::app::App;
-use std::error::Error;
 use winit::event_loop::EventLoop;
 
-fn main() -> Result<(), impl Error> {
+fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().collect();
 
     let clip_oob = args.iter().any(|arg| arg == "--clip-oob");
@@ -15,7 +14,9 @@ fn main() -> Result<(), impl Error> {
 
     let event_loop = EventLoop::new().unwrap();
 
-    let mut app = App::new(&event_loop, world_path, clip_oob);
+    let mut app = App::new(&event_loop, world_path, clip_oob)?;
 
-    event_loop.run_app(&mut app)
+    let result = event_loop.run_app(&mut app)?;
+
+    Ok(result)
 }

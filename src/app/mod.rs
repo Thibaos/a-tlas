@@ -7,7 +7,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use anyhow::anyhow;
+use anyhow::Context;
 use glam::Mat4;
 
 use winit::{
@@ -60,9 +60,15 @@ pub struct App {
 }
 
 impl App {
-    #[must_use]
-    pub fn new(event_loop: &EventLoop<()>, world_path: &str, clip_oob: bool) -> Self {
-        let gpu = GpuDesc::new(event_loop);
+    /// # Errors
+    ///
+    /// Returns an error if the GPU could not be initialized.
+    pub fn new(
+        event_loop: &EventLoop<()>,
+        world_path: &str,
+        clip_oob: bool,
+    ) -> anyhow::Result<Self> {
+        let gpu = GpuDesc::new(event_loop)?;
 
         let voxel_data = open_file(world_path);
         let (world, clipped) = if clip_oob {
@@ -79,7 +85,7 @@ impl App {
         schedule_controller.add_schedule_frames("delta", 1);
         schedule_controller.add_schedule_duration("log", Duration::from_secs(1));
 
-        Self {
+        Ok(Self {
             close_requested: false,
 
             gpu,
@@ -102,17 +108,14 @@ impl App {
 
             resize_pending: false,
             mode_toggle_pending: false,
-        }
+        })
     }
 
     /// # Errors
     ///
     /// Returns an error if the window is not available.
     pub fn toggle_capture_mouse(&mut self) -> anyhow::Result<()> {
-        let window = self
-            .window
-            .as_ref()
-            .ok_or_else(|| anyhow!("app window not is None!"))?;
+        let window = self.window.as_ref().context("app window not is None")?;
 
         if self.focused {
             self.focused = false;
@@ -142,7 +145,7 @@ impl App {
         self.delta_time = self
             .schedule_controller
             .check("delta")
-            .ok_or_else(|| anyhow!("Delta time calculation returned None!"))?;
+            .context("delta time calculation returned None")?;
 
         Ok(self.delta_time)
     }
@@ -185,12 +188,12 @@ impl ApplicationHandler for App {
                     Ok(pipeline) => {
                         self.pipeline = Some(pipeline);
                     }
-                    Err(e) => println!("{e}"),
+                    Err(e) => eprintln!("{e:?}"),
                 }
 
                 self.window = Some(window);
             }
-            Err(e) => println!("{e}"),
+            Err(e) => eprintln!("{e:?}"),
         }
     }
 
@@ -209,7 +212,7 @@ impl ApplicationHandler for App {
             }
             WindowEvent::RedrawRequested => {
                 if let Err(e) = self.update_delta_time() {
-                    println!("{e}");
+                    eprintln!("{e:?}");
                 }
 
                 self.request_log();
@@ -222,17 +225,17 @@ impl ApplicationHandler for App {
                 if let Some(pipeline) = self.pipeline.as_mut() {
                     if let Err(e) = pipeline.run_frame(
                         &self.gpu,
-                        FrameInput {
+                        &FrameInput {
                             view,
                             resized,
                             next_mode,
                             delta_time: self.delta_time.as_secs_f32(),
                         },
                     ) {
-                        println!("{e}");
+                        eprintln!("{e:?}");
                     }
                 } else {
-                    println!("App pipeline is None!");
+                    panic!("app pipeline is None");
                 }
             }
             WindowEvent::MouseInput { state, button, .. } => {
@@ -242,7 +245,7 @@ impl ApplicationHandler for App {
                             if mapped == InputButton::Right
                                 && let Err(e) = self.toggle_capture_mouse()
                             {
-                                println!("{e}");
+                                eprintln!("{e:?}");
                             }
                             self.player_input.buttons_down.insert(mapped);
                         }

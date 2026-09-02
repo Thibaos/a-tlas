@@ -1,3 +1,4 @@
+use anyhow::Context;
 use core::slice;
 use std::sync::Arc;
 use vulkano::{
@@ -17,7 +18,7 @@ use crate::core::render::{
     region::task::{RegionRenderContext, RenderMode},
 };
 
-pub mod composite {
+pub mod composite_shader {
     vulkano_shaders::shader! {
         root_path_env: "CARGO_MANIFEST_DIR",
         ty: "compute",
@@ -26,24 +27,25 @@ pub mod composite {
     }
 }
 
-pub fn create_composite_pipeline(gpu: &GpuDesc) -> Arc<ComputePipeline> {
+pub fn create_composite_pipeline(gpu: &GpuDesc) -> anyhow::Result<Arc<ComputePipeline>> {
     let shader = unsafe {
-        composite::load(&gpu.device)
-            .unwrap()
+        composite_shader::load(&gpu.device)?
             .entry_point("main")
-            .unwrap()
+            .context("entry point not found")?
     };
+
     let stage = PipelineShaderStageCreateInfo::new(&shader);
-    let bcx = gpu.resources.bindless_context().unwrap();
-    let layout = bcx
-        .pipeline_layout_from_stages(slice::from_ref(&stage))
-        .unwrap();
-    ComputePipeline::new(
+    let bcx = gpu
+        .resources
+        .bindless_context()
+        .context("bindless context not found")?;
+    let layout = bcx.pipeline_layout_from_stages(slice::from_ref(&stage))?;
+
+    Ok(ComputePipeline::new(
         &gpu.device,
         None,
         &ComputePipelineCreateInfo::new(stage, &layout),
-    )
-    .unwrap()
+    )?)
 }
 
 pub struct CompositeTask {
@@ -52,7 +54,7 @@ pub struct CompositeTask {
 }
 
 impl CompositeTask {
-    pub fn new(swapchain_id: Id<Swapchain>) -> Self {
+    pub const fn new(swapchain_id: Id<Swapchain>) -> Self {
         Self {
             swapchain_id,
             pipeline: None,
@@ -63,6 +65,7 @@ impl CompositeTask {
 impl Task for CompositeTask {
     type World = RegionRenderContext;
 
+    #[allow(clippy::as_conversions)]
     unsafe fn execute(
         &self,
         cbf: &mut RecordingCommandBuffer<'_>,
@@ -74,39 +77,43 @@ impl Task for CompositeTask {
         }
 
         let swapchain_state = tcx.swapchain(self.swapchain_id);
-        let image_index = swapchain_state.current_image_index().unwrap();
-        let extent = swapchain_state.images()[0].extent();
 
-        let pipeline = self.pipeline.as_ref().unwrap();
-
-        unsafe { cbf.bind_pipeline(pipeline) };
-        unsafe {
-            cbf.push_constants(
-                pipeline.layout(),
-                0,
-                &composite::PushConstants {
-                    image_id: rcx.swapchain_storage_image_ids[image_index as usize],
-                    color_id: rcx.color_image_id,
-                    mode: rcx.mode as u32,
-                    width: extent[0],
-                    height: extent[1],
-                },
-            )
-        };
-        unsafe { cbf.dispatch([extent[0].div_ceil(16), extent[1].div_ceil(16), 1]) };
-        unsafe {
-            cbf.pipeline_barrier(&DependencyInfo {
-                memory_barriers: &[MemoryBarrier {
-                    src_access: AccessFlags::SHADER_STORAGE_WRITE,
-                    dst_access: AccessFlags::SHADER_STORAGE_READ
-                        | AccessFlags::SHADER_STORAGE_WRITE,
-                    src_stages: PipelineStages::COMPUTE_SHADER,
-                    dst_stages: PipelineStages::COMPUTE_SHADER,
-                    ..Default::default()
-                }],
-                ..Default::default()
-            })
-        };
+        if let Some(image_index) = swapchain_state.current_image_index()
+            && let Some(swapchain_first_image) = swapchain_state.images().first()
+            && let Some(image_id) = rcx.swapchain_storage_image_ids.get(image_index as usize)
+        {
+            let extent = swapchain_first_image.extent();
+            if let Some(pipeline) = self.pipeline.as_ref() {
+                unsafe { cbf.bind_pipeline(pipeline) };
+                unsafe {
+                    cbf.push_constants(
+                        pipeline.layout(),
+                        0,
+                        &composite_shader::PushConstants {
+                            image_id: *image_id,
+                            color_id: rcx.color_image_id,
+                            mode: rcx.mode as u32,
+                            width: extent[0],
+                            height: extent[1],
+                        },
+                    )
+                };
+                unsafe { cbf.dispatch([extent[0].div_ceil(16), extent[1].div_ceil(16), 1]) };
+                unsafe {
+                    cbf.pipeline_barrier(&DependencyInfo {
+                        memory_barriers: &[MemoryBarrier {
+                            src_access: AccessFlags::SHADER_STORAGE_WRITE,
+                            dst_access: AccessFlags::SHADER_STORAGE_READ
+                                | AccessFlags::SHADER_STORAGE_WRITE,
+                            src_stages: PipelineStages::COMPUTE_SHADER,
+                            dst_stages: PipelineStages::COMPUTE_SHADER,
+                            ..Default::default()
+                        }],
+                        ..Default::default()
+                    })
+                };
+            }
+        }
 
         Ok(())
     }

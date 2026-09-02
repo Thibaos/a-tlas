@@ -78,7 +78,7 @@ pub fn build_flags(ty: AccelerationStructureType) -> BuildAccelerationStructureF
         AccelerationStructureType::BottomLevel => {
             BuildAccelerationStructureFlags::PREFER_FAST_TRACE
         }
-        _ => unimplemented!(),
+        _ => BuildAccelerationStructureFlags::empty(),
     }
 }
 
@@ -242,7 +242,7 @@ pub fn build_acceleration_structure_fresh(
     );
 
     let as_buffer = Buffer::new_slice::<u8>(
-        &memory_allocator,
+        memory_allocator,
         &BufferCreateInfo {
             usage: BufferUsage::ACCELERATION_STRUCTURE_STORAGE | BufferUsage::SHADER_DEVICE_ADDRESS,
             ..Default::default()
@@ -257,17 +257,17 @@ pub fn build_acceleration_structure_fresh(
         ..AccelerationStructureCreateInfo::new(as_buffer.buffer())
     };
 
-    let acceleration = unsafe { AccelerationStructure::new(&device, &as_create_info) }?;
+    let acceleration = unsafe { AccelerationStructure::new(device, &as_create_info) }?;
 
     let built = build_acceleration_structure_in_place(
-        &geometries,
+        geometries,
         primitive_count,
         ty,
         &acceleration,
         as_build_sizes_info.acceleration_structure_size,
-        &memory_allocator,
-        &device,
-        &queue,
+        memory_allocator,
+        device,
+        queue,
         resources,
         flight_id,
     )?;
@@ -276,21 +276,21 @@ pub fn build_acceleration_structure_fresh(
 }
 
 pub fn build_blas_aabbs_fresh(
-    aabb_buffer: Subbuffer<[AabbPositions]>,
+    aabb_buffer: &Subbuffer<[AabbPositions]>,
     primitive_count: u32,
-    memory_allocator: Arc<dyn MemoryAllocator>,
-    device: Arc<Device>,
-    queue: Arc<Queue>,
+    memory_allocator: &Arc<dyn MemoryAllocator>,
+    device: &Arc<Device>,
+    queue: &Arc<Queue>,
     resources: &Arc<Resources>,
     flight_id: Id<Flight>,
 ) -> anyhow::Result<(Arc<AccelerationStructure>, u64)> {
     build_acceleration_structure_fresh(
-        &aabb_geometries(&aabb_buffer)?,
+        &aabb_geometries(aabb_buffer)?,
         primitive_count,
         AccelerationStructureType::BottomLevel,
-        &memory_allocator,
-        &device,
-        &queue,
+        memory_allocator,
+        device,
+        queue,
         resources,
         flight_id,
     )
@@ -299,8 +299,8 @@ pub fn build_blas_aabbs_fresh(
 pub fn create_tlas_storage(
     instance_buffer: &Subbuffer<[AccelerationStructureInstance]>,
     max_instances: u32,
-    memory_allocator: Arc<dyn MemoryAllocator>,
-    device: Arc<Device>,
+    memory_allocator: &Arc<dyn MemoryAllocator>,
+    device: &Arc<Device>,
 ) -> anyhow::Result<(Arc<AccelerationStructure>, u64)> {
     let geometries = instance_geometries(instance_buffer)?;
 
@@ -319,7 +319,7 @@ pub fn create_tlas_storage(
     );
 
     let as_buffer = Buffer::new_slice::<u8>(
-        &memory_allocator,
+        memory_allocator,
         &BufferCreateInfo {
             usage: BufferUsage::ACCELERATION_STRUCTURE_STORAGE | BufferUsage::SHADER_DEVICE_ADDRESS,
             ..Default::default()
@@ -334,7 +334,7 @@ pub fn create_tlas_storage(
         ..AccelerationStructureCreateInfo::new(as_buffer.buffer())
     };
 
-    let acceleration = unsafe { AccelerationStructure::new(&device, &as_create_info) }?;
+    let acceleration = unsafe { AccelerationStructure::new(device, &as_create_info) }?;
 
     Ok((
         acceleration,
@@ -347,7 +347,7 @@ pub fn aabb_geometries(
 ) -> anyhow::Result<BuildGeometries> {
     let aabb_data = AccelerationStructureGeometryAabbsData {
         data: aabb_buffer.device_address()?.get(),
-        stride: size_of::<AabbPositions>() as u32,
+        stride: size_of::<AabbPositions>().try_into()?,
         ..Default::default()
     };
 
@@ -395,8 +395,8 @@ pub fn tlas_build_sizes(
     ))
 }
 
-pub fn allocate_scratch(gpu: &GpuDesc, size: DeviceSize) -> Arc<Buffer> {
-    Buffer::new_slice::<u8>(
+pub fn allocate_scratch(gpu: &GpuDesc, size: DeviceSize) -> anyhow::Result<Arc<Buffer>> {
+    Ok(Buffer::new_slice::<u8>(
         &gpu.memory_allocator,
         &BufferCreateInfo {
             usage: BufferUsage::SHADER_DEVICE_ADDRESS | BufferUsage::STORAGE_BUFFER,
@@ -404,8 +404,7 @@ pub fn allocate_scratch(gpu: &GpuDesc, size: DeviceSize) -> Arc<Buffer> {
         },
         &AllocationCreateInfo::default(),
         size.max(1),
-    )
-    .unwrap()
+    )?
     .buffer()
-    .clone()
+    .clone())
 }

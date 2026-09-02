@@ -216,8 +216,8 @@ impl RegionStore {
         let (tlas, tlas_storage_size) = accel::create_tlas_storage(
             &instance_subbuffer,
             REGION_COUNT as u32,
-            gpu.memory_allocator.clone(),
-            gpu.device.clone(),
+            &gpu.memory_allocator,
+            &gpu.device,
         )?;
 
         let dummy_blas = create_dummy_blas(gpu)?;
@@ -362,7 +362,7 @@ impl RegionStore {
                     instances: Some(store.packed_instance_prefix()),
                     tlas: Some(TlasBuild {
                         instance_count: 1,
-                        scratch: accel::allocate_scratch(gpu, sizes.build_scratch_size),
+                        scratch: accel::allocate_scratch(gpu, sizes.build_scratch_size)?,
                     }),
                     ..Default::default()
                 },
@@ -455,7 +455,7 @@ impl RegionStore {
             .collect();
 
         let instance_count_before = self.resident_ids.len();
-        let decision = decide(&slots, &self.resident_ids, packs);
+        let decision = decide(&slots, &self.resident_ids, packs)?;
         self.resident_ids = decision.resident_ids;
 
         let mut report = ApplyReport {
@@ -481,9 +481,9 @@ impl RegionStore {
                 } => {
                     let region_index = pack.region_index;
                     let pool =
-                        allocate_pool(gpu, &mut self.free, &mut self.alloc_stats, pool_bytes);
+                        allocate_pool(gpu, &mut self.free, &mut self.alloc_stats, pool_bytes)?;
                     let blas_alloc =
-                        allocate_blas(gpu, &mut self.free, &mut self.alloc_stats, aabbs);
+                        allocate_blas(gpu, &mut self.free, &mut self.alloc_stats, aabbs)?;
                     let aabb_count = aabbs;
                     let aabb_buffer = Subbuffer::new(
                         gpu.resources
@@ -572,6 +572,8 @@ impl RegionStore {
                     let mut blas_replacement: Option<BlasAllocation> = None;
 
                     if let Some(pool) = new_pool {
+                        let pool = pool?;
+
                         {
                             let region = self.regions[id as usize].as_mut().unwrap();
                             self.pending_free.pools.push(FreedPool {
@@ -581,16 +583,20 @@ impl RegionStore {
                             region.pool_buffer_id = pool.buffer_id;
                             region.pool_capacity = pool.capacity;
                         }
+
                         let address = gpu
                             .resources
                             .buffer(pool.buffer_id)
                             .buffer()
                             .device_address()
                             .get();
+
                         self.table_addresses[id as usize] = address;
                     }
 
                     if let Some(alloc) = new_blas {
+                        let alloc = alloc?;
+
                         {
                             let region = self.regions[id as usize].as_mut().unwrap();
                             self.pending_free.blas.push(FreedBlas {
@@ -602,6 +608,7 @@ impl RegionStore {
                             region.aabb_buffer_id = alloc.aabb_buffer_id;
                             region.aabb_capacity = alloc.aabb_capacity;
                         }
+
                         blas_replacement = Some(alloc);
                     }
 
@@ -705,7 +712,7 @@ impl RegionStore {
             plan.instances = Some(self.packed_instance_prefix());
             plan.tlas = Some(TlasBuild {
                 instance_count,
-                scratch: accel::allocate_scratch(gpu, sizes.build_scratch_size),
+                scratch: accel::allocate_scratch(gpu, sizes.build_scratch_size)?,
             });
         }
 
@@ -796,7 +803,7 @@ fn plan_blas_build(
         aabb_buffer_id,
         aabb_count,
         blas,
-        scratch: accel::allocate_scratch(gpu, sizes.build_scratch_size),
+        scratch: accel::allocate_scratch(gpu, sizes.build_scratch_size)?,
         fresh,
     })
 }
@@ -863,11 +870,11 @@ fn create_dummy_blas(gpu: &GpuDesc) -> anyhow::Result<Arc<AccelerationStructure>
     .expect("dummy AABB buffer creation failed");
 
     let result = accel::build_blas_aabbs_fresh(
-        buffer,
+        &buffer,
         1,
-        gpu.memory_allocator.clone(),
-        gpu.device.clone(),
-        gpu.compute_queue.clone(),
+        &gpu.memory_allocator,
+        &gpu.device,
+        &gpu.compute_queue,
         &gpu.resources,
         gpu.compute_flight_id,
     )?;
