@@ -58,7 +58,7 @@ pub fn map_key(key: &Key) -> Option<InputKey> {
     }
 }
 
-pub fn map_mouse_button(button: MouseButton) -> Option<InputButton> {
+pub const fn map_mouse_button(button: MouseButton) -> Option<InputButton> {
     match button {
         MouseButton::Left => Some(InputButton::Left),
         MouseButton::Middle => Some(InputButton::Middle),

@@ -31,7 +31,7 @@ use vulkano_taskgraph::{
 use crate::core::{
     render::{
         accel,
-            gpu::GpuDesc,
+        gpu::GpuDesc,
         region::{
             alloc::{
                 AllocStats, BlasAllocation, FreeLists, FreedBlas, FreedPool, PendingFrees,
@@ -104,7 +104,11 @@ pub struct RegionStore {
 }
 
 impl RegionStore {
-    pub fn new(gpu: &GpuDesc, voxel_data: &DotVoxData, input: &RendererInput) -> Self {
+    pub fn new(
+        gpu: &GpuDesc,
+        voxel_data: &DotVoxData,
+        input: &RendererInput,
+    ) -> anyhow::Result<Self> {
         input.wait_until_idle();
         let initial = input.packed_regions();
 
@@ -214,9 +218,9 @@ impl RegionStore {
             REGION_COUNT as u32,
             gpu.memory_allocator.clone(),
             gpu.device.clone(),
-        );
+        )?;
 
-        let dummy_blas = create_dummy_blas(gpu);
+        let dummy_blas = create_dummy_blas(gpu)?;
 
         let palette = get_palette(voxel_data).map(|color| [color.x, color.y, color.z, 1.0]);
         unsafe {
@@ -328,7 +332,9 @@ impl RegionStore {
             .into_iter()
             .map(|region| (region.region_index, Some(region)))
             .collect();
-        let report = store.rebuild(gpu, packs);
+
+        let report = store.rebuild(gpu, packs)?;
+
         debug_assert!(
             report.left_resident.is_empty(),
             "the initial batch only creates residency"
@@ -343,7 +349,7 @@ impl RegionStore {
             )
             .cast_aligned::<AccelerationStructureInstance>();
 
-            let sizes = accel::tlas_build_sizes(gpu, &instance_buffer, 1);
+            let sizes = accel::tlas_build_sizes(gpu, &instance_buffer, 1)?;
 
             debug_assert!(
                 store.tlas_storage_size >= sizes.acceleration_structure_size,
@@ -365,7 +371,7 @@ impl RegionStore {
 
         store.write_aabb_table(gpu, aabb_table_buffer_id);
 
-        store
+        Ok(store)
     }
 
     fn write_aabb_table(&self, gpu: &GpuDesc, aabb_table_buffer_id: Id<Buffer>) {
@@ -404,15 +410,16 @@ impl RegionStore {
             .unwrap();
     }
 
-    pub fn apply(&mut self, gpu: &GpuDesc, input: &RendererInput) -> ApplyReport {
+    pub fn apply(&mut self, gpu: &GpuDesc, input: &RendererInput) -> anyhow::Result<ApplyReport> {
         let dirty = input.take_dirty_regions();
         if dirty.is_empty() {
-            return ApplyReport::default();
+            return Ok(ApplyReport::default());
         }
         let packs: Vec<(IVec3, Option<RegionData>)> = dirty
             .iter()
             .map(|&region| (region, input.packed_region(region)))
             .collect();
+
         self.rebuild(gpu, packs)
     }
 
@@ -431,7 +438,11 @@ impl RegionStore {
         self.tlas.clone()
     }
 
-    fn rebuild(&mut self, gpu: &GpuDesc, packs: Vec<(IVec3, Option<RegionData>)>) -> ApplyReport {
+    fn rebuild(
+        &mut self,
+        gpu: &GpuDesc,
+        packs: Vec<(IVec3, Option<RegionData>)>,
+    ) -> anyhow::Result<ApplyReport> {
         let slots: Vec<Option<RegionSlot>> = self
             .regions
             .iter()
@@ -482,7 +493,7 @@ impl RegionStore {
                     )
                     .cast_aligned::<AabbPositions>();
                     let (blas, blas_storage_size) =
-                        resolve_blas_storage(gpu, &aabb_buffer, aabb_count, &blas_alloc);
+                        resolve_blas_storage(gpu, &aabb_buffer, aabb_count, &blas_alloc)?;
 
                     plan.uploads.push(RegionUpload {
                         region_index,
@@ -501,7 +512,7 @@ impl RegionStore {
                         blas.clone(),
                         blas_storage_size,
                         true,
-                    ));
+                    )?);
 
                     let address = gpu
                         .resources
@@ -617,7 +628,7 @@ impl RegionStore {
                             .cast_aligned::<AabbPositions>();
 
                             let (blas, blas_storage_size) =
-                                resolve_blas_storage(gpu, &aabb_buffer, aabb_count, &alloc);
+                                resolve_blas_storage(gpu, &aabb_buffer, aabb_count, &alloc)?;
 
                             plan.blas_builds.push(plan_blas_build(
                                 gpu,
@@ -628,7 +639,7 @@ impl RegionStore {
                                 blas.clone(),
                                 blas_storage_size,
                                 true,
-                            ));
+                            )?);
 
                             {
                                 let region = self.regions[id as usize].as_mut().unwrap();
@@ -658,10 +669,9 @@ impl RegionStore {
                                 blas,
                                 blas_storage_size,
                                 false,
-                            ));
+                            )?);
                         }
                     }
-
                 }
             }
         }
@@ -685,7 +695,7 @@ impl RegionStore {
             .cast_aligned::<AccelerationStructureInstance>();
 
             let instance_count = self.resident_ids.len().max(1) as u32;
-            let sizes = accel::tlas_build_sizes(gpu, &instance_buffer, instance_count);
+            let sizes = accel::tlas_build_sizes(gpu, &instance_buffer, instance_count)?;
 
             debug_assert!(
                 self.tlas_storage_size >= sizes.acceleration_structure_size,
@@ -703,7 +713,7 @@ impl RegionStore {
 
         if plan.is_empty() {
             report.instance_count = self.resident_ids.len();
-            return report;
+            return Ok(report);
         }
 
         self.rebuild_with_plan(gpu, plan);
@@ -713,7 +723,8 @@ impl RegionStore {
         }
 
         report.instance_count = self.resident_ids.len();
-        report
+
+        Ok(report)
     }
     fn rebuild_with_plan(&mut self, gpu: &GpuDesc, plan: RebuildPlan) {
         let tlas_rebuilds = plan.tlas.is_some();
@@ -743,7 +754,6 @@ impl RegionStore {
         self.free.pools.append(&mut self.pending_free.pools);
         self.free.blas.append(&mut self.pending_free.blas);
     }
-
 }
 
 fn resolve_blas_storage(
@@ -751,14 +761,14 @@ fn resolve_blas_storage(
     aabb_buffer: &Subbuffer<[AabbPositions]>,
     aabb_count: u32,
     alloc: &BlasAllocation,
-) -> (Arc<AccelerationStructure>, u64) {
+) -> anyhow::Result<(Arc<AccelerationStructure>, u64)> {
     match &alloc.as_storage {
-        Some((blas, storage_size)) => (blas.clone(), *storage_size),
+        Some((blas, storage_size)) => Ok((blas.clone(), *storage_size)),
         None => accel::create_blas_aabbs_storage(
             aabb_buffer,
             aabb_count,
-            gpu.memory_allocator.clone(),
-            gpu.device.clone(),
+            &gpu.memory_allocator,
+            &gpu.device,
         ),
     }
 }
@@ -773,22 +783,22 @@ fn plan_blas_build(
     blas: Arc<AccelerationStructure>,
     blas_storage_size: u64,
     fresh: bool,
-) -> BlasBuild {
-    let sizes = accel::blas_build_sizes(gpu, aabb_buffer, aabb_count);
+) -> anyhow::Result<BlasBuild> {
+    let sizes = accel::blas_build_sizes(gpu, aabb_buffer, aabb_count)?;
 
     debug_assert!(
         blas_storage_size >= sizes.acceleration_structure_size,
         "BLAS build for {aabb_count} AABBs exceeds its {blas_storage_size}-byte storage"
     );
 
-    BlasBuild {
+    Ok(BlasBuild {
         region_index,
         aabb_buffer_id,
         aabb_count,
         blas,
         scratch: accel::allocate_scratch(gpu, sizes.build_scratch_size),
         fresh,
-    }
+    })
 }
 
 fn packed_prefix(
@@ -831,7 +841,7 @@ fn static_instances() -> Vec<AccelerationStructureInstance> {
     out
 }
 
-fn create_dummy_blas(gpu: &GpuDesc) -> Arc<AccelerationStructure> {
+fn create_dummy_blas(gpu: &GpuDesc) -> anyhow::Result<Arc<AccelerationStructure>> {
     let aabb = AabbPositions {
         min: [1.0e9; 3],
         max: [1.0e9 + 1.0; 3],
@@ -852,7 +862,7 @@ fn create_dummy_blas(gpu: &GpuDesc) -> Arc<AccelerationStructure> {
     )
     .expect("dummy AABB buffer creation failed");
 
-    accel::build_blas_aabbs_fresh(
+    let result = accel::build_blas_aabbs_fresh(
         buffer,
         1,
         gpu.memory_allocator.clone(),
@@ -860,8 +870,9 @@ fn create_dummy_blas(gpu: &GpuDesc) -> Arc<AccelerationStructure> {
         gpu.compute_queue.clone(),
         &gpu.resources,
         gpu.compute_flight_id,
-    )
-    .0
+    )?;
+
+    Ok(result.0)
 }
 
 #[cfg(test)]

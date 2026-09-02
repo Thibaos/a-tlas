@@ -7,6 +7,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use anyhow::anyhow;
 use glam::Mat4;
 
 use winit::{
@@ -32,6 +33,7 @@ use crate::{
     },
 };
 
+#[allow(clippy::struct_excessive_bools)]
 pub struct App {
     close_requested: bool,
 
@@ -58,6 +60,7 @@ pub struct App {
 }
 
 impl App {
+    #[must_use]
     pub fn new(event_loop: &EventLoop<()>, world_path: &str, clip_oob: bool) -> Self {
         let gpu = GpuDesc::new(event_loop);
 
@@ -68,10 +71,7 @@ impl App {
             (World::new(&voxel_data), 0)
         };
         if clipped > 0 {
-            println!(
-                "clipped {clipped} voxels outside the ±{} lattice",
-                LATTICE_HALF_EXTENT
-            );
+            println!("clipped {clipped} voxels outside the ±{LATTICE_HALF_EXTENT} lattice");
         }
         let world = Arc::new(world);
 
@@ -79,7 +79,7 @@ impl App {
         schedule_controller.add_schedule_frames("delta", 1);
         schedule_controller.add_schedule_duration("log", Duration::from_secs(1));
 
-        App {
+        Self {
             close_requested: false,
 
             gpu,
@@ -105,22 +105,26 @@ impl App {
         }
     }
 
-    pub fn toggle_capture_mouse(&mut self) {
-        let window = self.window.as_ref().unwrap();
+    /// # Errors
+    ///
+    /// Returns an error if the window is not available.
+    pub fn toggle_capture_mouse(&mut self) -> anyhow::Result<()> {
+        let window = self
+            .window
+            .as_ref()
+            .ok_or_else(|| anyhow!("app window not is None!"))?;
 
         if self.focused {
             self.focused = false;
-            window
-                .set_cursor_grab(winit::window::CursorGrabMode::None)
-                .unwrap();
+            window.set_cursor_grab(winit::window::CursorGrabMode::None)?;
             window.set_cursor_visible(true);
         } else {
             self.focused = true;
-            window
-                .set_cursor_grab(winit::window::CursorGrabMode::Confined)
-                .unwrap();
+            window.set_cursor_grab(winit::window::CursorGrabMode::Confined)?;
             window.set_cursor_visible(false);
         }
+
+        Ok(())
     }
 
     #[cfg(debug_assertions)]
@@ -134,15 +138,17 @@ impl App {
         }
     }
 
-    fn update_delta_time(&mut self) {
+    fn update_delta_time(&mut self) -> anyhow::Result<Duration> {
         self.delta_time = self
             .schedule_controller
             .check("delta")
-            .expect("Delta time calculation returned None!");
+            .ok_or_else(|| anyhow!("Delta time calculation returned None!"))?;
+
+        Ok(self.delta_time)
     }
 
     fn request_log(&mut self) {
-        self.log_frames += 1;
+        self.log_frames = self.log_frames.saturating_add(1);
 
         if self.schedule_controller.check("log").is_some() {
             let fps = f32::from(self.log_frames) / self.log_since.elapsed().as_secs_f32();
@@ -171,15 +177,21 @@ impl ApplicationHandler for App {
         let window_attributes =
             WindowAttributes::default().with_inner_size(PhysicalSize::new(1920, 1080));
 
-        let window = Arc::new(event_loop.create_window(window_attributes).unwrap());
+        match event_loop.create_window(window_attributes) {
+            Ok(win) => {
+                let window = Arc::new(win);
 
-        self.pipeline = Some(FramePipeline::new(
-            &self.gpu,
-            window.clone(),
-            &self.voxel_data,
-            &self.world,
-        ));
-        self.window = Some(window);
+                match FramePipeline::new(&self.gpu, window.clone(), &self.voxel_data, &self.world) {
+                    Ok(pipeline) => {
+                        self.pipeline = Some(pipeline);
+                    }
+                    Err(e) => println!("{e}"),
+                }
+
+                self.window = Some(window);
+            }
+            Err(e) => println!("{e}"),
+        }
     }
 
     fn window_event(
@@ -196,7 +208,10 @@ impl ApplicationHandler for App {
                 self.resize_pending = true;
             }
             WindowEvent::RedrawRequested => {
-                self.update_delta_time();
+                if let Err(e) = self.update_delta_time() {
+                    println!("{e}");
+                }
+
                 self.request_log();
 
                 let view = self.player_view();
@@ -204,22 +219,30 @@ impl ApplicationHandler for App {
                 let resized = std::mem::take(&mut self.resize_pending);
                 let next_mode = std::mem::take(&mut self.mode_toggle_pending);
 
-                self.pipeline.as_mut().unwrap().run_frame(
-                    &self.gpu,
-                    FrameInput {
-                        view,
-                        resized,
-                        next_mode,
-                        delta_time: self.delta_time.as_secs_f32(),
-                    },
-                );
+                if let Some(pipeline) = self.pipeline.as_mut() {
+                    if let Err(e) = pipeline.run_frame(
+                        &self.gpu,
+                        FrameInput {
+                            view,
+                            resized,
+                            next_mode,
+                            delta_time: self.delta_time.as_secs_f32(),
+                        },
+                    ) {
+                        println!("{e}");
+                    }
+                } else {
+                    println!("App pipeline is None!");
+                }
             }
             WindowEvent::MouseInput { state, button, .. } => {
                 if let Some(mapped) = input::map_mouse_button(button) {
                     match state {
                         ElementState::Pressed => {
-                            if mapped == InputButton::Right {
-                                self.toggle_capture_mouse();
+                            if mapped == InputButton::Right
+                                && let Err(e) = self.toggle_capture_mouse()
+                            {
+                                println!("{e}");
                             }
                             self.player_input.buttons_down.insert(mapped);
                         }
@@ -263,8 +286,8 @@ impl ApplicationHandler for App {
 
         if self.close_requested {
             event_loop.exit();
-        } else {
-            self.window.as_ref().unwrap().request_redraw();
+        } else if let Some(window) = self.window.as_ref() {
+            window.request_redraw();
         }
     }
 
@@ -277,6 +300,6 @@ impl ApplicationHandler for App {
         if let DeviceEvent::MouseMotion { delta } = event {
             self.player_input.mouse_motion.0 += delta.0;
             self.player_input.mouse_motion.1 += delta.1;
-        };
+        }
     }
 }

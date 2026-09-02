@@ -50,7 +50,7 @@ impl ScheduleController {
 
                         Some(duration)
                     } else {
-                        *remaining -= 1;
+                        *remaining = remaining.saturating_sub(1);
 
                         None
                     }

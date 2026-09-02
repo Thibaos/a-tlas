@@ -1,6 +1,7 @@
 use core::f32;
 use std::{
     f32::consts::{FRAC_PI_2, TAU},
+    ops::{Add, Mul, Sub},
     time::Duration,
 };
 
@@ -63,31 +64,34 @@ impl PlayerController {
         let mut velocity = glam::Vec3::ZERO;
 
         if input.down.contains(&InputKey::Forward) {
-            velocity += forward;
+            velocity = velocity.add(forward);
         } else if input.down.contains(&InputKey::Backward) {
-            velocity -= forward;
+            velocity = velocity.sub(forward);
         }
         if input.down.contains(&InputKey::Left) {
-            velocity += right;
+            velocity = velocity.add(right);
         } else if input.down.contains(&InputKey::Right) {
-            velocity -= right;
+            velocity = velocity.sub(right);
         }
         if input.down.contains(&InputKey::Up) {
-            velocity += glam::Vec3::Y;
+            velocity = velocity.add(glam::Vec3::Y);
         } else if input.down.contains(&InputKey::Down) {
-            velocity -= glam::Vec3::Y;
+            velocity = velocity.sub(glam::Vec3::Y);
         }
 
         velocity = velocity.normalize_or_zero();
 
-        self.translation += velocity * delta_time.as_secs_f32() * self.speed;
+        self.translation = self
+            .translation
+            .add(velocity.mul(delta_time.as_secs_f32()).mul(self.speed));
 
         self.needs_view_update = true;
     }
 
+    #[allow(clippy::as_conversions, clippy::cast_possible_truncation)]
     pub fn rotate(&mut self, delta: (f64, f64)) {
-        self.yaw += (delta.0 * self.sensitivity) as f32;
-        self.pitch -= (delta.1 * self.sensitivity) as f32;
+        self.yaw = self.yaw.add(delta.0.mul(self.sensitivity) as f32);
+        self.pitch = self.pitch.sub((delta.1.mul(self.sensitivity)) as f32);
 
         self.yaw = self.yaw.rem_euclid(TAU);
 
@@ -100,16 +104,19 @@ impl PlayerController {
         let yaw_q = Quat::from_rotation_y(self.yaw);
         let pitch_q = Quat::from_rotation_x(self.pitch);
 
-        yaw_q * pitch_q
+        yaw_q.mul(pitch_q)
     }
 
     fn compute_view(&mut self) {
         let rot = self.orientation();
-        let forward = rot * Vec3::new(0.0, 0.0, -1.0);
-        let up = rot * Vec3::new(0.0, 1.0, 0.0);
+        let forward = rot.mul_vec3(Vec3::NEG_Z);
+        let up = rot.mul_vec3(Vec3::Y);
 
-        self.view =
-            glam::camera::lh::view::look_at_mat4(self.translation, self.translation + forward, up);
+        self.view = glam::camera::lh::view::look_at_mat4(
+            self.translation,
+            self.translation.add(forward),
+            up,
+        );
     }
 }
 
@@ -136,7 +143,7 @@ mod tests {
 
         assert_eq!(
             player.translation,
-            base_translation + Vec3::new(0.0, 0.0, -64.0)
+            base_translation.add(Vec3::new(0.0, 0.0, -64.0))
         );
     }
 

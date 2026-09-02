@@ -72,15 +72,14 @@ impl World {
                     UVec3::new(voxel.x as u32, voxel.z as u32, size.y - voxel.y as u32 - 1)
                         .as_ivec3();
 
-                let position = (transform
-                    * Vec4::new(
-                        local_position.x as f32,
-                        local_position.y as f32,
-                        local_position.z as f32,
-                        1.0,
-                    ))
-                .xyz()
-                .as_ivec3();
+                let position = Vec4::new(
+                    local_position.x as f32,
+                    local_position.y as f32,
+                    local_position.z as f32,
+                    1.0,
+                );
+
+                let position = (transform * position).xyz().as_ivec3();
 
                 let position = IVec3::new(position.x, position.y, -position.z);
 
@@ -109,7 +108,6 @@ impl World {
         self.inner.insert(position, material_index);
     }
 
-
     pub fn iter_voxels(&self) -> impl Iterator<Item = (IVec3, &u32)> + '_ {
         self.inner
             .iter()
@@ -121,14 +119,8 @@ impl World {
         let mut max: Option<IVec3> = None;
 
         for (position, _) in self.iter_voxels() {
-            min = Some(match min {
-                None => position,
-                Some(m) => m.min(position),
-            });
-            max = Some(match max {
-                None => position,
-                Some(m) => m.max(position),
-            });
+            min = Some(min.map_or(position, |m| m.min(position)));
+            max = Some(max.map_or(position, |m| m.max(position)));
         }
 
         min.zip(max)

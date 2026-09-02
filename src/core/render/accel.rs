@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use anyhow::Ok;
 use vulkano::{
     DeviceSize,
     acceleration_structure::{
@@ -26,7 +27,7 @@ use crate::core::render::gpu::GpuDesc;
 
 pub type BuildGeometries = Vec<AccelerationStructureGeometry<'static>>;
 
-pub(crate) fn as_build_pre_barrier(cbf: &mut RecordingCommandBuffer<'_>) {
+pub fn as_build_pre_barrier(cbf: &mut RecordingCommandBuffer<'_>) {
     let pre_memory_barrier = MemoryBarrier {
         src_access: AccessFlags::TRANSFER_WRITE
             | AccessFlags::SHADER_WRITE
@@ -50,7 +51,7 @@ pub(crate) fn as_build_pre_barrier(cbf: &mut RecordingCommandBuffer<'_>) {
     }
 }
 
-pub(crate) fn as_build_post_barrier(cbf: &mut RecordingCommandBuffer<'_>) {
+pub fn as_build_post_barrier(cbf: &mut RecordingCommandBuffer<'_>) {
     let post_memory_barrier = MemoryBarrier {
         src_access: AccessFlags::ACCELERATION_STRUCTURE_WRITE,
         dst_access: AccessFlags::ACCELERATION_STRUCTURE_READ | AccessFlags::SHADER_READ,
@@ -68,7 +69,7 @@ pub(crate) fn as_build_post_barrier(cbf: &mut RecordingCommandBuffer<'_>) {
     }
 }
 
-pub(crate) fn build_flags(ty: AccelerationStructureType) -> BuildAccelerationStructureFlags {
+pub fn build_flags(ty: AccelerationStructureType) -> BuildAccelerationStructureFlags {
     match ty {
         AccelerationStructureType::TopLevel => {
             BuildAccelerationStructureFlags::PREFER_FAST_TRACE
@@ -83,22 +84,22 @@ pub(crate) fn build_flags(ty: AccelerationStructureType) -> BuildAccelerationStr
 
 #[allow(clippy::too_many_arguments)]
 pub fn build_acceleration_structure_in_place(
-    geometries: BuildGeometries,
+    geometries: &BuildGeometries,
     primitive_count: u32,
     ty: AccelerationStructureType,
     dst: &Arc<AccelerationStructure>,
     storage_capacity: u64,
-    memory_allocator: Arc<dyn MemoryAllocator>,
-    device: Arc<Device>,
-    queue: Arc<Queue>,
+    memory_allocator: &Arc<dyn MemoryAllocator>,
+    device: &Arc<Device>,
+    queue: &Arc<Queue>,
     resources: &Arc<Resources>,
     flight_id: Id<Flight>,
-) -> Arc<AccelerationStructure> {
+) -> anyhow::Result<Arc<AccelerationStructure>> {
     let mut as_build_geometry_info = AccelerationStructureBuildGeometryInfo {
         ty,
         mode: BuildAccelerationStructureMode::Build,
         flags: build_flags(ty),
-        geometries: &geometries,
+        geometries,
         ..AccelerationStructureBuildGeometryInfo::new()
     };
 
@@ -114,18 +115,17 @@ pub fn build_acceleration_structure_in_place(
     );
 
     let scratch_buffer = Buffer::new_slice::<u8>(
-        &memory_allocator,
+        memory_allocator,
         &BufferCreateInfo {
             usage: BufferUsage::SHADER_DEVICE_ADDRESS | BufferUsage::STORAGE_BUFFER,
             ..Default::default()
         },
         &AllocationCreateInfo::default(),
         as_build_sizes_info.build_scratch_size,
-    )
-    .unwrap();
+    )?;
 
     as_build_geometry_info.dst_acceleration_structure = Some(dst);
-    as_build_geometry_info.scratch_data = scratch_buffer.device_address().unwrap().get();
+    as_build_geometry_info.scratch_data = scratch_buffer.device_address()?.get();
 
     let as_build_range_info = AccelerationStructureBuildRangeInfo {
         primitive_count,
@@ -134,7 +134,7 @@ pub fn build_acceleration_structure_in_place(
 
     unsafe {
         vulkano_taskgraph::execute(
-            &queue,
+            queue,
             resources,
             flight_id,
             |cbf, _tcx| {
@@ -142,21 +142,21 @@ pub fn build_acceleration_structure_in_place(
                 cbf.as_raw()
                     .build_acceleration_structure(&as_build_geometry_info, &[as_build_range_info]);
                 as_build_post_barrier(cbf);
-                Ok(())
+
+                Result::<(), _>::Ok(())
             },
             [],
             [],
             [],
         )
-        .unwrap()
-    };
+    }?;
 
-    resources.flight(flight_id).wait_idle().unwrap();
+    resources.flight(flight_id).wait_idle()?;
 
-    dst.clone()
+    Ok(dst.clone())
 }
 
-pub(crate) fn acceleration_structure_build_sizes(
+pub fn acceleration_structure_build_sizes(
     device: &Arc<Device>,
     geometries: &[AccelerationStructureGeometry<'static>],
     ty: AccelerationStructureType,
@@ -177,31 +177,30 @@ pub(crate) fn acceleration_structure_build_sizes(
     )
 }
 
-pub(crate) fn create_blas_aabbs_storage(
+pub fn create_blas_aabbs_storage(
     aabb_buffer: &Subbuffer<[AabbPositions]>,
     primitive_count: u32,
-    memory_allocator: Arc<dyn MemoryAllocator>,
-    device: Arc<Device>,
-) -> (Arc<AccelerationStructure>, u64) {
-    let geometries = aabb_geometries(aabb_buffer);
+    memory_allocator: &Arc<dyn MemoryAllocator>,
+    device: &Arc<Device>,
+) -> anyhow::Result<(Arc<AccelerationStructure>, u64)> {
+    let geometries = aabb_geometries(aabb_buffer)?;
 
     let as_build_sizes_info = acceleration_structure_build_sizes(
-        &device,
+        device,
         &geometries,
         AccelerationStructureType::BottomLevel,
         primitive_count,
     );
 
     let as_buffer = Buffer::new_slice::<u8>(
-        &memory_allocator,
+        memory_allocator,
         &BufferCreateInfo {
             usage: BufferUsage::ACCELERATION_STRUCTURE_STORAGE | BufferUsage::SHADER_DEVICE_ADDRESS,
             ..Default::default()
         },
         &AllocationCreateInfo::default(),
         as_build_sizes_info.acceleration_structure_size,
-    )
-    .unwrap();
+    )?;
 
     let as_create_info = AccelerationStructureCreateInfo {
         size: as_build_sizes_info.acceleration_structure_size,
@@ -209,30 +208,30 @@ pub(crate) fn create_blas_aabbs_storage(
         ..AccelerationStructureCreateInfo::new(as_buffer.buffer())
     };
 
-    let acceleration = unsafe { AccelerationStructure::new(&device, &as_create_info) }.unwrap();
+    let acceleration = unsafe { AccelerationStructure::new(device, &as_create_info) }?;
 
-    (
+    Ok((
         acceleration,
         as_build_sizes_info.acceleration_structure_size,
-    )
+    ))
 }
 
 #[allow(clippy::too_many_arguments)]
 pub fn build_acceleration_structure_fresh(
-    geometries: BuildGeometries,
+    geometries: &BuildGeometries,
     primitive_count: u32,
     ty: AccelerationStructureType,
-    memory_allocator: Arc<dyn MemoryAllocator>,
-    device: Arc<Device>,
-    queue: Arc<Queue>,
+    memory_allocator: &Arc<dyn MemoryAllocator>,
+    device: &Arc<Device>,
+    queue: &Arc<Queue>,
     resources: &Arc<Resources>,
     flight_id: Id<Flight>,
-) -> (Arc<AccelerationStructure>, u64) {
+) -> anyhow::Result<(Arc<AccelerationStructure>, u64)> {
     let as_build_geometry_info = AccelerationStructureBuildGeometryInfo {
         ty,
         mode: BuildAccelerationStructureMode::Build,
         flags: build_flags(ty),
-        geometries: &geometries,
+        geometries,
         ..AccelerationStructureBuildGeometryInfo::new()
     };
 
@@ -250,8 +249,7 @@ pub fn build_acceleration_structure_fresh(
         },
         &AllocationCreateInfo::default(),
         as_build_sizes_info.acceleration_structure_size,
-    )
-    .unwrap();
+    )?;
 
     let as_create_info = AccelerationStructureCreateInfo {
         size: as_build_sizes_info.acceleration_structure_size,
@@ -259,22 +257,22 @@ pub fn build_acceleration_structure_fresh(
         ..AccelerationStructureCreateInfo::new(as_buffer.buffer())
     };
 
-    let acceleration = unsafe { AccelerationStructure::new(&device, &as_create_info) }.unwrap();
+    let acceleration = unsafe { AccelerationStructure::new(&device, &as_create_info) }?;
 
     let built = build_acceleration_structure_in_place(
-        geometries,
+        &geometries,
         primitive_count,
         ty,
         &acceleration,
         as_build_sizes_info.acceleration_structure_size,
-        memory_allocator,
-        device,
-        queue,
+        &memory_allocator,
+        &device,
+        &queue,
         resources,
         flight_id,
-    );
+    )?;
 
-    (built, as_build_sizes_info.acceleration_structure_size)
+    Ok((built, as_build_sizes_info.acceleration_structure_size))
 }
 
 pub fn build_blas_aabbs_fresh(
@@ -285,14 +283,14 @@ pub fn build_blas_aabbs_fresh(
     queue: Arc<Queue>,
     resources: &Arc<Resources>,
     flight_id: Id<Flight>,
-) -> (Arc<AccelerationStructure>, u64) {
+) -> anyhow::Result<(Arc<AccelerationStructure>, u64)> {
     build_acceleration_structure_fresh(
-        aabb_geometries(&aabb_buffer),
+        &aabb_geometries(&aabb_buffer)?,
         primitive_count,
         AccelerationStructureType::BottomLevel,
-        memory_allocator,
-        device,
-        queue,
+        &memory_allocator,
+        &device,
+        &queue,
         resources,
         flight_id,
     )
@@ -303,8 +301,8 @@ pub fn create_tlas_storage(
     max_instances: u32,
     memory_allocator: Arc<dyn MemoryAllocator>,
     device: Arc<Device>,
-) -> (Arc<AccelerationStructure>, u64) {
-    let geometries = instance_geometries(instance_buffer);
+) -> anyhow::Result<(Arc<AccelerationStructure>, u64)> {
+    let geometries = instance_geometries(instance_buffer)?;
 
     let as_build_geometry_info = AccelerationStructureBuildGeometryInfo {
         ty: AccelerationStructureType::TopLevel,
@@ -328,8 +326,7 @@ pub fn create_tlas_storage(
         },
         &AllocationCreateInfo::default(),
         as_build_sizes_info.acceleration_structure_size,
-    )
-    .unwrap();
+    )?;
 
     let as_create_info = AccelerationStructureCreateInfo {
         size: as_build_sizes_info.acceleration_structure_size,
@@ -337,66 +334,68 @@ pub fn create_tlas_storage(
         ..AccelerationStructureCreateInfo::new(as_buffer.buffer())
     };
 
-    let acceleration = unsafe { AccelerationStructure::new(&device, &as_create_info) }.unwrap();
+    let acceleration = unsafe { AccelerationStructure::new(&device, &as_create_info) }?;
 
-    (
+    Ok((
         acceleration,
         as_build_sizes_info.acceleration_structure_size,
-    )
+    ))
 }
 
-pub(crate) fn aabb_geometries(aabb_buffer: &Subbuffer<[AabbPositions]>) -> BuildGeometries {
+pub fn aabb_geometries(
+    aabb_buffer: &Subbuffer<[AabbPositions]>,
+) -> anyhow::Result<BuildGeometries> {
     let aabb_data = AccelerationStructureGeometryAabbsData {
-        data: aabb_buffer.device_address().unwrap().get(),
+        data: aabb_buffer.device_address()?.get(),
         stride: size_of::<AabbPositions>() as u32,
         ..Default::default()
     };
 
-    vec![AccelerationStructureGeometry::new(
+    Ok(vec![AccelerationStructureGeometry::new(
         AccelerationStructureGeometryData::Aabbs(aabb_data),
-    )]
+    )])
 }
 
-pub(crate) fn instance_geometries(
+pub fn instance_geometries(
     instance_buffer: &Subbuffer<[AccelerationStructureInstance]>,
-) -> BuildGeometries {
+) -> anyhow::Result<BuildGeometries> {
     let instances_data = AccelerationStructureGeometryInstancesData {
-        data: instance_buffer.device_address().unwrap().get(),
+        data: instance_buffer.device_address()?.get(),
         ..Default::default()
     };
 
-    vec![AccelerationStructureGeometry::new(
+    Ok(vec![AccelerationStructureGeometry::new(
         AccelerationStructureGeometryData::Instances(instances_data),
-    )]
+    )])
 }
 
-pub(crate) fn blas_build_sizes(
+pub fn blas_build_sizes(
     gpu: &GpuDesc,
     aabb_buffer: &Subbuffer<[AabbPositions]>,
     aabb_count: u32,
-) -> AccelerationStructureBuildSizesInfo {
-    acceleration_structure_build_sizes(
+) -> anyhow::Result<AccelerationStructureBuildSizesInfo> {
+    Ok(acceleration_structure_build_sizes(
         &gpu.device,
-        &aabb_geometries(aabb_buffer),
+        &aabb_geometries(aabb_buffer)?,
         AccelerationStructureType::BottomLevel,
         aabb_count,
-    )
+    ))
 }
 
-pub(crate) fn tlas_build_sizes(
+pub fn tlas_build_sizes(
     gpu: &GpuDesc,
     instance_buffer: &Subbuffer<[AccelerationStructureInstance]>,
     instance_count: u32,
-) -> AccelerationStructureBuildSizesInfo {
-    acceleration_structure_build_sizes(
+) -> anyhow::Result<AccelerationStructureBuildSizesInfo> {
+    Ok(acceleration_structure_build_sizes(
         &gpu.device,
-        &instance_geometries(instance_buffer),
+        &instance_geometries(instance_buffer)?,
         AccelerationStructureType::TopLevel,
         instance_count,
-    )
+    ))
 }
 
-pub(crate) fn allocate_scratch(gpu: &GpuDesc, size: DeviceSize) -> Arc<Buffer> {
+pub fn allocate_scratch(gpu: &GpuDesc, size: DeviceSize) -> Arc<Buffer> {
     Buffer::new_slice::<u8>(
         &gpu.memory_allocator,
         &BufferCreateInfo {

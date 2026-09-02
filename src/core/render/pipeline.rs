@@ -53,11 +53,16 @@ pub struct FramePipeline {
 }
 
 impl FramePipeline {
-    pub fn new(gpu: &GpuDesc, window: Arc<Window>, voxel_data: &DotVoxData, world: &World) -> Self {
+    pub fn new(
+        gpu: &GpuDesc,
+        window: Arc<Window>,
+        voxel_data: &DotVoxData,
+        world: &World,
+    ) -> anyhow::Result<Self> {
         let input = RendererInput::new();
         input.submit_batch(emit_snapshots(world));
 
-        let store = RegionStore::new(gpu, voxel_data, &input);
+        let store = RegionStore::new(gpu, voxel_data, &input)?;
 
         let surface = Surface::from_window(&gpu.instance, &window).unwrap();
 
@@ -195,7 +200,7 @@ impl FramePipeline {
 
         frame_images.bind_into(&mut region);
 
-        Self {
+        Ok(Self {
             window,
             swapchain_id,
             virtual_swapchain_id,
@@ -205,7 +210,7 @@ impl FramePipeline {
             region,
             input,
             store,
-        }
+        })
     }
 
     fn recreate_if_needed(&mut self, gpu: &GpuDesc) -> bool {
@@ -234,7 +239,7 @@ impl FramePipeline {
         true
     }
 
-    pub fn run_frame(&mut self, gpu: &GpuDesc, input: FrameInput) {
+    pub fn run_frame(&mut self, gpu: &GpuDesc, input: FrameInput) -> anyhow::Result<()> {
         self.recreate_swapchain |= input.resized;
 
         let extent = self.window.inner_size();
@@ -245,7 +250,7 @@ impl FramePipeline {
         }
 
         if !plan.execute {
-            return;
+            return Ok(());
         }
 
         gpu.resources
@@ -253,7 +258,7 @@ impl FramePipeline {
             .wait_idle()
             .unwrap();
 
-        self.store.apply(gpu, &self.input);
+        self.store.apply(gpu, &self.input)?;
 
         #[cfg(debug_assertions)]
         if input.next_mode {
@@ -270,6 +275,8 @@ impl FramePipeline {
         self.region.delta_time = input.delta_time;
 
         self.execute();
+
+        Ok(())
     }
 
     fn execute(&mut self) {

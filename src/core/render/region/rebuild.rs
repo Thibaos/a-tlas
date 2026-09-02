@@ -194,29 +194,31 @@ impl Task for BuildBlasTask {
                 .cast_aligned::<AabbPositions>();
             let geometries = accel::aabb_geometries(&aabb_buffer);
 
-            let mut build_geometry_info = AccelerationStructureBuildGeometryInfo {
-                ty: AccelerationStructureType::BottomLevel,
-                mode: BuildAccelerationStructureMode::Build,
-                flags: accel::build_flags(AccelerationStructureType::BottomLevel),
-                geometries: &geometries,
-                ..AccelerationStructureBuildGeometryInfo::new()
-            };
-            build_geometry_info.dst_acceleration_structure = Some(&build.blas);
-            build_geometry_info.scratch_data = build.scratch.device_address().get();
+            if let Ok(geometries) = geometries {
+                let mut build_geometry_info = AccelerationStructureBuildGeometryInfo {
+                    ty: AccelerationStructureType::BottomLevel,
+                    mode: BuildAccelerationStructureMode::Build,
+                    flags: accel::build_flags(AccelerationStructureType::BottomLevel),
+                    geometries: &geometries,
+                    ..AccelerationStructureBuildGeometryInfo::new()
+                };
+                build_geometry_info.dst_acceleration_structure = Some(&build.blas);
+                build_geometry_info.scratch_data = build.scratch.device_address().get();
 
-            accel::as_build_pre_barrier(cbf);
+                accel::as_build_pre_barrier(cbf);
 
-            unsafe {
-                cbf.as_raw().build_acceleration_structure(
-                    &build_geometry_info,
-                    &[AccelerationStructureBuildRangeInfo {
-                        primitive_count: build.aabb_count,
-                        ..Default::default()
-                    }],
-                )
-            };
+                unsafe {
+                    cbf.as_raw().build_acceleration_structure(
+                        &build_geometry_info,
+                        &[AccelerationStructureBuildRangeInfo {
+                            primitive_count: build.aabb_count,
+                            ..Default::default()
+                        }],
+                    )
+                };
 
-            accel::as_build_post_barrier(cbf);
+                accel::as_build_post_barrier(cbf);
+            }
         }
 
         Ok(())
@@ -243,30 +245,32 @@ impl Task for BuildTlasTask {
             .cast_aligned::<AccelerationStructureInstance>();
         let geometries = accel::instance_geometries(&instance_buffer);
 
-        let mut build_geometry_info = AccelerationStructureBuildGeometryInfo {
-            ty: AccelerationStructureType::TopLevel,
-            mode: BuildAccelerationStructureMode::Build,
-            flags: accel::build_flags(AccelerationStructureType::TopLevel),
-            geometries: &geometries,
-            ..AccelerationStructureBuildGeometryInfo::new()
-        };
+        if let Ok(geometries) = geometries {
+            let mut build_geometry_info = AccelerationStructureBuildGeometryInfo {
+                ty: AccelerationStructureType::TopLevel,
+                mode: BuildAccelerationStructureMode::Build,
+                flags: accel::build_flags(AccelerationStructureType::TopLevel),
+                geometries: &geometries,
+                ..AccelerationStructureBuildGeometryInfo::new()
+            };
 
-        build_geometry_info.dst_acceleration_structure = Some(&self.tlas);
-        build_geometry_info.scratch_data = self.scratch.device_address().get();
+            build_geometry_info.dst_acceleration_structure = Some(&self.tlas);
+            build_geometry_info.scratch_data = self.scratch.device_address().get();
 
-        accel::as_build_pre_barrier(cbf);
+            accel::as_build_pre_barrier(cbf);
 
-        unsafe {
-            cbf.as_raw().build_acceleration_structure(
-                &build_geometry_info,
-                &[AccelerationStructureBuildRangeInfo {
-                    primitive_count: self.instance_count,
-                    ..Default::default()
-                }],
-            )
-        };
+            unsafe {
+                cbf.as_raw().build_acceleration_structure(
+                    &build_geometry_info,
+                    &[AccelerationStructureBuildRangeInfo {
+                        primitive_count: self.instance_count,
+                        ..Default::default()
+                    }],
+                )
+            };
 
-        accel::as_build_post_barrier(cbf);
+            accel::as_build_post_barrier(cbf);
+        }
 
         Ok(())
     }
