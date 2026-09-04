@@ -1,21 +1,8 @@
-//! CPU-side packing: Micro-chunk snapshots → per-Region voxel pools
-//! (offset table + compact blocks) and trimmed AABB hulls.
-//!
-//! A Region is the renderer's grouping of Micro-chunks that share one
-//! acceleration-structure build: 32^3 Micro-chunks (256^3 voxels),
-//! origin-aligned over the grid (the renderer owns the grid; the world never
-//! computes ids). This module packs each Region's GPU pool CPU-side: a u32
-//! offset table (32768 slots, sentinel for empty Micro-chunks) followed by
-//! compact blocks (64-byte Occupancy mask + popcount-compacted u8 materials,
-//! 8-aligned). It also derives the trimmed hull AABBs in absolute
-//! Region-local coordinates, one per non-empty Micro-chunk, so the
-//! intersection shader resolves micro_chunk = floor(hit/8) and
-//! cell = floor(hit) mod 8 with zero per-AABB metadata.
-
 #[cfg(test)]
 use std::collections::HashMap;
 
-use glam::IVec3;
+use anyhow::{Context, bail};
+use glam::{IVec3, UVec3};
 use vulkano::acceleration_structure::AabbPositions;
 
 use crate::core::world::{
@@ -26,11 +13,13 @@ use crate::core::world::{
 #[cfg(test)]
 use crate::core::world::grid::region_index_of;
 
+#[allow(clippy::as_conversions)]
 pub const MC_PER_REGION_SIDE: usize = (REGION_LENGTH / MICRO_CHUNK_LENGTH) as usize;
 pub const MICRO_CHUNKS_PER_REGION: usize =
     MC_PER_REGION_SIDE * MC_PER_REGION_SIDE * MC_PER_REGION_SIDE;
 pub const OFFSET_TABLE_SIZE: usize = MICRO_CHUNKS_PER_REGION * 4;
 pub const OFFSET_SENTINEL: u32 = u32::MAX;
+#[allow(clippy::as_conversions)]
 pub const REGION_COUNT: usize = (2 * REGION_HALF_EXTENT as usize).pow(3);
 
 pub struct RegionData {
@@ -48,7 +37,7 @@ impl RegionData {
 
     #[cfg(test)]
     pub fn origin(&self) -> IVec3 {
-        self.region_index * REGION_LENGTH
+        self.region_index * i32::try_from(REGION_LENGTH).unwrap()
     }
 }
 
@@ -64,15 +53,20 @@ pub fn pack_regions(snapshots: &[MicroChunkSnapshot]) -> Vec<RegionData> {
 
     let mut regions: Vec<RegionData> = by_region
         .into_iter()
-        .map(|(region_index, region_snapshots)| pack_region(region_index, &region_snapshots))
+        .map(|(region_index, region_snapshots)| {
+            pack_region(region_index, &region_snapshots).unwrap()
+        })
         .collect();
 
     regions.sort_unstable_by_key(|region| region.region_id());
     regions
 }
 
-pub(crate) fn pack_region(region_index: IVec3, snapshots: &[&MicroChunkSnapshot]) -> RegionData {
-    let region_origin = region_index * REGION_LENGTH;
+pub fn pack_region(
+    region_index: IVec3,
+    snapshots: &[&MicroChunkSnapshot],
+) -> anyhow::Result<RegionData> {
+    let region_origin = region_index.saturating_mul(UVec3::splat(REGION_LENGTH).as_ivec3());
 
     let mut offset_table = vec![OFFSET_SENTINEL; MICRO_CHUNKS_PER_REGION];
     let mut blocks: Vec<u8> = Vec::with_capacity(OFFSET_TABLE_SIZE);
@@ -87,39 +81,64 @@ pub(crate) fn pack_region(region_index: IVec3, snapshots: &[&MicroChunkSnapshot]
     ordered.sort_unstable_by_key(|s| s.global_coords.to_array());
 
     for snapshot in ordered {
-        let mc_local_origin = snapshot.global_coords - region_origin;
+        let mc_local_origin =
+            snapshot
+                .global_coords
+                .checked_sub(region_origin)
+                .context(format!(
+                    "snapshot {} outside region {region_index}",
+                    snapshot.global_coords
+                ))?;
 
         debug_assert!(
             mc_local_origin.cmpge(IVec3::ZERO).all()
-                && mc_local_origin.cmplt(IVec3::splat(REGION_LENGTH)).all(),
+                && mc_local_origin
+                    .cmplt(UVec3::splat(REGION_LENGTH).as_ivec3())
+                    .all(),
             "snapshot {} outside region {region_index}",
             snapshot.global_coords
         );
 
-        let mc = mc_local_origin / MICRO_CHUNK_LENGTH;
+        let mc = mc_local_origin
+            .checked_div(UVec3::splat(MICRO_CHUNK_LENGTH).as_ivec3())
+            .context("MICRO_CHUNK_LENGTH is zero")?;
 
-        let side = MC_PER_REGION_SIDE as i32;
-        let mc_index = ((mc.z * side + mc.y) * side + mc.x) as usize;
+        let side = i32::try_from(MC_PER_REGION_SIDE)?;
+        let mc_index = usize::try_from(
+            (mc.z.saturating_mul(side).saturating_add(mc.y))
+                .saturating_mul(side)
+                .saturating_add(mc.x),
+        )?;
 
-        let block_offset = blocks.len() as u32;
-        debug_assert!(block_offset % 8 == 0);
-        debug_assert_eq!(offset_table[mc_index], OFFSET_SENTINEL);
+        let block_offset = u32::try_from(blocks.len())?;
+        debug_assert_eq!(block_offset % 8, 0);
 
-        offset_table[mc_index] = block_offset;
-        blocks[4 * mc_index..4 * mc_index + 4].copy_from_slice(&block_offset.to_le_bytes());
+        let offset = offset_table
+            .get_mut(mc_index)
+            .context(format!("offset table slot {mc_index} out of range"))?;
+        debug_assert_eq!(offset, &OFFSET_SENTINEL);
+
+        *offset = block_offset;
+
+        let block = blocks
+            .get_mut(4usize.strict_mul(mc_index)..4usize.strict_mul(mc_index).strict_add(4))
+            .context(format!("block offset slot {mc_index} out of range"))?;
+        block.copy_from_slice(&block_offset.to_le_bytes());
         debug_assert_eq!(snapshot.materials.len(), snapshot.occupied_count());
 
         blocks.extend_from_slice(&snapshot.mask);
         blocks.extend_from_slice(&snapshot.materials);
 
-        while blocks.len() % 8 != 0 {
+        while !blocks.len().is_multiple_of(8) {
             blocks.push(0);
         }
 
-        let (min_cell, max_cell) = occupied_cell_bounds(&snapshot.mask);
+        let (min_cell, max_cell) = occupied_cell_bounds(&snapshot.mask)?;
 
-        let min = mc_local_origin + min_cell;
-        let max = mc_local_origin + max_cell + IVec3::ONE;
+        let min = mc_local_origin.saturating_add(min_cell);
+        let max = mc_local_origin
+            .saturating_add(max_cell)
+            .saturating_add(IVec3::ONE);
 
         aabbs.push(AabbPositions {
             min: min.as_vec3().to_array(),
@@ -127,36 +146,42 @@ pub(crate) fn pack_region(region_index: IVec3, snapshots: &[&MicroChunkSnapshot]
         });
     }
 
-    RegionData {
+    Ok(RegionData {
         region_index,
         #[cfg(test)]
         offset_table,
         blocks,
         aabbs,
-    }
+    })
 }
 
-fn occupied_cell_bounds(mask: &[u8; 64]) -> (IVec3, IVec3) {
-    let side = MICRO_CHUNK_LENGTH as usize;
+fn occupied_cell_bounds(mask: &[u8; 64]) -> anyhow::Result<(IVec3, IVec3)> {
+    let side = usize::try_from(MICRO_CHUNK_LENGTH)?;
 
-    let mut min = IVec3::splat(MICRO_CHUNK_LENGTH - 1);
+    let mut min = IVec3::splat(i32::try_from(MICRO_CHUNK_LENGTH.strict_sub(1))?);
     let mut max = IVec3::ZERO;
     let mut any = false;
 
-    for idx in 0..side * side * side {
-        if (mask[idx / 8] >> (idx % 8)) & 1 != 0 {
-            let x = (idx % side) as i32;
-            let y = ((idx / side) % side) as i32;
-            let z = (idx / (side * side)) as i32;
+    let l = side.strict_mul(side).strict_mul(side);
+
+    for idx in 0..l {
+        if (mask.get(idx / 8).context(format!("mask byte {} out of range", idx / 8))? >> (idx % 8)) & 1 != 0 {
+            let x = i32::try_from(idx.strict_rem(side))?;
+            let y = i32::try_from((idx.strict_div(side)).strict_rem(side))?;
+            let z = i32::try_from(idx.strict_div(side.strict_mul(side)))?;
 
             min = min.min(IVec3::new(x, y, z));
             max = max.max(IVec3::new(x, y, z));
+
             any = true;
         }
     }
 
-    debug_assert!(any, "packed an empty snapshot as a hull");
-    (min, max)
+    if !any {
+        bail!("packed an empty snapshot as a hull");
+    }
+
+    Ok((min, max))
 }
 
 #[cfg(test)]
@@ -171,7 +196,7 @@ mod tests {
         world.insert_voxel_at(IVec3::new(255, 0, 0), 1);
         world.insert_voxel_at(IVec3::new(256, 0, 0), 2);
 
-        let snapshots = emit_snapshots(&world);
+        let snapshots = emit_snapshots(&world).unwrap();
         let regions = pack_regions(&snapshots);
 
         assert_eq!(regions.len(), 2);
@@ -207,7 +232,7 @@ mod tests {
         world.insert_voxel_at(IVec3::new(7, 7, 7), 2);
         world.insert_voxel_at(IVec3::new(8, 0, 0), 3);
 
-        let snapshots = emit_snapshots(&world);
+        let snapshots = emit_snapshots(&world).unwrap();
         let regions = pack_regions(&snapshots);
         assert_eq!(regions.len(), 1);
         let region = &regions[0];

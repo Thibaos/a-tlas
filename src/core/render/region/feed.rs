@@ -1,19 +1,3 @@
-//! The renderer input contract: the world-facing
-//! enqueue-only API plus the CPU-side change machinery.
-//!
-//! The world hands the renderer Micro-chunk snapshots: {global coords,
-//! 64-byte Occupancy mask, u8 material indices}. Then create, update, and
-//! removal are the same message: an emptied Micro-chunk re-snapshots with a
-//! zero mask. Submitting never blocks on GPU: it inserts into a
-//! mutex-protected pending set (last-wins per Micro-chunk) and signals a
-//! worker thread via a condvar. The worker drains everything pending per
-//! cycle, applies the snapshots into per-Region CPU mirrors
-//! ([`RegionMirror`]). It derives each Region id from the snapshot's global
-//! coords, never from the world, and publishes the dirty-Region set
-//! ([`RendererInput::take_dirty_regions`]). The renderer repacks mirrors
-//! through [`RegionData`] (see `crate::render::region::pack`) and feeds the
-//! Region pipeline.
-
 use std::{
     collections::HashMap,
     sync::{
@@ -23,6 +7,7 @@ use std::{
     thread::JoinHandle,
 };
 
+use anyhow::{Context, bail};
 use glam::IVec3;
 
 use crate::core::{
@@ -33,11 +18,6 @@ use crate::core::{
     },
 };
 
-/// One Region's CPU-side mirror: the authoritative per-Micro-chunk
-/// snapshot state, the source for wholesale pool re-packing. Empty
-/// Micro-chunks are never stored. A zero-mask snapshot removes the
-/// Micro-chunk from the mirror, and an emptied mirror is dropped by
-/// [`apply_snapshots`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RegionMirror {
     region_index: IVec3,
@@ -74,9 +54,11 @@ impl RegionMirror {
         }
     }
 
-    pub fn pack(&self) -> RegionData {
+    pub fn pack(&self) -> anyhow::Result<RegionData> {
         debug_assert!(!self.is_empty(), "packing an empty mirror");
+
         let snapshots: Vec<&MicroChunkSnapshot> = self.microchunks.values().collect();
+
         pack_region(self.region_index, &snapshots)
     }
 }
@@ -130,24 +112,29 @@ impl ChangeQueue {
         self.inner.wake_worker.notify_all();
     }
 
-    pub fn submit_batch<I>(&self, snapshots: I)
+    pub fn submit_batch<I>(&self, snapshots: I) -> anyhow::Result<()>
     where
         I: IntoIterator<Item = MicroChunkSnapshot>,
     {
         let validated: Vec<MicroChunkSnapshot> = snapshots
             .into_iter()
-            .map(|snapshot| {
+            .inspect(|snapshot| {
                 assert_region_index_in_lattice(region_index_of(snapshot.global_coords));
-                snapshot
             })
             .collect();
         {
-            let mut pending = self.inner.pending.lock().unwrap();
+            let Ok(mut pending) = self.inner.pending.lock() else {
+                bail!("pending lock poisoned");
+            };
+
             for snapshot in validated {
                 pending.insert(snapshot.global_coords, snapshot);
             }
         }
+
         self.inner.wake_worker.notify_all();
+
+        Ok(())
     }
 
     #[cfg(test)]
@@ -169,21 +156,21 @@ impl ChangeQueue {
 
 pub struct RendererInput {
     queue: ChangeQueue,
-    worker: Option<JoinHandle<()>>,
+    worker: Option<JoinHandle<anyhow::Result<()>>>,
 }
 
 impl RendererInput {
-    pub fn new() -> Self {
+    pub fn new() -> anyhow::Result<Self> {
         let queue = ChangeQueue::new();
         let inner = queue.inner.clone();
         let worker = std::thread::Builder::new()
             .name("region-input-worker".to_string())
-            .spawn(move || worker_loop(&inner))
-            .expect("failed to spawn the input worker thread");
-        Self {
+            .spawn(move || worker_loop(&inner))?;
+
+        Ok(Self {
             queue,
             worker: Some(worker),
-        }
+        })
     }
 
     #[cfg(test)]
@@ -196,36 +183,64 @@ impl RendererInput {
         self.queue.submit_microchunk(snapshot);
     }
 
-    pub fn submit_batch<I>(&self, snapshots: I)
+    pub fn submit_batch<I>(&self, snapshots: I) -> anyhow::Result<()>
     where
         I: IntoIterator<Item = MicroChunkSnapshot>,
     {
-        self.queue.submit_batch(snapshots);
+        self.queue.submit_batch(snapshots)
     }
 
-    pub fn wait_until_idle(&self) {
-        let mut pending = self.queue.inner.pending.lock().unwrap();
+    pub fn wait_until_idle(&self) -> anyhow::Result<()> {
+        let Ok(mut pending) = self.queue.inner.pending.lock() else {
+            bail!("pending lock poisoned");
+        };
+
         while !pending.is_empty() || self.queue.inner.busy.load(Ordering::SeqCst) {
-            pending = self.queue.inner.wake_renderer.wait(pending).unwrap();
+            pending = match self.queue.inner.wake_renderer.wait(pending) {
+                Ok(next) => next,
+                Err(_) => bail!("pending lock poisoned; the input worker panicked"),
+            };
         }
+
+        Ok(())
     }
 
     pub(in crate::core::render) fn take_dirty_regions(&self) -> Vec<IVec3> {
-        let mut dirty = std::mem::take(&mut *self.queue.inner.applied_regions.lock().unwrap());
-        dirty.sort_unstable_by_key(|region| region.to_array());
+        let Ok(mut regions) = self.queue.inner.applied_regions.lock() else {
+            return vec![];
+        };
+
+        let mut dirty = std::mem::take(&mut *regions);
+        dirty.sort_unstable_by_key(IVec3::to_array);
+
         dirty
     }
 
-    pub fn packed_region(&self, region_index: IVec3) -> Option<RegionData> {
-        let mirrors = self.queue.inner.mirrors.lock().unwrap();
-        mirrors.get(&region_index).map(RegionMirror::pack)
+    pub fn packed_region(&self, region_index: IVec3) -> anyhow::Result<Option<RegionData>> {
+        let Ok(mirrors) = self.queue.inner.mirrors.lock() else {
+            bail!("mirrors lock poisoned");
+        };
+
+        Ok(mirrors
+            .get(&region_index)
+            .map(RegionMirror::pack)
+            .context(format!("region {region_index} has no mirror"))?
+            .ok())
     }
 
-    pub fn packed_regions(&self) -> Vec<RegionData> {
-        let mirrors = self.queue.inner.mirrors.lock().unwrap();
-        let mut regions: Vec<RegionData> = mirrors.values().map(|mirror| mirror.pack()).collect();
-        regions.sort_unstable_by_key(|region| region.region_id());
-        regions
+    pub fn packed_regions(&self) -> anyhow::Result<Vec<RegionData>> {
+        let Ok(mirrors) = self.queue.inner.mirrors.lock() else {
+            bail!("mirrors lock poisoned");
+        };
+
+        let mut regions: Vec<RegionData> = mirrors
+            .values()
+            .map(RegionMirror::pack)
+            .collect::<anyhow::Result<_>>()?;
+
+        regions.sort_unstable_by_key(RegionData::region_id);
+
+        Ok(regions)
     }
 
     #[cfg(test)]
@@ -242,40 +257,61 @@ impl RendererInput {
 impl Drop for RendererInput {
     fn drop(&mut self) {
         self.queue.shutdown();
-        if let Some(worker) = self.worker.take() {
-            worker.join().expect("input worker thread panicked");
+        if let Some(worker) = self.worker.take()
+            && let Err(e) = worker.join()
+        {
+            eprintln!("{e:?}");
         }
     }
 }
 
-fn worker_loop(inner: &Arc<ChangeQueueInner>) {
+fn worker_loop(inner: &Arc<ChangeQueueInner>) -> anyhow::Result<()> {
     loop {
         let taken = {
-            let mut pending = inner.pending.lock().unwrap();
+            let Ok(mut pending) = inner.pending.lock() else {
+                bail!("pending lock poisoned");
+            };
+
             loop {
                 if !pending.is_empty() {
                     break;
                 }
+
                 if inner.shutdown.load(Ordering::SeqCst) {
-                    return;
+                    bail!("worker shutdown");
                 }
+
                 inner.idle.store(true, Ordering::SeqCst);
-                pending = inner.wake_worker.wait(pending).unwrap();
+
+                let Ok(next) = inner.wake_worker.wait(pending) else {
+                    bail!("pending lock poisoned");
+                };
+
+                pending = next;
+
                 inner.idle.store(false, Ordering::SeqCst);
             }
+
             inner.busy.store(true, Ordering::SeqCst);
+
             std::mem::take(&mut *pending)
                 .into_values()
                 .collect::<Vec<MicroChunkSnapshot>>()
         };
 
         let dirty = {
-            let mut mirrors = inner.mirrors.lock().unwrap();
+            let Ok(mut mirrors) = inner.mirrors.lock() else {
+                bail!("mirrors lock poisoned");
+            };
+
             apply_snapshots(&mut mirrors, taken)
         };
 
         {
-            let mut applied = inner.applied_regions.lock().unwrap();
+            let Ok(mut applied) = inner.applied_regions.lock() else {
+                bail!("applied regions lock poisoned");
+            };
+
             for region in dirty {
                 if !applied.contains(&region) {
                     applied.push(region);
@@ -284,9 +320,13 @@ fn worker_loop(inner: &Arc<ChangeQueueInner>) {
         }
 
         {
-            let _pending = inner.pending.lock().unwrap();
+            if inner.pending.lock().is_err() {
+                bail!("pending lock poisoned");
+            }
+
             inner.busy.store(false, Ordering::SeqCst);
         }
+
         inner.wake_renderer.notify_all();
     }
 }
@@ -296,17 +336,21 @@ pub fn apply_snapshots(
     snapshots: Vec<MicroChunkSnapshot>,
 ) -> Vec<IVec3> {
     let mut dirty: Vec<IVec3> = Vec::new();
+
     for snapshot in snapshots {
         let region_index = region_index_of(snapshot.global_coords);
         let mirror = mirrors
             .entry(region_index)
             .or_insert_with(|| RegionMirror::new(region_index));
+
         if mirror.apply(snapshot) && !dirty.contains(&region_index) {
             dirty.push(region_index);
         }
     }
+
     mirrors.retain(|_, mirror| !mirror.is_empty());
-    dirty.sort_unstable_by_key(|region| region.to_array());
+    dirty.sort_unstable_by_key(IVec3::to_array);
+
     dirty
 }
 
@@ -367,17 +411,23 @@ mod tests {
     #[test]
     fn submit_batch_coalesces_duplicates() {
         let queue = ChangeQueue::new();
-        queue.submit_batch([
-            snapshot(IVec3::new(0, 0, 0), &[(0, 1)]),
-            snapshot(IVec3::new(8, 0, 0), &[(1, 2)]),
-            snapshot(IVec3::new(0, 0, 0), &[(2, 9)]),
-        ]);
+
+        queue
+            .submit_batch([
+                snapshot(IVec3::new(0, 0, 0), &[(0, 1)]),
+                snapshot(IVec3::new(8, 0, 0), &[(1, 2)]),
+                snapshot(IVec3::new(0, 0, 0), &[(2, 9)]),
+            ])
+            .unwrap();
+
         assert_eq!(queue.pending_count(), 2);
+
         let drained = queue.drain_pending();
         let by_coords: HashMap<_, _> = drained
             .iter()
             .map(|s| (s.global_coords, s.materials.clone()))
             .collect();
+
         assert_eq!(by_coords[&IVec3::new(0, 0, 0)], vec![9]);
         assert_eq!(by_coords[&IVec3::new(8, 0, 0)], vec![2]);
     }
@@ -432,15 +482,15 @@ mod tests {
     #[test]
     #[should_panic(expected = "exceeds the renderer lattice")]
     fn submit_rejects_out_of_lattice_snapshot() {
-        let input = RendererInput::new();
+        let input = RendererInput::new().unwrap();
         input.submit_microchunk(snapshot(IVec3::new(2048, 0, 0), &[(0, 1)]));
     }
 
     #[test]
     fn lattice_boundary_is_exclusive_high() {
-        let input = RendererInput::new();
+        let input = RendererInput::new().unwrap();
         input.submit_microchunk(snapshot(IVec3::new(2047, 2047, 2047), &[(0, 1)]));
-        input.wait_until_idle();
+        input.wait_until_idle().unwrap();
 
         assert_eq!(region_index_of(IVec3::new(2047, 0, 0)), IVec3::new(7, 0, 0));
         assert_eq!(region_index_of(IVec3::new(2048, 0, 0)), IVec3::new(8, 0, 0));
@@ -448,40 +498,49 @@ mod tests {
 
     #[test]
     fn rejected_submit_does_not_poison_queue() {
-        let input = RendererInput::new();
+        let input = RendererInput::new().unwrap();
 
         let queue = input.change_queue();
         let rejected = std::thread::spawn(move || {
-            queue.submit_batch([snapshot(IVec3::new(2048, 0, 0), &[(0, 1)])]);
+            queue
+                .submit_batch([snapshot(IVec3::new(2048, 0, 0), &[(0, 1)])])
+                .unwrap();
         });
+
         assert!(rejected.join().is_err(), "out-of-lattice batch must panic");
 
         input.submit_microchunk(snapshot(IVec3::new(0, 0, 0), &[(0, 1)]));
-        input.wait_until_idle();
+        input.wait_until_idle().unwrap();
+
         assert_eq!(input.region_count(), 1);
         assert_eq!(input.take_dirty_regions(), vec![IVec3::ZERO]);
     }
 
     #[test]
     fn out_of_order_snapshots_converge() {
-        let input = RendererInput::new();
+        let input = RendererInput::new().unwrap();
         let coords_a = IVec3::new(0, 0, 0);
         let coords_b = IVec3::new(8, 0, 0);
         let coords_c = IVec3::new(16, 0, 0);
 
-        input.submit_batch([snapshot(coords_a, &[(0, 1)]), snapshot(coords_b, &[(0, 2)])]);
+        input
+            .submit_batch([snapshot(coords_a, &[(0, 1)]), snapshot(coords_b, &[(0, 2)])])
+            .unwrap();
+
         input.submit_microchunk(snapshot(coords_a, &[(1, 9)])); // A updated, out of order
         input.submit_microchunk(snapshot(coords_b, &[(0, 2)])); // B re-sent (identical)
         input.submit_microchunk(snapshot(coords_c, &[(0, 3)]));
-        input.wait_until_idle();
+        input.wait_until_idle().unwrap();
 
         let expected = vec![
             snapshot(coords_a, &[(1, 9)]),
             snapshot(coords_b, &[(0, 2)]),
             snapshot(coords_c, &[(0, 3)]),
         ];
+
         let direct = pack_regions(&expected);
-        let through_contract = input.packed_regions();
+        let through_contract = input.packed_regions().unwrap();
+
         assert_eq!(through_contract.len(), 1);
         assert_eq!(through_contract[0].blocks, direct[0].blocks);
         assert_eq!(through_contract[0].aabbs, direct[0].aabbs);
@@ -490,18 +549,21 @@ mod tests {
     #[test]
     fn startup_batch_matches_direct_pack() {
         let mut world = World::default();
+
         world.insert_voxel_at(IVec3::new(7, 0, 0), 1);
         world.insert_voxel_at(IVec3::new(255, 0, 0), 2);
         world.insert_voxel_at(IVec3::new(256, 0, 0), 3);
 
-        let snapshots = emit_snapshots(&world);
-        let input = RendererInput::new();
-        input.submit_batch(snapshots.iter().cloned());
-        input.wait_until_idle();
+        let snapshots = emit_snapshots(&world).unwrap();
+        let input = RendererInput::new().unwrap();
+        input.submit_batch(snapshots.iter().cloned()).unwrap();
+        input.wait_until_idle().unwrap();
 
         let direct = pack_regions(&snapshots);
-        let through_contract = input.packed_regions();
+        let through_contract = input.packed_regions().unwrap();
+
         assert_eq!(through_contract.len(), 2);
+
         for (a, b) in through_contract.iter().zip(&direct) {
             assert_eq!(a.region_index, b.region_index);
             assert_eq!(a.blocks, b.blocks);
@@ -511,7 +573,7 @@ mod tests {
 
     #[test]
     fn enqueue_from_threads_converges() {
-        let input = RendererInput::new();
+        let input = RendererInput::new().unwrap();
         let queue = input.change_queue();
 
         const THREADS: i32 = 8;
@@ -522,7 +584,11 @@ mod tests {
                 let queue = queue.clone();
                 std::thread::spawn(move || {
                     for m in 0..PER_THREAD {
-                        let coords = IVec3::new((t * PER_THREAD + m) * MICRO_CHUNK_LENGTH, t, 0);
+                        let coords = IVec3::new(
+                            (t * PER_THREAD + m) * i32::try_from(MICRO_CHUNK_LENGTH).unwrap(),
+                            t,
+                            0,
+                        );
                         queue.submit_microchunk(snapshot(coords, &[(0, (m % 256) as u8)]));
                     }
                 })
@@ -532,7 +598,7 @@ mod tests {
             handle.join().unwrap();
         }
 
-        input.wait_until_idle();
+        input.wait_until_idle().unwrap();
 
         assert_eq!(
             input.region_count(),
@@ -544,7 +610,11 @@ mod tests {
             .flat_map(|t| {
                 (0..PER_THREAD).map(move |m| {
                     snapshot(
-                        IVec3::new((t * PER_THREAD + m) * MICRO_CHUNK_LENGTH, t, 0),
+                        IVec3::new(
+                            (t * PER_THREAD + m) * i32::try_from(MICRO_CHUNK_LENGTH).unwrap(),
+                            t,
+                            0,
+                        ),
                         &[(0, (m % 256) as u8)],
                     )
                 })
@@ -552,7 +622,7 @@ mod tests {
             .collect();
 
         let direct = pack_regions(&expected);
-        let through_contract = input.packed_regions();
+        let through_contract = input.packed_regions().unwrap();
 
         assert_eq!(through_contract.len(), direct.len());
 
@@ -564,8 +634,8 @@ mod tests {
 
     #[test]
     fn worker_sleeps_when_idle_and_wakes_on_submit() {
-        let input = RendererInput::new();
-        input.wait_until_idle();
+        let input = RendererInput::new().unwrap();
+        input.wait_until_idle().unwrap();
 
         let idle = (0..2000).any(|_| {
             if input.worker_idle() {
@@ -582,7 +652,7 @@ mod tests {
         );
 
         input.submit_microchunk(snapshot(IVec3::new(0, 0, 0), &[(0, 1)]));
-        input.wait_until_idle();
+        input.wait_until_idle().unwrap();
         assert_eq!(input.region_count(), 1);
 
         let idle_again = (0..2000).any(|_| {
@@ -602,22 +672,24 @@ mod tests {
 
     #[test]
     fn dirty_regions_dedupe_and_clear() {
-        let input = RendererInput::new();
-        input.submit_batch([
-            snapshot(IVec3::new(0, 0, 0), &[(0, 1)]),
-            snapshot(IVec3::new(8, 0, 0), &[(0, 2)]),
-            snapshot(IVec3::new(256, 0, 0), &[(0, 3)]),
-        ]);
-        input.wait_until_idle();
+        let input = RendererInput::new().unwrap();
+        input
+            .submit_batch([
+                snapshot(IVec3::new(0, 0, 0), &[(0, 1)]),
+                snapshot(IVec3::new(8, 0, 0), &[(0, 2)]),
+                snapshot(IVec3::new(256, 0, 0), &[(0, 3)]),
+            ])
+            .unwrap();
+        input.wait_until_idle().unwrap();
 
         let dirty = input.take_dirty_regions();
         assert_eq!(dirty, vec![IVec3::ZERO, IVec3::new(1, 0, 0)]);
 
-        input.wait_until_idle();
+        input.wait_until_idle().unwrap();
         assert!(input.take_dirty_regions().is_empty());
 
         input.submit_microchunk(snapshot(IVec3::new(0, 0, 0), &[(1, 4)]));
-        input.wait_until_idle();
+        input.wait_until_idle().unwrap();
         let dirty = input.take_dirty_regions();
         assert_eq!(dirty, vec![IVec3::ZERO]);
         assert!(input.take_dirty_regions().is_empty());
@@ -625,24 +697,28 @@ mod tests {
 
     #[test]
     fn emptying_a_region_drops_its_mirror() {
-        let input = RendererInput::new();
+        let input = RendererInput::new().unwrap();
+
         let a = IVec3::new(0, 0, 0);
         let b = IVec3::new(8, 0, 0);
-        input.submit_batch([snapshot(a, &[(0, 1)]), snapshot(b, &[(0, 2)])]);
-        input.wait_until_idle();
+
+        input
+            .submit_batch([snapshot(a, &[(0, 1)]), snapshot(b, &[(0, 2)])])
+            .unwrap();
+        input.wait_until_idle().unwrap();
         assert_eq!(input.region_count(), 1);
 
         input.submit_microchunk(zero(a));
-        input.wait_until_idle();
+        input.wait_until_idle().unwrap();
         assert_eq!(input.region_count(), 1, "one Micro-chunk still occupied");
 
         input.submit_microchunk(zero(b));
-        input.wait_until_idle();
+        input.wait_until_idle().unwrap();
         assert_eq!(
             input.region_count(),
             0,
             "last Micro-chunk removed → mirror dropped"
         );
-        assert!(input.packed_regions().is_empty());
+        assert!(input.packed_regions().unwrap().is_empty());
     }
 }

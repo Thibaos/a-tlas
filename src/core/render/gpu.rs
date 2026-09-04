@@ -98,7 +98,7 @@ fn create_device(
             PhysicalDeviceType::Other => 4,
             _ => 5,
         })
-        .context("could not find a graphics queue")?;
+        .context("no physical device with graphics and presentation support")?;
 
     let compute_family_index = u32::try_from(
         physical_device
@@ -107,7 +107,7 @@ fn create_device(
             .enumerate()
             .filter(|(_, q)| q.queue_flags.intersects(QueueFlags::COMPUTE))
             .min_by_key(|(_, q)| q.queue_flags.count())
-            .context("could not find a compute queue")?
+            .context("no queue family with compute support")?
             .0,
     )?;
 
@@ -118,7 +118,7 @@ fn create_device(
             .enumerate()
             .filter(|(_, q)| q.queue_flags.intersects(QueueFlags::TRANSFER))
             .min_by_key(|(_, q)| q.queue_flags.count())
-            .context("could not find a transfer queue")?
+            .context("no queue family with transfer support")?
             .0,
     )?;
 
@@ -169,9 +169,9 @@ impl GpuDesc {
 
         let (device, mut queues) = create_device(&instance, event_loop)?;
 
-        let graphics_queue = queues.next().context("could not find graphics queue")?;
-        let compute_queue = queues.next().context("could not find compute queue")?;
-        let transfer_queue = queues.next().context("could not find transfer queue")?;
+        let graphics_queue = queues.next().context("graphics queue was not created")?;
+        let compute_queue = queues.next().context("compute queue was not created")?;
+        let transfer_queue = queues.next().context("transfer queue was not created")?;
 
         let memory_allocator = Arc::new(StandardMemoryAllocator::new(
             &device,

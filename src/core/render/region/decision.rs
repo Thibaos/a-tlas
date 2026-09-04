@@ -57,7 +57,7 @@ pub fn decide(
 
         let was_resident = slots
             .get(usize::try_from(id)?)
-            .context(format!("slot {id} not found"))?
+            .context(format!("region slot {id} out of range"))?
             .is_some();
 
         let effect = match (was_resident, pack) {
@@ -69,18 +69,14 @@ pub fn decide(
                 decision.tlas_dirty = true;
                 decision.table_changed = true;
                 RegionEffect::Enter {
-                    pool_bytes: pack.blocks.len() as u64,
-                    aabbs: pack.aabbs.len() as u32,
+                    pool_bytes: u64::try_from(pack.blocks.len())?,
+                    aabbs: u32::try_from(pack.aabbs.len())?,
                     pack,
                 }
             }
 
             (true, None) => {
-                let slot = slots
-                    .get(usize::try_from(id)?)
-                    .context(format!("slot {id} not found"))?
-                    .as_ref()
-                    .context(format!("slot {id} is None"))?;
+                let slot = slot_of(slots, id)?;
 
                 remove_resident(&mut decision.resident_ids, id);
                 decision.left_resident.push(region_index);
@@ -94,14 +90,10 @@ pub fn decide(
             }
 
             (true, Some(pack)) => {
-                let slot = slots
-                    .get(usize::try_from(id)?)
-                    .context(format!("slot {id} not found"))?
-                    .as_ref()
-                    .context(format!("slot {id} is None"))?;
+                let slot = slot_of(slots, id)?;
 
-                let pool_grows = slot.pool_capacity < pack.blocks.len() as u64;
-                let blas_grows = slot.aabb_capacity < pack.aabbs.len() as u32;
+                let pool_grows = slot.pool_capacity < u64::try_from(pack.blocks.len())?;
+                let blas_grows = slot.aabb_capacity < u32::try_from(pack.aabbs.len())?;
 
                 if pool_grows {
                     decision.table_changed = true;
@@ -113,9 +105,10 @@ pub fn decide(
                 }
 
                 decision.dirty.push(region_index);
+
                 RegionEffect::Update {
-                    pool_bytes: pack.blocks.len() as u64,
-                    aabbs: pack.aabbs.len() as u32,
+                    pool_bytes: u64::try_from(pack.blocks.len())?,
+                    aabbs: u32::try_from(pack.aabbs.len())?,
                     retire_pool: pool_grows.then_some(slot.pool_capacity),
                     retire_blas: blas_grows.then_some(slot.aabb_capacity),
                     pack,
@@ -127,6 +120,14 @@ pub fn decide(
     }
 
     Ok(decision)
+}
+
+fn slot_of(slots: &[Option<RegionSlot>], id: u32) -> anyhow::Result<&RegionSlot> {
+    slots
+        .get(usize::try_from(id)?)
+        .context(format!("region slot {id} out of range"))?
+        .as_ref()
+        .context(format!("region {id} is not resident"))
 }
 
 fn insert_resident(resident_ids: &mut Vec<u32>, id: u32) {

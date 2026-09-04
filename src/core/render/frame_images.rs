@@ -7,7 +7,7 @@ use vulkano::{
 };
 use vulkano_taskgraph::{
     Id,
-    descriptor_set::StorageImageId,
+    descriptor_set::{BindlessContext, StorageImageId},
     graph::{TaskGraph, TaskNodeBuilder},
     resource::{AccessTypes, ImageLayoutType, Resources},
 };
@@ -107,9 +107,7 @@ impl FrameImages {
 
         self.swapchain_storage = swapchain_storage_views(resources, swapchain_id)?;
 
-        let bcx = resources
-            .bindless_context()
-            .context("no bindless context")?;
+        let bcx = bindless_context(resources)?;
 
         for entry in &mut self.entries {
             let physical_id = resources.create_image(
@@ -187,13 +185,17 @@ const fn image_slot_mut(
     }
 }
 
+fn bindless_context(resources: &Resources) -> anyhow::Result<&BindlessContext> {
+    resources
+        .bindless_context()
+        .context("bindless context not found")
+}
+
 fn swapchain_storage_views(
     resources: &Resources,
     swapchain_id: Id<Swapchain>,
 ) -> anyhow::Result<Vec<StorageImageId>> {
-    let bcx = resources
-        .bindless_context()
-        .context("no bindless context")?;
+    let bcx = bindless_context(resources)?;
     let swapchain_state = resources.swapchain(swapchain_id);
     let images = swapchain_state.images();
 
@@ -268,7 +270,7 @@ mod tests {
         let mut region = test_region();
         let mut slots: Vec<usize> = KINDS
             .into_iter()
-            .map(|kind| image_slot_mut(&mut region, kind) as *mut StorageImageId as usize)
+            .map(|kind| std::ptr::from_mut(image_slot_mut(&mut region, kind)) as usize)
             .collect();
 
         slots.sort_unstable();

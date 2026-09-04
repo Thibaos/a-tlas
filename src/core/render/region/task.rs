@@ -1,16 +1,6 @@
-//! The Region pipeline's GPU half: the shared ray tracing pipeline and the
-//! per-frame render task that ray-passes the swapchain storage images with
-//! the production raygen. The miss/intersection/closest-hit stages are the
-//! Region path's own (shaders/, grouped per render mode).
-//!
-//! All per-Region GPU state: voxel pools, procedural AABB BLASes, the
-//! lattice-static instance set and the stable TLAS. Lives in
-//! [`RegionStore`](crate::render::region::residency::RegionStore). The render task
-//! only holds the ids the push constants and the task graph need; the store
-//! keeps the buffers alive across rebuilds.
-
 use std::sync::Arc;
 
+use anyhow::Context;
 use vulkano::{
     acceleration_structure::AccelerationStructure,
     buffer::Buffer,
@@ -32,10 +22,10 @@ use vulkano_taskgraph::{
 
 use crate::core::{
     render::gpu::GpuDesc,
-    render::region::residency::{RegionBindings, RegionStore},
+    render::region::residency::{RegionBindingsIds, RegionStore},
 };
 
-pub(crate) mod production_raygen {
+pub mod production_raygen {
     vulkano_shaders::shader! {
         root_path_env: "CARGO_MANIFEST_DIR",
         ty: "raygen",
@@ -44,7 +34,7 @@ pub(crate) mod production_raygen {
     }
 }
 
-pub(crate) mod intersect {
+pub mod intersect {
     vulkano_shaders::shader! {
         root_path_env: "CARGO_MANIFEST_DIR",
         ty: "intersection",
@@ -53,7 +43,7 @@ pub(crate) mod intersect {
     }
 }
 
-pub(crate) mod miss {
+pub mod miss {
     vulkano_shaders::shader! {
         root_path_env: "CARGO_MANIFEST_DIR",
         ty: "miss",
@@ -62,7 +52,7 @@ pub(crate) mod miss {
     }
 }
 
-pub(crate) mod closest_hit {
+pub mod closest_hit {
     vulkano_shaders::shader! {
         root_path_env: "CARGO_MANIFEST_DIR",
         ty: "closesthit",
@@ -72,7 +62,7 @@ pub(crate) mod closest_hit {
 }
 
 #[cfg(debug_assertions)]
-pub(crate) mod hull_intersect {
+pub mod hull_intersect {
     vulkano_shaders::shader! {
         root_path_env: "CARGO_MANIFEST_DIR",
         ty: "intersection",
@@ -82,7 +72,7 @@ pub(crate) mod hull_intersect {
 }
 
 #[cfg(debug_assertions)]
-pub(crate) mod hull_closest_hit {
+pub mod hull_closest_hit {
     vulkano_shaders::shader! {
         root_path_env: "CARGO_MANIFEST_DIR",
         ty: "closesthit",
@@ -112,7 +102,7 @@ pub struct RegionRenderContext {
 
 pub struct RegionRenderTask {
     swapchain_id: Id<Swapchain>,
-    bindings: RegionBindings,
+    bindings: RegionBindingsIds,
     shader_binding_table: ShaderBindingTable,
     pipeline: Arc<RayTracingPipeline>,
     _blases: Vec<Arc<AccelerationStructure>>,
@@ -124,49 +114,45 @@ impl RegionRenderTask {
         store: &RegionStore,
         virtual_swapchain_id: Id<Swapchain>,
         raygen: &EntryPoint,
-    ) -> Self {
+    ) -> anyhow::Result<Self> {
         let pipeline = {
             let miss = unsafe {
-                miss::load(&gpu.device)
-                    .unwrap()
+                miss::load(&gpu.device)?
                     .entry_point("main")
-                    .unwrap()
+                    .context("main entry point not found for miss shader")?
             };
 
             let intersection = unsafe {
-                intersect::load(&gpu.device)
-                    .unwrap()
+                intersect::load(&gpu.device)?
                     .entry_point("main")
-                    .unwrap()
+                    .context("main entry point not found for intersect shader")?
             };
             let closest_hit = unsafe {
-                closest_hit::load(&gpu.device)
-                    .unwrap()
+                closest_hit::load(&gpu.device)?
                     .entry_point("main")
-                    .unwrap()
+                    .context("main entry point not found for closest hit shader")?
             };
 
             build_ray_tracing_pipeline(gpu, raygen, &miss, &intersection, &closest_hit)
-        };
+        }?;
 
-        let shader_binding_table =
-            ShaderBindingTable::new(&gpu.memory_allocator, &pipeline).unwrap();
+        let shader_binding_table = ShaderBindingTable::new(&gpu.memory_allocator, &pipeline)?;
 
-        Self {
+        Ok(Self {
             swapchain_id: virtual_swapchain_id,
             bindings: store.bindings,
             shader_binding_table,
             pipeline,
             _blases: store.blases(),
-        }
+        })
     }
 
-    pub fn instance_buffer_id(&self) -> Id<Buffer> {
-        self.bindings.instance_buffer_id
+    pub const fn instance_buffer_id(&self) -> Id<Buffer> {
+        self.bindings.instance_buffer
     }
 }
 
-pub fn default_scene() -> production_raygen::Scene {
+pub const fn default_scene() -> production_raygen::Scene {
     let knots = [0.15, 0.6, 1.2];
 
     production_raygen::Scene {
@@ -174,29 +160,30 @@ pub fn default_scene() -> production_raygen::Scene {
     }
 }
 
-pub(crate) fn build_ray_tracing_pipeline(
+fn build_ray_tracing_pipeline(
     gpu: &GpuDesc,
     raygen: &EntryPoint,
     miss: &EntryPoint,
     intersection: &EntryPoint,
     closest_hit: &EntryPoint,
-) -> Arc<RayTracingPipeline> {
-    let bcx = gpu.resources.bindless_context().unwrap();
+) -> anyhow::Result<Arc<RayTracingPipeline>> {
+    let bcx = gpu
+        .resources
+        .bindless_context()
+        .context("bindless context not found")?;
 
     #[cfg(debug_assertions)]
     let hull_intersection = unsafe {
-        hull_intersect::load(&gpu.device)
-            .unwrap()
+        hull_intersect::load(&gpu.device)?
             .entry_point("main")
-            .unwrap()
+            .context("main entry point not found for hull intersection shader")?
     };
 
     #[cfg(debug_assertions)]
     let hull_closest_hit = unsafe {
-        hull_closest_hit::load(&gpu.device)
-            .unwrap()
+        hull_closest_hit::load(&gpu.device)?
             .entry_point("main")
-            .unwrap()
+            .context("main entry point not found for hull closest hit shader")?
     };
 
     #[cfg(debug_assertions)]
@@ -218,8 +205,8 @@ pub(crate) fn build_ray_tracing_pipeline(
             },
         ];
 
-        let hull_intersection_idx = stages.len() as u32;
-        let hull_closest_hit_idx = hull_intersection_idx + 1;
+        let hull_intersection_idx = u32::try_from(stages.len())?;
+        let hull_closest_hit_idx = hull_intersection_idx.strict_add(1);
         stages.push(PipelineShaderStageCreateInfo::new(&hull_intersection));
         stages.push(PipelineShaderStageCreateInfo::new(&hull_closest_hit));
         groups.push(RayTracingShaderGroupCreateInfo::ProceduralHit {
@@ -253,11 +240,11 @@ pub(crate) fn build_ray_tracing_pipeline(
         (stages, groups)
     };
 
-    let layout = bcx.pipeline_layout_from_stages(&stages).unwrap();
+    let layout = bcx.pipeline_layout_from_stages(&stages)?;
 
     let base_info = RayTracingPipelineCreateInfo::new(&layout);
 
-    RayTracingPipeline::new(
+    let pipeline = RayTracingPipeline::new(
         &gpu.device,
         None,
         &RayTracingPipelineCreateInfo {
@@ -266,13 +253,15 @@ pub(crate) fn build_ray_tracing_pipeline(
             max_pipeline_ray_recursion_depth: 1,
             ..base_info
         },
-    )
-    .unwrap()
+    )?;
+
+    Ok(pipeline)
 }
 
 impl Task for RegionRenderTask {
     type World = RegionRenderContext;
 
+    #[allow(clippy::as_conversions)]
     unsafe fn execute(
         &self,
         cbf: &mut RecordingCommandBuffer<'_>,
@@ -280,11 +269,31 @@ impl Task for RegionRenderTask {
         rcx: &Self::World,
     ) -> TaskResult {
         let swapchain_state = tcx.swapchain(self.swapchain_id);
-        let image_index = swapchain_state.current_image_index().unwrap();
-        let extent = swapchain_state.images()[0].extent();
 
-        unsafe { cbf.update_buffer(self.bindings.camera_buffer_id, 0, &rcx.camera) };
-        unsafe { cbf.update_buffer(self.bindings.scene_buffer_id, 0, &rcx.scene) };
+        let Some(image_index) = swapchain_state.current_image_index() else {
+            eprintln!("swapchain has no current image");
+            return Ok(());
+        };
+
+        let Ok(image_index) = usize::try_from(image_index) else {
+            eprintln!("swapchain image index does not fit usize");
+            return Ok(());
+        };
+
+        let Some(swapchain_first_image) = swapchain_state.images().first() else {
+            eprintln!("swapchain has no images");
+            return Ok(());
+        };
+
+        let extent = swapchain_first_image.extent();
+
+        let Some(image_id) = rcx.swapchain_storage_image_ids.get(image_index) else {
+            eprintln!("no storage image bound for the current swapchain image");
+            return Ok(());
+        };
+
+        unsafe { cbf.update_buffer(self.bindings.camera_buffer, 0, &rcx.camera) };
+        unsafe { cbf.update_buffer(self.bindings.scene_buffer, 0, &rcx.scene) };
 
         unsafe {
             cbf.pipeline_barrier(&DependencyInfo {
@@ -305,13 +314,13 @@ impl Task for RegionRenderTask {
                 self.pipeline.layout(),
                 0,
                 &production_raygen::RegionPushConstants {
-                    image_id: rcx.swapchain_storage_image_ids[image_index as usize],
-                    acceleration_structure_id: self.bindings.acceleration_structure_id,
-                    camera_buffer_id: self.bindings.camera_storage_id,
-                    palette_buffer_id: self.bindings.palette_storage_id,
-                    scene_buffer_id: self.bindings.scene_storage_id,
-                    region_table_buffer_id: self.bindings.region_table_storage_id,
-                    aabb_table_buffer_id: self.bindings.aabb_table_storage_id,
+                    image_id: *image_id,
+                    acceleration_structure_id: self.bindings.acceleration_structure,
+                    camera_buffer_id: self.bindings.camera_storage,
+                    palette_buffer_id: self.bindings.palette_storage,
+                    scene_buffer_id: self.bindings.scene_storage,
+                    region_table_buffer_id: self.bindings.region_table_storage,
+                    aabb_table_buffer_id: self.bindings.aabb_table_storage,
                     mode: rcx.mode as u32,
                     color_image_id: rcx.color_image_id,
                 },

@@ -115,7 +115,7 @@ impl App {
     ///
     /// Returns an error if the window is not available.
     pub fn toggle_capture_mouse(&mut self) -> anyhow::Result<()> {
-        let window = self.window.as_ref().context("app window not is None")?;
+        let window = self.window.as_ref().context("app window is not available")?;
 
         if self.focused {
             self.focused = false;
@@ -145,7 +145,7 @@ impl App {
         self.delta_time = self
             .schedule_controller
             .check("delta")
-            .context("delta time calculation returned None")?;
+            .context("delta schedule is not registered")?;
 
         Ok(self.delta_time)
     }

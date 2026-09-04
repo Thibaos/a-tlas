@@ -16,11 +16,11 @@ impl SceneGraphTraverser<'_> {
             let mut clipped = 0usize;
             for voxel in self.scene.models.iter().flat_map(|model| &model.voxels) {
                 if self.world.insert(
-                    IVec3::new(voxel.x as i32, voxel.z as i32, voxel.y as i32),
-                    voxel.i as u32,
+                    IVec3::new(i32::from(voxel.x), i32::from(voxel.z), i32::from(voxel.y)),
+                    u32::from(voxel.i),
                     self.policy,
                 ) {
-                    clipped += 1;
+                    clipped = clipped.saturating_add(1);
                 }
             }
             clipped
@@ -30,28 +30,34 @@ impl SceneGraphTraverser<'_> {
         }
     }
 
-    pub fn traverse_recursive(&mut self, node: u32, translation: glam::IVec3, rotation: Rotation) {
-        let node = &self.scene.scenes[node as usize];
+    fn traverse_recursive(&mut self, node: u32, translation: glam::IVec3, rotation: Rotation) {
+        let Some(node) = self
+            .scene
+            .scenes
+            .get(usize::try_from(node).unwrap_or(usize::MAX))
+        else {
+            panic!("scene node {node} out of range");
+        };
+
         match node {
             SceneNode::Transform { frames, child, .. } => {
-                if frames.len() != 1 {
-                    unimplemented!("Multiple frames in transform node");
-                }
-                let frame = &frames[0];
+                let [frame] = &frames[..] else {
+                    panic!("transform node must have exactly one frame, got {}", frames.len());
+                };
+
                 let this_translation = frame
                     .position()
-                    .map(|position| IVec3 {
+                    .map_or(IVec3::ZERO, |position| IVec3 {
                         x: position.x,
                         y: position.y,
                         z: position.z,
-                    })
-                    .unwrap_or(IVec3::ZERO);
+                    });
 
                 let this_rotation = frame.orientation().unwrap_or(Rotation::IDENTITY);
 
-                let translation = translation + this_translation;
+                let translation = translation.saturating_add(this_translation);
 
-                self.traverse_recursive(*child, translation, rotation * this_rotation);
+                self.traverse_recursive(*child, translation, compose(rotation, this_rotation));
             }
             SceneNode::Group { children, .. } => {
                 for child in children {
@@ -59,16 +65,21 @@ impl SceneGraphTraverser<'_> {
                 }
             }
             SceneNode::Shape { models, .. } => {
-                if models.len() != 1 {
-                    unimplemented!("Multiple shape models in Shape node");
-                }
-                let shape_model = &models[0];
-                let model = &self.scene.models[shape_model.model_id as usize];
+                let [shape_model] = models.as_slice() else {
+                    panic!("shape node must have exactly one model, got {}", models.len());
+                };
+
+                let model = self
+                    .scene
+                    .models
+                    .get(usize::try_from(shape_model.model_id).unwrap_or(usize::MAX))
+                    .unwrap_or_else(|| panic!("shape model {} out of range", shape_model.model_id));
+
                 if model.voxels.is_empty() {
                     return;
                 }
 
-                let size = self.scene.models[shape_model.model_id as usize].size;
+                let size = model.size;
 
                 self.models.push((
                     translation,
@@ -81,6 +92,8 @@ impl SceneGraphTraverser<'_> {
     }
 
     pub fn to_transform(translation: glam::IVec3, rotation: Rotation, size: glam::UVec3) -> Mat4 {
+        use std::ops::{Add, Mul, Sub};
+
         let mut translation = translation.as_vec3a().xzy();
         translation.z *= -1.0;
 
@@ -96,12 +109,17 @@ impl SceneGraphTraverser<'_> {
         );
         offset = quat.mul_vec3a(offset);
 
-        let center = quat * (size.xzy().as_vec3a() / 2.0);
+        let center = quat.mul_vec3a(size.xzy().as_vec3a().mul(0.5));
 
         Mat4::from_scale_rotation_translation(
             scale.into(),
             quat,
-            (translation - center * scale + offset).into(),
+            translation.sub(center.mul(scale)).add(offset).into(),
         )
     }
+}
+
+#[allow(clippy::arithmetic_side_effects)] // dot_vox composes packed rotation bitfields
+fn compose(rotation: Rotation, next: Rotation) -> Rotation {
+    rotation * next
 }

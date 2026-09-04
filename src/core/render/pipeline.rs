@@ -78,7 +78,7 @@ fn create_swapchain(
                 })
                 .is_ok_and(|i| i.is_some())
         })
-        .context("surface does not support storage usage")?;
+        .context("no swapchain format supports storage and color attachment usage")?;
 
     let swapchain_id = gpu.resources.create_swapchain(
         surface,
@@ -110,8 +110,8 @@ impl FramePipeline {
         voxel_data: &DotVoxData,
         world: &World,
     ) -> anyhow::Result<Self> {
-        let input = RendererInput::new();
-        input.submit_batch(emit_snapshots(world));
+        let input = RendererInput::new()?;
+        input.submit_batch(emit_snapshots(world)?)?;
 
         let store = RegionStore::new(gpu, voxel_data, &input)?;
         let surface = Surface::from_window(&gpu.instance, &window)?;
@@ -128,15 +128,15 @@ impl FramePipeline {
             .swapchain(swapchain_id)
             .images()
             .first()
-            .context("no swapchain image")?
+            .context("swapchain has no images")?
             .extent();
         frame_images.recreate(&gpu.resources, swapchain_id, extent)?;
 
         let raygen = unsafe { production_raygen::load(&gpu.device)? }
             .entry_point("main")
-            .context("entry point not found")?;
+            .context("main entry point not found for raygen shader")?;
 
-        let rt_pass = RegionRenderTask::new(gpu, &store, virtual_swapchain_id, &raygen);
+        let rt_pass = RegionRenderTask::new(gpu, &store, virtual_swapchain_id, &raygen)?;
         let instance_buffer_id = rt_pass.instance_buffer_id();
 
         let mut rt_node = task_graph.create_task_node("Render", QueueFamilyType::Graphics, rt_pass);
@@ -183,7 +183,7 @@ impl FramePipeline {
                 .task_node_mut(composite_node_id)?
                 .task_mut()
                 .downcast_mut::<CompositeTask>()
-                .context("composite task cast failed")?;
+                .context("composite node holds no CompositeTask")?;
 
             task.pipeline = Some(composite_pipeline);
         }
@@ -234,7 +234,7 @@ impl FramePipeline {
             .swapchain(self.swapchain_id)
             .images()
             .first()
-            .context("no swapchain image")?
+            .context("swapchain has no images")?
             .extent();
 
         self.frame_images

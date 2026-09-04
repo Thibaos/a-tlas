@@ -182,7 +182,7 @@ mod tests {
         up.scroll_delta = 1.0;
         let start = player.translation;
         player.fly_movement(Duration::from_secs(1), &up);
-        assert_eq!(player.speed, 64.0 * 1.5);
+        assert!(64.0f32.mul_add(-1.5, player.speed).abs() < 0.0001);
         assert_eq!(player.translation - start, Vec3::new(0.0, 0.0, -96.0));
 
         let mut down = Input::default();
@@ -190,7 +190,7 @@ mod tests {
         down.scroll_delta = -1.0;
         let start = player.translation;
         player.fly_movement(Duration::from_secs(1), &down);
-        assert_eq!(player.speed, 64.0);
+        assert!((player.speed - 64.0).abs() < 0.0001);
         assert_eq!(player.translation - start, Vec3::new(0.0, 0.0, -64.0));
     }
 }

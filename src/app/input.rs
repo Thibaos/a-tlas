@@ -72,6 +72,8 @@ mod tests {
     use super::*;
     use winit::keyboard::SmolStr;
 
+    const EPSILON: f32 = 0.00001;
+
     #[test]
     fn held_vs_just_pressed_set_semantics() {
         let mut input = Input::default();
@@ -101,7 +103,7 @@ mod tests {
         input.clear();
 
         assert!(input.just_pressed.is_empty());
-        assert_eq!(input.scroll_delta, 0.0);
+        assert!(input.scroll_delta.abs() < EPSILON);
         assert_eq!(input.mouse_motion, (0.0, 0.0));
 
         assert!(input.down.contains(&InputKey::Forward));

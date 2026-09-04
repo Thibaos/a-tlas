@@ -88,7 +88,7 @@ pub fn allocate_pool(
                     | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
                 ..Default::default()
             },
-            DeviceLayout::new_unsized::<[u8]>(needed).context("device layout creation failed")?,
+            DeviceLayout::new_unsized::<[u8]>(needed).context(format!("device layout for {needed} bytes is invalid"))?,
         )?;
 
         stats.pool_allocations = stats.pool_allocations.saturating_add(1);
@@ -109,7 +109,7 @@ pub fn allocate_blas(
     if let Some(freed) = take_best_fit(&mut free.blas, u64::from(aabb_count), |f| {
         u64::from(f.aabb_capacity)
     }) {
-        stats.blas_reuses = stats.blas_reuses.strict_add(1);
+        stats.blas_reuses = stats.blas_reuses.saturating_add(1);
 
         Ok(BlasAllocation {
             aabb_buffer_id: freed.aabb_buffer_id,
@@ -130,7 +130,7 @@ pub fn allocate_blas(
                 ..Default::default()
             },
             DeviceLayout::new_unsized::<[AabbPositions]>(u64::from(aabb_count))
-                .context("device layout creation failed")?,
+                .context(format!("device layout for {aabb_count} AABBs is invalid"))?,
         )?;
 
         stats.blas_allocations = stats.blas_allocations.saturating_add(1);

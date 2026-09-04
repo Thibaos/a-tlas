@@ -69,6 +69,9 @@ pub fn as_build_post_barrier(cbf: &mut RecordingCommandBuffer<'_>) {
     }
 }
 
+/// # Panics
+///
+/// Panics if `ty` is neither top level nor bottom level.
 pub fn build_flags(ty: AccelerationStructureType) -> BuildAccelerationStructureFlags {
     match ty {
         AccelerationStructureType::TopLevel => {
@@ -78,11 +81,10 @@ pub fn build_flags(ty: AccelerationStructureType) -> BuildAccelerationStructureF
         AccelerationStructureType::BottomLevel => {
             BuildAccelerationStructureFlags::PREFER_FAST_TRACE
         }
-        _ => BuildAccelerationStructureFlags::empty(),
+        _ => panic!("unhandled acceleration structure type {ty:?}"),
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 pub fn build_acceleration_structure_in_place(
     geometries: &BuildGeometries,
     primitive_count: u32,
@@ -216,7 +218,6 @@ pub fn create_blas_aabbs_storage(
     ))
 }
 
-#[allow(clippy::too_many_arguments)]
 pub fn build_acceleration_structure_fresh(
     geometries: &BuildGeometries,
     primitive_count: u32,

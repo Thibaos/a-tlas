@@ -56,7 +56,7 @@ pub struct RebuildPlan {
 }
 
 impl RebuildPlan {
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.uploads.is_empty()
             && self.blas_builds.is_empty()
             && self.table.is_none()
@@ -64,14 +64,14 @@ impl RebuildPlan {
             && self.tlas.is_none()
     }
 
-    pub fn log(&self) -> Vec<RebuildLogEntry> {
+    pub fn log(&self) -> anyhow::Result<Vec<RebuildLogEntry>> {
         let mut log = Vec::new();
 
         for upload in &self.uploads {
             log.push(RebuildLogEntry::Upload {
                 region_index: upload.region_index,
-                pool_bytes: upload.pool_bytes.len() as u64,
-                aabbs: upload.aabbs.len() as u32,
+                pool_bytes: u64::try_from(upload.pool_bytes.len())?,
+                aabbs: u32::try_from(upload.aabbs.len())?,
             });
         }
 
@@ -81,7 +81,7 @@ impl RebuildPlan {
 
         if let Some(instances) = &self.instances {
             log.push(RebuildLogEntry::RewriteInstances {
-                instance_count: instances.len() as u32,
+                instance_count: u32::try_from(instances.len())?,
             });
         }
 
@@ -99,7 +99,7 @@ impl RebuildPlan {
             });
         }
 
-        log
+        Ok(log)
     }
 }
 
@@ -141,15 +141,25 @@ impl Task for UploadRegionsTask {
         _world: &Self::World,
     ) -> TaskResult {
         for upload in &self.uploads {
-            tcx.write_buffer::<[u8]>(
-                upload.pool_buffer_id,
-                0..upload.pool_bytes.len() as DeviceSize,
-            )
-            .copy_from_slice(&upload.pool_bytes);
+            let Ok(pool_byte_size) = DeviceSize::try_from(upload.pool_bytes.len()) else {
+                eprintln!("upload pool bytes len could not be cast to device size");
+                return Ok(());
+            };
+            let Ok(aabbs_size) = DeviceSize::try_from(upload.aabbs.len()) else {
+                eprintln!("upload aabbs len could not be cast to device size");
+                return Ok(());
+            };
+            let Ok(aabb_position_size) = DeviceSize::try_from(size_of::<AabbPositions>()) else {
+                eprintln!("AabbPositions size could not be cast to device size");
+                return Ok(());
+            };
+
+            tcx.write_buffer::<[u8]>(upload.pool_buffer_id, 0..pool_byte_size)
+                .copy_from_slice(&upload.pool_bytes);
 
             let dst = tcx.write_buffer::<[AabbPositions]>(
                 upload.aabb_buffer_id,
-                0..(upload.aabbs.len() as DeviceSize * size_of::<AabbPositions>() as DeviceSize),
+                0..(aabbs_size.strict_mul(aabb_position_size)),
             );
             for (slot, aabb) in dst.iter_mut().zip(upload.aabbs.iter().copied()) {
                 *slot = aabb;
@@ -157,15 +167,25 @@ impl Task for UploadRegionsTask {
         }
 
         if let Some(table) = &self.table {
-            *tcx.write_buffer::<production_raygen::RegionTable>(self.region_table_buffer_id, ..) =
-                production_raygen::RegionTable { bdas: *table };
+            tcx.write_buffer::<production_raygen::RegionTable>(self.region_table_buffer_id, ..)
+                .bdas
+                .copy_from_slice(table);
         }
 
         if let Some(instances) = &self.instances {
+            let Ok(instances_size) = DeviceSize::try_from(instances.len()) else {
+                eprintln!("instances could not be cast to device size");
+                return Ok(());
+            };
+            let Ok(as_size) = DeviceSize::try_from(size_of::<AccelerationStructureInstance>())
+            else {
+                eprintln!("AccelerationStructureInstance size could not be cast to device size");
+                return Ok(());
+            };
+
             let dst = tcx.write_buffer::<[AccelerationStructureInstance]>(
                 self.instance_buffer_id,
-                0..(instances.len() as DeviceSize
-                    * size_of::<AccelerationStructureInstance>() as DeviceSize),
+                0..(instances_size.strict_mul(as_size)),
             );
             for (slot, instance) in dst.iter_mut().zip(instances) {
                 *slot = *instance;
@@ -281,7 +301,7 @@ pub struct RebuildGraph {
 }
 
 impl RebuildGraph {
-    pub fn new(gpu: &GpuDesc, store: &RegionStore, plan: RebuildPlan) -> Self {
+    pub fn new(gpu: &GpuDesc, store: &RegionStore, plan: RebuildPlan) -> anyhow::Result<Self> {
         let blas_buffers = blas_buffer_ids(&plan);
 
         let mut task_graph = TaskGraph::new(&gpu.resources);
@@ -298,7 +318,7 @@ impl RebuildGraph {
 
         if plan.instances.is_some() {
             task_graph
-                .add_host_buffer_access(store.bindings.instance_buffer_id, HostAccessType::Write);
+                .add_host_buffer_access(store.bindings.instance_buffer, HostAccessType::Write);
         }
 
         let upload_node = task_graph
@@ -309,14 +329,15 @@ impl RebuildGraph {
                     uploads: plan.uploads,
                     table: plan.table,
                     instances: plan.instances,
-                    instance_buffer_id: store.bindings.instance_buffer_id,
+                    instance_buffer_id: store.bindings.instance_buffer,
                     region_table_buffer_id: store.region_table_buffer_id(),
                 },
             )
             .build();
 
-        let mut blas_node = None;
-        if !plan.blas_builds.is_empty() {
+        let blas_node = if plan.blas_builds.is_empty() {
+            None
+        } else {
             let mut builder = task_graph.create_task_node(
                 "Rebuild BLAS",
                 QueueFamilyType::Compute,
@@ -324,44 +345,48 @@ impl RebuildGraph {
                     builds: plan.blas_builds,
                 },
             );
+
             for build in blas_buffers {
                 builder.buffer_access(
                     build,
                     AccessTypes::ACCELERATION_STRUCTURE_BUILD_ACCELERATION_STRUCTURE_READ,
                 );
             }
-            blas_node = Some(builder.build());
-        }
 
-        let mut tlas_node = None;
-        if let Some(tlas) = plan.tlas {
-            tlas_node = Some(
+            Some(builder.build())
+        };
+
+        let tlas_node = if let Some(tlas) = plan.tlas {
+            Some(
                 task_graph
                     .create_task_node(
                         "Rebuild TLAS",
                         QueueFamilyType::Compute,
                         BuildTlasTask {
                             instance_count: tlas.instance_count,
-                            instance_buffer_id: store.bindings.instance_buffer_id,
+                            instance_buffer_id: store.bindings.instance_buffer,
                             tlas: store.tlas(),
                             scratch: tlas.scratch,
                         },
                     )
                     .buffer_access(
-                        store.bindings.instance_buffer_id,
+                        store.bindings.instance_buffer,
                         AccessTypes::ACCELERATION_STRUCTURE_BUILD_ACCELERATION_STRUCTURE_WRITE,
                     )
                     .build(),
-            );
+            )
+        } else {
+            None
+        };
+
+        let mut previous = upload_node;
+        if let Some(blas_node) = blas_node {
+            task_graph.add_edge(previous, blas_node)?;
+            previous = blas_node;
         }
 
-        let mut previous = Some(upload_node);
-        if let Some(blas_node) = blas_node {
-            task_graph.add_edge(previous.unwrap(), blas_node).unwrap();
-            previous = Some(blas_node);
-        }
         if let Some(tlas_node) = tlas_node {
-            task_graph.add_edge(previous.unwrap(), tlas_node).unwrap();
+            task_graph.add_edge(previous, tlas_node)?;
         }
 
         let executable = unsafe {
@@ -369,23 +394,21 @@ impl RebuildGraph {
                 queues: &[&gpu.compute_queue],
                 present_queue: None,
                 flight_id: gpu.compute_flight_id,
-                ..Default::default()
+                ..CompileInfo::default()
             })
-        }
-        .unwrap();
+        }?;
 
-        Self { executable }
+        Ok(Self { executable })
     }
 
-    pub fn execute(self, gpu: &GpuDesc) {
-        let resource_map = resource_map!(&self.executable).unwrap();
+    pub fn execute(self, gpu: &GpuDesc) -> anyhow::Result<()> {
+        let resource_map = resource_map!(&self.executable)?;
 
-        unsafe { self.executable.execute(resource_map, &(), || {}) }.unwrap();
+        unsafe { self.executable.execute(resource_map, &(), || {}) }?;
 
-        gpu.resources
-            .flight(gpu.compute_flight_id)
-            .wait_idle()
-            .unwrap();
+        gpu.resources.flight(gpu.compute_flight_id).wait_idle()?;
+
+        Ok(())
     }
 }
 
@@ -404,7 +427,7 @@ mod tests {
     fn empty_plan_means_no_rebuild_work() {
         let plan = RebuildPlan::default();
         assert!(plan.is_empty());
-        assert!(plan.log().is_empty());
+        assert!(plan.log().unwrap().is_empty());
     }
 
     #[test]
@@ -426,7 +449,7 @@ mod tests {
             tlas: None,
         };
         assert_eq!(
-            plan.log(),
+            plan.log().unwrap(),
             vec![RebuildLogEntry::Upload {
                 region_index: IVec3::new(0, 0, 0),
                 pool_bytes: 64,
@@ -438,7 +461,7 @@ mod tests {
 
         plan.tlas = None;
 
-        let log = plan.log();
+        let log = plan.log().unwrap();
 
         assert!(
             log.iter()

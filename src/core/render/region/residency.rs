@@ -1,30 +1,17 @@
-//! Multi-region residency: the full static lattice.
-//!
-//! The renderer owns the lattice: Region = 256^3 voxels,
-//! origin-aligned, v1 extent ±2048/axis → 16^3 = 4096 Regions, exactly the
-//! 12-bit region-id budget. [`RegionStore`] is the GPU half of that lattice:
-//! per-Region voxel pools and trimmed-AABB BLASes exist across the lattice;
-//! a Region becomes resident on its first non-empty Micro-chunk (a pool
-//! buffer + a procedural AABB BLAS, allocated from free lists) and leaves
-//! residency on its last (memory returned to the free lists; the CPU mirror
-//! is freed with the Region by the input contract). The TLAS holds one
-//! instance per resident region. Lattice-static transform, custom index =
-//! region id, mask 0xFF, added on residency, removed on region-empty, and
-//! rebuilt in place so the bindless acceleration-structure id never
-//! moves.
 use std::sync::Arc;
 
+use anyhow::Context;
 use dot_vox::DotVoxData;
 use glam::IVec3;
 use vulkano::{
     DeviceSize, Packed24_8,
     acceleration_structure::{AabbPositions, AccelerationStructure, AccelerationStructureInstance},
-    buffer::{Buffer, BufferCreateInfo, BufferUsage, Subbuffer},
+    buffer::{Buffer, BufferContents, BufferCreateInfo, BufferUsage, Subbuffer},
     memory::allocator::{AllocationCreateInfo, DeviceLayout, MemoryTypeFilter},
 };
 use vulkano_taskgraph::{
     Id,
-    descriptor_set::{AccelerationStructureId, StorageBufferId},
+    descriptor_set::{AccelerationStructureId, BindlessContext, StorageBufferId},
     resource::HostAccessType,
 };
 
@@ -35,7 +22,7 @@ use crate::core::{
         region::{
             alloc::{
                 AllocStats, BlasAllocation, FreeLists, FreedBlas, FreedPool, PendingFrees,
-                allocate_blas, allocate_pool,
+                PoolAllocation, allocate_blas, allocate_pool,
             },
             decision::{RegionEffect, RegionSlot, decide},
             feed::RendererInput,
@@ -61,6 +48,15 @@ struct ResidentRegion {
     blas_storage_size: u64,
 }
 
+struct SceneBuffers {
+    camera: Id<Buffer>,
+    scene: Id<Buffer>,
+    palette: Id<Buffer>,
+    region_table: Id<Buffer>,
+    aabb_table: Id<Buffer>,
+    instance: Id<Buffer>,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ApplyReport {
     pub became_resident: Vec<IVec3>,
@@ -74,20 +70,20 @@ pub struct ApplyReport {
 }
 
 #[derive(Clone, Copy)]
-pub struct RegionBindings {
-    pub camera_buffer_id: Id<Buffer>,
-    pub scene_buffer_id: Id<Buffer>,
-    pub region_table_storage_id: StorageBufferId,
-    pub camera_storage_id: StorageBufferId,
-    pub scene_storage_id: StorageBufferId,
-    pub palette_storage_id: StorageBufferId,
-    pub acceleration_structure_id: AccelerationStructureId,
-    pub aabb_table_storage_id: StorageBufferId,
-    pub instance_buffer_id: Id<Buffer>,
+pub struct RegionBindingsIds {
+    pub camera_buffer: Id<Buffer>,
+    pub scene_buffer: Id<Buffer>,
+    pub region_table_storage: StorageBufferId,
+    pub camera_storage: StorageBufferId,
+    pub scene_storage: StorageBufferId,
+    pub palette_storage: StorageBufferId,
+    pub acceleration_structure: AccelerationStructureId,
+    pub aabb_table_storage: StorageBufferId,
+    pub instance_buffer: Id<Buffer>,
 }
 
 pub struct RegionStore {
-    pub bindings: RegionBindings,
+    pub bindings: RegionBindingsIds,
     region_table_buffer_id: Id<Buffer>,
     aabb_table_buffer_id: Id<Buffer>,
     instances: Vec<AccelerationStructureInstance>,
@@ -109,213 +105,22 @@ impl RegionStore {
         voxel_data: &DotVoxData,
         input: &RendererInput,
     ) -> anyhow::Result<Self> {
-        input.wait_until_idle();
-        let initial = input.packed_regions();
+        input.wait_until_idle()?;
+        let initial = input.packed_regions()?;
 
-        let camera_buffer_id = gpu
-            .resources
-            .create_buffer(
-                &BufferCreateInfo {
-                    usage: BufferUsage::STORAGE_BUFFER | BufferUsage::TRANSFER_DST,
-                    ..Default::default()
-                },
-                &AllocationCreateInfo {
-                    memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
-                        | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
-                    ..Default::default()
-                },
-                DeviceLayout::new_sized::<production_raygen::Camera>(),
-            )
-            .unwrap();
-
-        let scene_buffer_id = gpu
-            .resources
-            .create_buffer(
-                &BufferCreateInfo {
-                    usage: BufferUsage::STORAGE_BUFFER | BufferUsage::TRANSFER_DST,
-                    ..Default::default()
-                },
-                &AllocationCreateInfo {
-                    memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
-                        | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
-                    ..Default::default()
-                },
-                DeviceLayout::new_sized::<production_raygen::Scene>(),
-            )
-            .unwrap();
-
-        let palette_buffer_id = gpu
-            .resources
-            .create_buffer(
-                &BufferCreateInfo {
-                    usage: BufferUsage::STORAGE_BUFFER | BufferUsage::TRANSFER_DST,
-                    ..Default::default()
-                },
-                &AllocationCreateInfo {
-                    memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
-                        | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
-                    ..Default::default()
-                },
-                DeviceLayout::new_sized::<production_raygen::Palette>(),
-            )
-            .unwrap();
-
-        let region_table_buffer_id = gpu
-            .resources
-            .create_buffer(
-                &BufferCreateInfo {
-                    usage: BufferUsage::STORAGE_BUFFER | BufferUsage::TRANSFER_DST,
-                    ..Default::default()
-                },
-                &AllocationCreateInfo {
-                    memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
-                        | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
-                    ..Default::default()
-                },
-                DeviceLayout::new_sized::<production_raygen::RegionTable>(),
-            )
-            .unwrap();
-
-        let aabb_table_buffer_id = gpu
-            .resources
-            .create_buffer(
-                &BufferCreateInfo {
-                    usage: BufferUsage::STORAGE_BUFFER | BufferUsage::TRANSFER_DST,
-                    ..Default::default()
-                },
-                &AllocationCreateInfo {
-                    memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
-                        | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
-                    ..Default::default()
-                },
-                DeviceLayout::new_sized::<production_raygen::AabbTable>(),
-            )
-            .unwrap();
-
-        let instance_buffer_id = gpu
-            .resources
-            .create_buffer(
-                &BufferCreateInfo {
-                    usage: BufferUsage::SHADER_DEVICE_ADDRESS
-                        | BufferUsage::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY,
-                    ..Default::default()
-                },
-                &AllocationCreateInfo {
-                    memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
-                        | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
-                    ..Default::default()
-                },
-                DeviceLayout::new_unsized::<[AccelerationStructureInstance]>(REGION_COUNT as u64)
-                    .unwrap(),
-            )
-            .unwrap();
-
-        let instance_subbuffer =
-            Subbuffer::new(gpu.resources.buffer(instance_buffer_id).buffer().clone())
-                .cast_aligned::<AccelerationStructureInstance>();
-        let (tlas, tlas_storage_size) = accel::create_tlas_storage(
-            &instance_subbuffer,
-            REGION_COUNT as u32,
-            &gpu.memory_allocator,
-            &gpu.device,
-        )?;
-
+        let buffers = create_scene_buffers(gpu)?;
+        let (tlas, tlas_storage_size) = create_tlas(gpu, buffers.instance)?;
         let dummy_blas = create_dummy_blas(gpu)?;
 
-        let palette = get_palette(voxel_data).map(|color| [color.x, color.y, color.z, 1.0]);
-        unsafe {
-            vulkano_taskgraph::execute(
-                &gpu.transfer_queue,
-                &gpu.resources,
-                gpu.graphics_flight_id,
-                |_cbf, tcx| {
-                    *tcx.write_buffer::<production_raygen::Palette>(palette_buffer_id, ..) =
-                        production_raygen::Palette { colors: palette };
-                    *tcx.write_buffer::<production_raygen::Scene>(scene_buffer_id, ..) =
-                        default_scene();
-                    Ok(())
-                },
-                [
-                    (palette_buffer_id, HostAccessType::Write),
-                    (scene_buffer_id, HostAccessType::Write),
-                ],
-                [],
-                [],
-            )
-            .unwrap();
-        }
+        upload_initial_globals(gpu, &buffers, voxel_data)?;
 
-        gpu.resources
-            .flight(gpu.graphics_flight_id)
-            .wait_idle()
-            .unwrap();
-
-        let bcx = gpu.resources.bindless_context().unwrap();
-
-        let region_table_storage_id = bcx
-            .global_set()
-            .create_storage_buffer(
-                region_table_buffer_id,
-                0,
-                Some(size_of::<production_raygen::RegionTable>() as DeviceSize),
-            )
-            .unwrap();
-
-        let camera_storage_id = bcx
-            .global_set()
-            .create_storage_buffer(
-                camera_buffer_id,
-                0,
-                Some(size_of::<production_raygen::Camera>() as DeviceSize),
-            )
-            .unwrap();
-
-        let palette_storage_id = bcx
-            .global_set()
-            .create_storage_buffer(
-                palette_buffer_id,
-                0,
-                Some(size_of::<production_raygen::Palette>() as DeviceSize),
-            )
-            .unwrap();
-
-        let scene_storage_id = bcx
-            .global_set()
-            .create_storage_buffer(
-                scene_buffer_id,
-                0,
-                Some(size_of::<production_raygen::Scene>() as DeviceSize),
-            )
-            .unwrap();
-
-        let acceleration_structure_id = bcx.global_set().add_acceleration_structure(tlas.clone());
-
-        let aabb_table_storage_id = bcx
-            .global_set()
-            .create_storage_buffer(
-                aabb_table_buffer_id,
-                0,
-                Some(size_of::<production_raygen::AabbTable>() as DeviceSize),
-            )
-            .unwrap();
-
-        let bindings = RegionBindings {
-            camera_buffer_id,
-            scene_buffer_id,
-            region_table_storage_id,
-            camera_storage_id,
-            scene_storage_id,
-            palette_storage_id,
-            acceleration_structure_id,
-            aabb_table_storage_id,
-            instance_buffer_id,
-        };
+        let bindings = create_bindings(gpu, &buffers, &tlas)?;
 
         let mut store = Self {
             bindings,
-            region_table_buffer_id,
-            aabb_table_buffer_id,
-            instances: static_instances(),
+            region_table_buffer_id: buffers.region_table,
+            aabb_table_buffer_id: buffers.aabb_table,
+            instances: static_instances()?,
             resident_ids: Vec::new(),
             tlas,
             tlas_storage_size,
@@ -340,46 +145,22 @@ impl RegionStore {
             "the initial batch only creates residency"
         );
 
-        if !store.tlas_initialized {
-            let instance_buffer = Subbuffer::new(
-                gpu.resources
-                    .buffer(store.bindings.instance_buffer_id)
-                    .buffer()
-                    .clone(),
-            )
-            .cast_aligned::<AccelerationStructureInstance>();
-
-            let sizes = accel::tlas_build_sizes(gpu, &instance_buffer, 1)?;
-
-            debug_assert!(
-                store.tlas_storage_size >= sizes.acceleration_structure_size,
-                "the empty-world dummy TLAS build must fit the stable storage"
-            );
-
-            store.rebuild_with_plan(
-                gpu,
-                RebuildPlan {
-                    instances: Some(store.packed_instance_prefix()),
-                    tlas: Some(TlasBuild {
-                        instance_count: 1,
-                        scratch: accel::allocate_scratch(gpu, sizes.build_scratch_size)?,
-                    }),
-                    ..Default::default()
-                },
-            );
-        }
-
-        store.write_aabb_table(gpu, aabb_table_buffer_id);
+        store.ensure_tlas_initialized(gpu)?;
+        store.write_aabb_table(gpu, buffers.aabb_table)?;
 
         Ok(store)
     }
 
-    fn write_aabb_table(&self, gpu: &GpuDesc, aabb_table_buffer_id: Id<Buffer>) {
-        let mut bdas = [0u64; REGION_COUNT];
+    fn write_aabb_table(
+        &self,
+        gpu: &GpuDesc,
+        aabb_table_buffer_id: Id<Buffer>,
+    ) -> anyhow::Result<()> {
+        let mut bdas = vec![0u64; REGION_COUNT];
 
         for (id, region) in self.regions.iter().enumerate() {
             if let Some(region) = region {
-                bdas[id] = gpu
+                *bdas.get_mut(id).context(format!("bda slot {id} out of range"))? = gpu
                     .resources
                     .buffer(region.aabb_buffer_id)
                     .buffer()
@@ -394,31 +175,75 @@ impl RegionStore {
                 &gpu.resources,
                 gpu.graphics_flight_id,
                 |_cbf, tcx| {
-                    *tcx.write_buffer::<production_raygen::AabbTable>(aabb_table_buffer_id, ..) =
-                        production_raygen::AabbTable { bdas };
+                    tcx.write_buffer::<production_raygen::AabbTable>(aabb_table_buffer_id, ..)
+                        .bdas
+                        .copy_from_slice(&bdas);
                     Ok(())
                 },
                 [(aabb_table_buffer_id, HostAccessType::Write)],
                 [],
                 [],
-            )
-            .unwrap();
+            )?;
         }
-        gpu.resources
-            .flight(gpu.graphics_flight_id)
-            .wait_idle()
-            .unwrap();
+
+        gpu.resources.flight(gpu.graphics_flight_id).wait_idle()?;
+
+        Ok(())
+    }
+
+    fn ensure_tlas_initialized(&mut self, gpu: &GpuDesc) -> anyhow::Result<()> {
+        if self.tlas_initialized {
+            return Ok(());
+        }
+
+        let mut plan = RebuildPlan::default();
+        self.plan_tlas_build(gpu, &mut plan, 1)?;
+
+        self.rebuild_with_plan(gpu, plan)
+    }
+
+    fn plan_tlas_build(
+        &self,
+        gpu: &GpuDesc,
+        plan: &mut RebuildPlan,
+        instance_count: u32,
+    ) -> anyhow::Result<()> {
+        let instance_buffer = Subbuffer::new(
+            gpu.resources
+                .buffer(self.bindings.instance_buffer)
+                .buffer()
+                .clone(),
+        )
+        .cast_aligned::<AccelerationStructureInstance>();
+
+        let sizes = accel::tlas_build_sizes(gpu, &instance_buffer, instance_count)?;
+
+        debug_assert!(
+            self.tlas_storage_size >= sizes.acceleration_structure_size,
+            "in-place TLAS build for {instance_count} instances exceeds the stable storage"
+        );
+
+        plan.instances = Some(self.packed_instance_prefix()?);
+
+        plan.tlas = Some(TlasBuild {
+            instance_count,
+            scratch: accel::allocate_scratch(gpu, sizes.build_scratch_size)?,
+        });
+
+        Ok(())
     }
 
     pub fn apply(&mut self, gpu: &GpuDesc, input: &RendererInput) -> anyhow::Result<ApplyReport> {
         let dirty = input.take_dirty_regions();
+
         if dirty.is_empty() {
             return Ok(ApplyReport::default());
         }
+
         let packs: Vec<(IVec3, Option<RegionData>)> = dirty
             .iter()
-            .map(|&region| (region, input.packed_region(region)))
-            .collect();
+            .map(|&region| Ok((region, input.packed_region(region)?)))
+            .collect::<anyhow::Result<_>>()?;
 
         self.rebuild(gpu, packs)
     }
@@ -430,7 +255,7 @@ impl RegionStore {
             .collect()
     }
 
-    pub(crate) fn region_table_buffer_id(&self) -> Id<Buffer> {
+    pub(crate) const fn region_table_buffer_id(&self) -> Id<Buffer> {
         self.region_table_buffer_id
     }
 
@@ -465,7 +290,7 @@ impl RegionStore {
             dirty: decision.dirty,
             blas_replaced: decision.blas_replaced,
             tlas_rebuilt: decision.tlas_dirty,
-            ..Default::default()
+            ..ApplyReport::default()
         };
 
         let mut plan = RebuildPlan::default();
@@ -479,78 +304,14 @@ impl RegionStore {
                     aabbs,
                     pack,
                 } => {
-                    let region_index = pack.region_index;
-                    let pool =
-                        allocate_pool(gpu, &mut self.free, &mut self.alloc_stats, pool_bytes)?;
-                    let blas_alloc =
-                        allocate_blas(gpu, &mut self.free, &mut self.alloc_stats, aabbs)?;
-                    let aabb_count = aabbs;
-                    let aabb_buffer = Subbuffer::new(
-                        gpu.resources
-                            .buffer(blas_alloc.aabb_buffer_id)
-                            .buffer()
-                            .clone(),
-                    )
-                    .cast_aligned::<AabbPositions>();
-                    let (blas, blas_storage_size) =
-                        resolve_blas_storage(gpu, &aabb_buffer, aabb_count, &blas_alloc)?;
-
-                    plan.uploads.push(RegionUpload {
-                        region_index,
-                        pool_buffer_id: pool.buffer_id,
-                        pool_bytes: pack.blocks,
-                        aabb_buffer_id: blas_alloc.aabb_buffer_id,
-                        aabbs: pack.aabbs,
-                    });
-
-                    plan.blas_builds.push(plan_blas_build(
-                        gpu,
-                        region_index,
-                        blas_alloc.aabb_buffer_id,
-                        &aabb_buffer,
-                        aabb_count,
-                        blas.clone(),
-                        blas_storage_size,
-                        true,
-                    )?);
-
-                    let address = gpu
-                        .resources
-                        .buffer(pool.buffer_id)
-                        .buffer()
-                        .device_address()
-                        .get();
-                    self.instances[id as usize].acceleration_structure_reference =
-                        blas.device_address().into();
-                    self.table_addresses[id as usize] = address;
-                    self.regions[id as usize] = Some(ResidentRegion {
-                        pool_buffer_id: pool.buffer_id,
-                        pool_capacity: pool.capacity,
-                        aabb_buffer_id: blas_alloc.aabb_buffer_id,
-                        aabb_capacity: blas_alloc.aabb_capacity,
-                        blas,
-                        blas_storage_size,
-                    });
+                    self.enter_region(gpu, &mut plan, id, pool_bytes, aabbs, pack)?;
                 }
 
                 RegionEffect::Exit {
                     retire_pool,
                     retire_blas,
                 } => {
-                    let region = self.regions[id as usize].take().unwrap();
-                    self.table_addresses[id as usize] = 0;
-
-                    self.pending_free.pools.push(FreedPool {
-                        buffer_id: region.pool_buffer_id,
-                        capacity: retire_pool,
-                    });
-
-                    self.pending_free.blas.push(FreedBlas {
-                        aabb_buffer_id: region.aabb_buffer_id,
-                        aabb_capacity: retire_blas,
-                        blas: region.blas.clone(),
-                        blas_storage_size: region.blas_storage_size,
-                    });
+                    self.exit_region(id, retire_pool, retire_blas)?;
                 }
 
                 RegionEffect::Update {
@@ -560,192 +321,380 @@ impl RegionStore {
                     retire_blas,
                     pack,
                 } => {
-                    let region_index = pack.region_index;
-                    let new_pool = retire_pool.is_some().then(|| {
-                        allocate_pool(gpu, &mut self.free, &mut self.alloc_stats, pool_bytes)
-                    });
-
-                    let new_blas = retire_blas
-                        .is_some()
-                        .then(|| allocate_blas(gpu, &mut self.free, &mut self.alloc_stats, aabbs));
-
-                    let mut blas_replacement: Option<BlasAllocation> = None;
-
-                    if let Some(pool) = new_pool {
-                        let pool = pool?;
-
-                        {
-                            let region = self.regions[id as usize].as_mut().unwrap();
-                            self.pending_free.pools.push(FreedPool {
-                                buffer_id: region.pool_buffer_id,
-                                capacity: region.pool_capacity,
-                            });
-                            region.pool_buffer_id = pool.buffer_id;
-                            region.pool_capacity = pool.capacity;
-                        }
-
-                        let address = gpu
-                            .resources
-                            .buffer(pool.buffer_id)
-                            .buffer()
-                            .device_address()
-                            .get();
-
-                        self.table_addresses[id as usize] = address;
-                    }
-
-                    if let Some(alloc) = new_blas {
-                        let alloc = alloc?;
-
-                        {
-                            let region = self.regions[id as usize].as_mut().unwrap();
-                            self.pending_free.blas.push(FreedBlas {
-                                aabb_buffer_id: region.aabb_buffer_id,
-                                aabb_capacity: region.aabb_capacity,
-                                blas: region.blas.clone(),
-                                blas_storage_size: region.blas_storage_size,
-                            });
-                            region.aabb_buffer_id = alloc.aabb_buffer_id;
-                            region.aabb_capacity = alloc.aabb_capacity;
-                        }
-
-                        blas_replacement = Some(alloc);
-                    }
-
-                    let (pool_id, aabb_id) = {
-                        let region = self.regions[id as usize].as_ref().unwrap();
-                        (region.pool_buffer_id, region.aabb_buffer_id)
-                    };
-
-                    let aabb_count = aabbs;
-
-                    plan.uploads.push(RegionUpload {
-                        region_index,
-                        pool_buffer_id: pool_id,
-                        pool_bytes: pack.blocks,
-                        aabb_buffer_id: aabb_id,
-                        aabbs: pack.aabbs,
-                    });
-
-                    match blas_replacement {
-                        Some(alloc) => {
-                            let aabb_buffer = Subbuffer::new(
-                                gpu.resources.buffer(alloc.aabb_buffer_id).buffer().clone(),
-                            )
-                            .cast_aligned::<AabbPositions>();
-
-                            let (blas, blas_storage_size) =
-                                resolve_blas_storage(gpu, &aabb_buffer, aabb_count, &alloc)?;
-
-                            plan.blas_builds.push(plan_blas_build(
-                                gpu,
-                                region_index,
-                                alloc.aabb_buffer_id,
-                                &aabb_buffer,
-                                aabb_count,
-                                blas.clone(),
-                                blas_storage_size,
-                                true,
-                            )?);
-
-                            {
-                                let region = self.regions[id as usize].as_mut().unwrap();
-                                region.blas = blas.clone();
-                                region.blas_storage_size = blas_storage_size;
-                            }
-
-                            self.instances[id as usize].acceleration_structure_reference =
-                                blas.device_address().into();
-                        }
-                        None => {
-                            let (blas, blas_storage_size) = {
-                                let region = self.regions[id as usize].as_ref().unwrap();
-                                (region.blas.clone(), region.blas_storage_size)
-                            };
-
-                            let aabb_buffer =
-                                Subbuffer::new(gpu.resources.buffer(aabb_id).buffer().clone())
-                                    .cast_aligned::<AabbPositions>();
-
-                            plan.blas_builds.push(plan_blas_build(
-                                gpu,
-                                region_index,
-                                aabb_id,
-                                &aabb_buffer,
-                                aabb_count,
-                                blas,
-                                blas_storage_size,
-                                false,
-                            )?);
-                        }
-                    }
+                    self.update_region(
+                        gpu,
+                        &mut plan,
+                        id,
+                        pool_bytes,
+                        aabbs,
+                        retire_pool,
+                        retire_blas,
+                        pack,
+                    )?;
                 }
             }
         }
 
         if decision.table_changed {
-            plan.table = Some(
-                self.table_addresses
-                    .clone()
-                    .try_into()
-                    .expect("the region table has REGION_COUNT entries"),
-            );
+            let addresses: [u64; REGION_COUNT] = self
+                .table_addresses
+                .clone()
+                .try_into()
+                .ok()
+                .context("region address table length differs from REGION_COUNT")?;
+            plan.table = Some(addresses);
         }
 
         if decision.tlas_dirty {
-            let instance_buffer = Subbuffer::new(
-                gpu.resources
-                    .buffer(self.bindings.instance_buffer_id)
-                    .buffer()
-                    .clone(),
-            )
-            .cast_aligned::<AccelerationStructureInstance>();
-
-            let instance_count = self.resident_ids.len().max(1) as u32;
-            let sizes = accel::tlas_build_sizes(gpu, &instance_buffer, instance_count)?;
-
-            debug_assert!(
-                self.tlas_storage_size >= sizes.acceleration_structure_size,
-                "in-place TLAS build for {instance_count} instances exceeds the stable storage"
-            );
-
-            plan.instances = Some(self.packed_instance_prefix());
-            plan.tlas = Some(TlasBuild {
-                instance_count,
-                scratch: accel::allocate_scratch(gpu, sizes.build_scratch_size)?,
-            });
+            self.plan_tlas_build(
+                gpu,
+                &mut plan,
+                u32::try_from(self.resident_ids.len().max(1))?,
+            )?;
         }
 
-        report.rebuild_log = plan.log();
+        report.rebuild_log = plan.log()?;
 
         if plan.is_empty() {
             report.instance_count = self.resident_ids.len();
             return Ok(report);
         }
 
-        self.rebuild_with_plan(gpu, plan);
+        self.rebuild_with_plan(gpu, plan)?;
 
         if report.tlas_rebuilt {
-            self.write_aabb_table(gpu, self.aabb_table_buffer_id);
+            self.write_aabb_table(gpu, self.aabb_table_buffer_id)?;
         }
 
         report.instance_count = self.resident_ids.len();
 
         Ok(report)
     }
-    fn rebuild_with_plan(&mut self, gpu: &GpuDesc, plan: RebuildPlan) {
+
+    fn enter_region(
+        &mut self,
+        gpu: &GpuDesc,
+        plan: &mut RebuildPlan,
+        id: u32,
+        pool_bytes: u64,
+        aabbs: u32,
+        pack: RegionData,
+    ) -> anyhow::Result<()> {
+        let region_index = pack.region_index;
+
+        let pool = allocate_pool(gpu, &mut self.free, &mut self.alloc_stats, pool_bytes)?;
+        let blas_alloc = allocate_blas(gpu, &mut self.free, &mut self.alloc_stats, aabbs)?;
+
+        let aabb_buffer = Subbuffer::new(
+            gpu.resources
+                .buffer(blas_alloc.aabb_buffer_id)
+                .buffer()
+                .clone(),
+        )
+        .cast_aligned::<AabbPositions>();
+
+        let (blas, blas_storage_size) =
+            resolve_blas_storage(gpu, &aabb_buffer, aabbs, &blas_alloc)?;
+
+        plan.uploads.push(RegionUpload {
+            region_index,
+            pool_buffer_id: pool.buffer_id,
+            pool_bytes: pack.blocks,
+            aabb_buffer_id: blas_alloc.aabb_buffer_id,
+            aabbs: pack.aabbs,
+        });
+
+        plan.blas_builds.push(plan_blas_build(
+            gpu,
+            region_index,
+            blas_alloc.aabb_buffer_id,
+            &aabb_buffer,
+            aabbs,
+            blas.clone(),
+            blas_storage_size,
+            true,
+        )?);
+
+        let address = gpu
+            .resources
+            .buffer(pool.buffer_id)
+            .buffer()
+            .device_address()
+            .get();
+
+        self.set_instance_reference(id, &blas)?;
+        self.set_table_address(id, address)?;
+
+        *self
+            .regions
+            .get_mut(usize::try_from(id)?)
+            .context(format!("region {id} out of range"))? = Some(ResidentRegion {
+            pool_buffer_id: pool.buffer_id,
+            pool_capacity: pool.capacity,
+            aabb_buffer_id: blas_alloc.aabb_buffer_id,
+            aabb_capacity: blas_alloc.aabb_capacity,
+            blas,
+            blas_storage_size,
+        });
+
+        Ok(())
+    }
+
+    fn exit_region(&mut self, id: u32, retire_pool: u64, retire_blas: u32) -> anyhow::Result<()> {
+        let region = self
+            .regions
+            .get_mut(usize::try_from(id)?)
+            .context(format!("region {id} out of range"))?
+            .take()
+            .context(format!("region {id} is not resident"))?;
+
+        self.set_table_address(id, 0)?;
+
+        self.pending_free.pools.push(FreedPool {
+            buffer_id: region.pool_buffer_id,
+            capacity: retire_pool,
+        });
+
+        self.pending_free.blas.push(FreedBlas {
+            aabb_buffer_id: region.aabb_buffer_id,
+            aabb_capacity: retire_blas,
+            blas: region.blas.clone(),
+            blas_storage_size: region.blas_storage_size,
+        });
+
+        Ok(())
+    }
+
+    fn update_region(
+        &mut self,
+        gpu: &GpuDesc,
+        plan: &mut RebuildPlan,
+        id: u32,
+        pool_bytes: u64,
+        aabbs: u32,
+        retire_pool: Option<u64>,
+        retire_blas: Option<u32>,
+        pack: RegionData,
+    ) -> anyhow::Result<()> {
+        let region_index = pack.region_index;
+
+        let blas_replacement = if retire_blas.is_some() {
+            let alloc = allocate_blas(gpu, &mut self.free, &mut self.alloc_stats, aabbs)?;
+
+            self.replace_blas(id, &alloc)?;
+
+            Some(alloc)
+        } else {
+            None
+        };
+
+        if retire_pool.is_some() {
+            let pool = allocate_pool(gpu, &mut self.free, &mut self.alloc_stats, pool_bytes)?;
+
+            self.replace_pool(gpu, id, &pool)?;
+        }
+
+        let (pool_id, aabb_id) = self.region_buffer_ids(id)?;
+
+        plan.uploads.push(RegionUpload {
+            region_index,
+            pool_buffer_id: pool_id,
+            pool_bytes: pack.blocks,
+            aabb_buffer_id: aabb_id,
+            aabbs: pack.aabbs,
+        });
+
+        match blas_replacement {
+            Some(alloc) => {
+                self.plan_replacement_blas_build(gpu, plan, id, region_index, aabbs, &alloc)?;
+            }
+            None => self.plan_in_place_blas_build(gpu, plan, id, region_index, aabb_id, aabbs)?,
+        }
+
+        Ok(())
+    }
+
+    fn replace_pool(
+        &mut self,
+        gpu: &GpuDesc,
+        id: u32,
+        pool: &PoolAllocation,
+    ) -> anyhow::Result<()> {
+        let region = self
+            .regions
+            .get_mut(usize::try_from(id)?)
+            .context(format!("region {id} out of range"))?
+            .as_mut()
+            .context(format!("region {id} is not resident"))?;
+
+        self.pending_free.pools.push(FreedPool {
+            buffer_id: region.pool_buffer_id,
+            capacity: region.pool_capacity,
+        });
+
+        region.pool_buffer_id = pool.buffer_id;
+        region.pool_capacity = pool.capacity;
+
+        let address = gpu
+            .resources
+            .buffer(pool.buffer_id)
+            .buffer()
+            .device_address()
+            .get();
+
+        self.set_table_address(id, address)?;
+
+        Ok(())
+    }
+
+    fn replace_blas(&mut self, id: u32, alloc: &BlasAllocation) -> anyhow::Result<()> {
+        let region = self
+            .regions
+            .get_mut(usize::try_from(id)?)
+            .context(format!("region {id} out of range"))?
+            .as_mut()
+            .context(format!("region {id} is not resident"))?;
+
+        self.pending_free.blas.push(FreedBlas {
+            aabb_buffer_id: region.aabb_buffer_id,
+            aabb_capacity: region.aabb_capacity,
+            blas: region.blas.clone(),
+            blas_storage_size: region.blas_storage_size,
+        });
+
+        region.aabb_buffer_id = alloc.aabb_buffer_id;
+        region.aabb_capacity = alloc.aabb_capacity;
+
+        Ok(())
+    }
+
+    fn region_buffer_ids(&self, id: u32) -> anyhow::Result<(Id<Buffer>, Id<Buffer>)> {
+        let region = self
+            .regions
+            .get(usize::try_from(id)?)
+            .context(format!("region {id} out of range"))?
+            .as_ref()
+            .context(format!("region {id} is not resident"))?;
+
+        Ok((region.pool_buffer_id, region.aabb_buffer_id))
+    }
+
+    fn plan_replacement_blas_build(
+        &mut self,
+        gpu: &GpuDesc,
+        plan: &mut RebuildPlan,
+        id: u32,
+        region_index: IVec3,
+        aabb_count: u32,
+        alloc: &BlasAllocation,
+    ) -> anyhow::Result<()> {
+        let aabb_buffer =
+            Subbuffer::new(gpu.resources.buffer(alloc.aabb_buffer_id).buffer().clone())
+                .cast_aligned::<AabbPositions>();
+
+        let (blas, blas_storage_size) = resolve_blas_storage(gpu, &aabb_buffer, aabb_count, alloc)?;
+
+        plan.blas_builds.push(plan_blas_build(
+            gpu,
+            region_index,
+            alloc.aabb_buffer_id,
+            &aabb_buffer,
+            aabb_count,
+            blas.clone(),
+            blas_storage_size,
+            true,
+        )?);
+
+        let region = self
+            .regions
+            .get_mut(usize::try_from(id)?)
+            .context(format!("region {id} out of range"))?
+            .as_mut()
+            .context(format!("region {id} is not resident"))?;
+
+        region.blas = blas.clone();
+        region.blas_storage_size = blas_storage_size;
+
+        self.set_instance_reference(id, &blas)?;
+
+        Ok(())
+    }
+
+    fn plan_in_place_blas_build(
+        &self,
+        gpu: &GpuDesc,
+        plan: &mut RebuildPlan,
+        id: u32,
+        region_index: IVec3,
+        aabb_id: Id<Buffer>,
+        aabb_count: u32,
+    ) -> anyhow::Result<()> {
+        let (blas, blas_storage_size) = {
+            let region = self
+                .regions
+                .get(usize::try_from(id)?)
+                .context(format!("region {id} out of range"))?
+                .as_ref()
+                .context(format!("region {id} is not resident"))?;
+
+            (region.blas.clone(), region.blas_storage_size)
+        };
+
+        let aabb_buffer = Subbuffer::new(gpu.resources.buffer(aabb_id).buffer().clone())
+            .cast_aligned::<AabbPositions>();
+
+        plan.blas_builds.push(plan_blas_build(
+            gpu,
+            region_index,
+            aabb_id,
+            &aabb_buffer,
+            aabb_count,
+            blas,
+            blas_storage_size,
+            false,
+        )?);
+
+        Ok(())
+    }
+
+    fn set_table_address(&mut self, id: u32, address: u64) -> anyhow::Result<()> {
+        *self
+            .table_addresses
+            .get_mut(usize::try_from(id)?)
+            .context(format!("table address slot {id} out of range"))? = address;
+
+        Ok(())
+    }
+
+    fn set_instance_reference(
+        &mut self,
+        id: u32,
+        blas: &Arc<AccelerationStructure>,
+    ) -> anyhow::Result<()> {
+        self.instances
+            .get_mut(usize::try_from(id)?)
+            .context(format!("instance slot {id} out of range"))?
+            .acceleration_structure_reference = blas.device_address().into();
+
+        Ok(())
+    }
+
+    fn rebuild_with_plan(&mut self, gpu: &GpuDesc, plan: RebuildPlan) -> anyhow::Result<()> {
         let tlas_rebuilds = plan.tlas.is_some();
-        let graph = RebuildGraph::new(gpu, self, plan);
-        graph.execute(gpu);
+        let graph = RebuildGraph::new(gpu, self, plan)?;
+
+        graph.execute(gpu)?;
 
         if tlas_rebuilds {
             self.tlas_initialized = true;
         }
 
         self.release_pending_frees();
+
+        Ok(())
     }
 
-    fn packed_instance_prefix(&self) -> Vec<AccelerationStructureInstance> {
+    fn packed_instance_prefix(&self) -> anyhow::Result<Vec<AccelerationStructureInstance>> {
         packed_prefix(&self.instances, &self.resident_ids, self.dummy_instance())
     }
 
@@ -753,7 +702,7 @@ impl RegionStore {
         AccelerationStructureInstance {
             instance_custom_index_and_mask: Packed24_8::new(0, 0x00),
             acceleration_structure_reference: self.dummy_blas.device_address().into(),
-            ..Default::default()
+            ..AccelerationStructureInstance::default()
         }
     }
 
@@ -780,7 +729,6 @@ fn resolve_blas_storage(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn plan_blas_build(
     gpu: &GpuDesc,
     region_index: IVec3,
@@ -812,40 +760,199 @@ fn packed_prefix(
     instances: &[AccelerationStructureInstance],
     resident_ids: &[u32],
     empty_dummy: AccelerationStructureInstance,
-) -> Vec<AccelerationStructureInstance> {
+) -> anyhow::Result<Vec<AccelerationStructureInstance>> {
     if resident_ids.is_empty() {
-        vec![empty_dummy]
-    } else {
-        resident_ids
-            .iter()
-            .map(|&id| instances[id as usize])
-            .collect()
+        return Ok(vec![empty_dummy]);
     }
+
+    resident_ids
+        .iter()
+        .map(|&id| {
+            let index = usize::try_from(id)?;
+
+            instances
+                .get(index)
+                .copied()
+                .context(format!("resident region {id} has no instance slot"))
+        })
+        .collect()
 }
 
-fn static_instances() -> Vec<AccelerationStructureInstance> {
+fn static_instances() -> anyhow::Result<Vec<AccelerationStructureInstance>> {
     let mut out = vec![AccelerationStructureInstance::default(); REGION_COUNT];
 
     for x in -8..8 {
         for y in -8..8 {
             for z in -8..8 {
                 let index = IVec3::new(x, y, z);
-                let id = region_id(index) as usize;
-                let origin = (index * REGION_LENGTH).as_vec3().to_array();
-                out[id] = AccelerationStructureInstance {
-                    transform: [
-                        [1.0, 0.0, 0.0, origin[0]],
-                        [0.0, 1.0, 0.0, origin[1]],
-                        [0.0, 0.0, 1.0, origin[2]],
-                    ],
-                    instance_custom_index_and_mask: Packed24_8::new(region_id(index), 0xFF),
-                    acceleration_structure_reference: 0,
-                    ..Default::default()
-                };
+                let id = usize::try_from(region_id(index))?;
+                let region_length = REGION_LENGTH.cast_signed();
+                let origin = IVec3::new(
+                    x.strict_mul(region_length),
+                    y.strict_mul(region_length),
+                    z.strict_mul(region_length),
+                )
+                .as_vec3()
+                .to_array();
+
+                *out.get_mut(id).context(format!("instance slot {id} out of range"))? =
+                    AccelerationStructureInstance {
+                        transform: [
+                            [1.0, 0.0, 0.0, origin[0]],
+                            [0.0, 1.0, 0.0, origin[1]],
+                            [0.0, 0.0, 1.0, origin[2]],
+                        ],
+                        instance_custom_index_and_mask: Packed24_8::new(region_id(index), 0xFF),
+                        acceleration_structure_reference: 0,
+                        ..AccelerationStructureInstance::default()
+                    };
             }
         }
     }
-    out
+
+    Ok(out)
+}
+
+fn create_scene_buffers(gpu: &GpuDesc) -> anyhow::Result<SceneBuffers> {
+    Ok(SceneBuffers {
+        camera: create_storage_buffer::<production_raygen::Camera>(gpu)?,
+        scene: create_storage_buffer::<production_raygen::Scene>(gpu)?,
+        palette: create_storage_buffer::<production_raygen::Palette>(gpu)?,
+        region_table: create_storage_buffer::<production_raygen::RegionTable>(gpu)?,
+        aabb_table: create_storage_buffer::<production_raygen::AabbTable>(gpu)?,
+        instance: create_instance_buffer(gpu)?,
+    })
+}
+
+fn create_storage_buffer<T: BufferContents>(gpu: &GpuDesc) -> anyhow::Result<Id<Buffer>> {
+    Ok(gpu.resources.create_buffer(
+        &BufferCreateInfo {
+            usage: BufferUsage::STORAGE_BUFFER | BufferUsage::TRANSFER_DST,
+            ..BufferCreateInfo::default()
+        },
+        &AllocationCreateInfo {
+            memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
+                | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
+            ..AllocationCreateInfo::default()
+        },
+        DeviceLayout::new_sized::<T>(),
+    )?)
+}
+
+fn create_instance_buffer(gpu: &GpuDesc) -> anyhow::Result<Id<Buffer>> {
+    let layout =
+        DeviceLayout::new_unsized::<[AccelerationStructureInstance]>(u64::try_from(REGION_COUNT)?)
+            .context("device layout for the instance buffer is invalid")?;
+
+    Ok(gpu.resources.create_buffer(
+        &BufferCreateInfo {
+            usage: BufferUsage::SHADER_DEVICE_ADDRESS
+                | BufferUsage::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY,
+            ..BufferCreateInfo::default()
+        },
+        &AllocationCreateInfo {
+            memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
+                | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
+            ..AllocationCreateInfo::default()
+        },
+        layout,
+    )?)
+}
+
+fn create_tlas(
+    gpu: &GpuDesc,
+    instance_buffer_id: Id<Buffer>,
+) -> anyhow::Result<(Arc<AccelerationStructure>, u64)> {
+    let instance_buffer = Subbuffer::new(gpu.resources.buffer(instance_buffer_id).buffer().clone())
+        .cast_aligned::<AccelerationStructureInstance>();
+
+    accel::create_tlas_storage(
+        &instance_buffer,
+        u32::try_from(REGION_COUNT)?,
+        &gpu.memory_allocator,
+        &gpu.device,
+    )
+}
+
+fn upload_initial_globals(
+    gpu: &GpuDesc,
+    buffers: &SceneBuffers,
+    voxel_data: &DotVoxData,
+) -> anyhow::Result<()> {
+    let palette = get_palette(voxel_data).map(|color| [color.x, color.y, color.z, 1.0]);
+
+    unsafe {
+        vulkano_taskgraph::execute(
+            &gpu.transfer_queue,
+            &gpu.resources,
+            gpu.graphics_flight_id,
+            |_cbf, tcx| {
+                *tcx.write_buffer::<production_raygen::Palette>(buffers.palette, ..) =
+                    production_raygen::Palette { colors: palette };
+                *tcx.write_buffer::<production_raygen::Scene>(buffers.scene, ..) = default_scene();
+                Ok(())
+            },
+            [
+                (buffers.palette, HostAccessType::Write),
+                (buffers.scene, HostAccessType::Write),
+            ],
+            [],
+            [],
+        )?;
+    }
+
+    gpu.resources.flight(gpu.graphics_flight_id).wait_idle()?;
+
+    Ok(())
+}
+
+fn bindless_storage_buffer<T>(
+    bcx: &BindlessContext,
+    buffer_id: Id<Buffer>,
+) -> anyhow::Result<StorageBufferId> {
+    let size = DeviceSize::try_from(size_of::<T>())?;
+
+    Ok(bcx
+        .global_set()
+        .create_storage_buffer(buffer_id, 0, Some(size))?)
+}
+
+fn create_bindings(
+    gpu: &GpuDesc,
+    buffers: &SceneBuffers,
+    tlas: &Arc<AccelerationStructure>,
+) -> anyhow::Result<RegionBindingsIds> {
+    let bcx = gpu
+        .resources
+        .bindless_context()
+        .context("bindless context not found")?;
+
+    let region_table_storage =
+        bindless_storage_buffer::<production_raygen::RegionTable>(bcx, buffers.region_table)?;
+
+    let camera_storage = bindless_storage_buffer::<production_raygen::Camera>(bcx, buffers.camera)?;
+
+    let palette_storage =
+        bindless_storage_buffer::<production_raygen::Palette>(bcx, buffers.palette)?;
+
+    let scene_storage = bindless_storage_buffer::<production_raygen::Scene>(bcx, buffers.scene)?;
+
+    let acceleration_structure = bcx.global_set().add_acceleration_structure(tlas.clone());
+
+    let aabb_table_storage =
+        bindless_storage_buffer::<production_raygen::AabbTable>(bcx, buffers.aabb_table)?;
+
+    Ok(RegionBindingsIds {
+        camera_buffer: buffers.camera,
+        scene_buffer: buffers.scene,
+        region_table_storage,
+        camera_storage,
+        scene_storage,
+        palette_storage,
+        acceleration_structure,
+        aabb_table_storage,
+        instance_buffer: buffers.instance,
+    })
 }
 
 fn create_dummy_blas(gpu: &GpuDesc) -> anyhow::Result<Arc<AccelerationStructure>> {
@@ -853,21 +960,21 @@ fn create_dummy_blas(gpu: &GpuDesc) -> anyhow::Result<Arc<AccelerationStructure>
         min: [1.0e9; 3],
         max: [1.0e9 + 1.0; 3],
     };
+
     let buffer = Buffer::from_iter(
         &gpu.memory_allocator,
         &BufferCreateInfo {
             usage: BufferUsage::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY
                 | BufferUsage::SHADER_DEVICE_ADDRESS,
-            ..Default::default()
+            ..BufferCreateInfo::default()
         },
         &AllocationCreateInfo {
             memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
                 | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
-            ..Default::default()
+            ..AllocationCreateInfo::default()
         },
         std::iter::once(aabb),
-    )
-    .expect("dummy AABB buffer creation failed");
+    )?;
 
     let result = accel::build_blas_aabbs_fresh(
         &buffer,
@@ -905,7 +1012,7 @@ mod tests {
 
     #[test]
     fn static_instance_data_is_lattice_static() {
-        let instances = static_instances();
+        let instances = static_instances().unwrap();
         assert_eq!(instances.len(), REGION_COUNT);
 
         for index in [
@@ -916,7 +1023,14 @@ mod tests {
         ] {
             let id = region_id(index) as usize;
             let instance = &instances[id];
-            let origin = (index * REGION_LENGTH).as_vec3().to_array();
+            let region_length = REGION_LENGTH.cast_signed();
+            let origin = IVec3::new(
+                index.x.strict_mul(region_length),
+                index.y.strict_mul(region_length),
+                index.z.strict_mul(region_length),
+            )
+            .as_vec3()
+            .to_array();
             assert_eq!(instance.transform[0], [1.0, 0.0, 0.0, origin[0]]);
             assert_eq!(instance.transform[1], [0.0, 1.0, 0.0, origin[1]]);
             assert_eq!(instance.transform[2], [0.0, 0.0, 1.0, origin[2]]);
@@ -928,19 +1042,19 @@ mod tests {
 
     #[test]
     fn packed_prefix_rewrites_resident_instances() {
-        let instances = static_instances();
+        let instances = static_instances().unwrap();
         let dummy = AccelerationStructureInstance {
             instance_custom_index_and_mask: Packed24_8::new(0, 0x00),
-            ..Default::default()
+            ..AccelerationStructureInstance::default()
         };
 
-        let prefix = packed_prefix(&instances, &[2, 5, 9], dummy);
+        let prefix = packed_prefix(&instances, &[2, 5, 9], dummy).unwrap();
         assert_eq!(prefix.len(), 3);
         assert_eq!(prefix[0].instance_custom_index_and_mask.low_24(), 2);
         assert_eq!(prefix[1].instance_custom_index_and_mask.low_24(), 5);
         assert_eq!(prefix[2].instance_custom_index_and_mask.low_24(), 9);
 
-        let prefix = packed_prefix(&instances, &[], dummy);
+        let prefix = packed_prefix(&instances, &[], dummy).unwrap();
         assert_eq!(prefix, vec![dummy]);
     }
 }
