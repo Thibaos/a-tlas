@@ -18,7 +18,7 @@ use vulkano_taskgraph::{
 use crate::core::{
     render::{
         accel,
-        gpu::GpuDesc,
+        context::RenderContext,
         region::{
             alloc::{
                 AllocStats, BlasAllocation, FreeLists, FreedBlas, FreedPool, PendingFrees,
@@ -101,7 +101,7 @@ pub struct RegionStore {
 
 impl RegionStore {
     pub fn new(
-        gpu: &GpuDesc,
+        gpu: &RenderContext,
         voxel_data: &DotVoxData,
         input: &RendererInput,
     ) -> anyhow::Result<Self> {
@@ -153,14 +153,16 @@ impl RegionStore {
 
     fn write_aabb_table(
         &self,
-        gpu: &GpuDesc,
+        gpu: &RenderContext,
         aabb_table_buffer_id: Id<Buffer>,
     ) -> anyhow::Result<()> {
         let mut bdas = vec![0u64; REGION_COUNT];
 
         for (id, region) in self.regions.iter().enumerate() {
             if let Some(region) = region {
-                *bdas.get_mut(id).context(format!("bda slot {id} out of range"))? = gpu
+                *bdas
+                    .get_mut(id)
+                    .context(format!("bda slot {id} out of range"))? = gpu
                     .resources
                     .buffer(region.aabb_buffer_id)
                     .buffer()
@@ -191,7 +193,7 @@ impl RegionStore {
         Ok(())
     }
 
-    fn ensure_tlas_initialized(&mut self, gpu: &GpuDesc) -> anyhow::Result<()> {
+    fn ensure_tlas_initialized(&mut self, gpu: &RenderContext) -> anyhow::Result<()> {
         if self.tlas_initialized {
             return Ok(());
         }
@@ -204,7 +206,7 @@ impl RegionStore {
 
     fn plan_tlas_build(
         &self,
-        gpu: &GpuDesc,
+        gpu: &RenderContext,
         plan: &mut RebuildPlan,
         instance_count: u32,
     ) -> anyhow::Result<()> {
@@ -233,7 +235,7 @@ impl RegionStore {
         Ok(())
     }
 
-    pub fn apply(&mut self, gpu: &GpuDesc, input: &RendererInput) -> anyhow::Result<ApplyReport> {
+    pub fn apply(&mut self, gpu: &RenderContext, input: &RendererInput) -> anyhow::Result<ApplyReport> {
         let dirty = input.take_dirty_regions();
 
         if dirty.is_empty() {
@@ -265,7 +267,7 @@ impl RegionStore {
 
     fn rebuild(
         &mut self,
-        gpu: &GpuDesc,
+        gpu: &RenderContext,
         packs: Vec<(IVec3, Option<RegionData>)>,
     ) -> anyhow::Result<ApplyReport> {
         let slots: Vec<Option<RegionSlot>> = self
@@ -373,7 +375,7 @@ impl RegionStore {
 
     fn enter_region(
         &mut self,
-        gpu: &GpuDesc,
+        gpu: &RenderContext,
         plan: &mut RebuildPlan,
         id: u32,
         pool_bytes: u64,
@@ -467,7 +469,7 @@ impl RegionStore {
 
     fn update_region(
         &mut self,
-        gpu: &GpuDesc,
+        gpu: &RenderContext,
         plan: &mut RebuildPlan,
         id: u32,
         pool_bytes: u64,
@@ -516,7 +518,7 @@ impl RegionStore {
 
     fn replace_pool(
         &mut self,
-        gpu: &GpuDesc,
+        gpu: &RenderContext,
         id: u32,
         pool: &PoolAllocation,
     ) -> anyhow::Result<()> {
@@ -581,7 +583,7 @@ impl RegionStore {
 
     fn plan_replacement_blas_build(
         &mut self,
-        gpu: &GpuDesc,
+        gpu: &RenderContext,
         plan: &mut RebuildPlan,
         id: u32,
         region_index: IVec3,
@@ -622,7 +624,7 @@ impl RegionStore {
 
     fn plan_in_place_blas_build(
         &self,
-        gpu: &GpuDesc,
+        gpu: &RenderContext,
         plan: &mut RebuildPlan,
         id: u32,
         region_index: IVec3,
@@ -679,7 +681,7 @@ impl RegionStore {
         Ok(())
     }
 
-    fn rebuild_with_plan(&mut self, gpu: &GpuDesc, plan: RebuildPlan) -> anyhow::Result<()> {
+    fn rebuild_with_plan(&mut self, gpu: &RenderContext, plan: RebuildPlan) -> anyhow::Result<()> {
         let tlas_rebuilds = plan.tlas.is_some();
         let graph = RebuildGraph::new(gpu, self, plan)?;
 
@@ -713,7 +715,7 @@ impl RegionStore {
 }
 
 fn resolve_blas_storage(
-    gpu: &GpuDesc,
+    gpu: &RenderContext,
     aabb_buffer: &Subbuffer<[AabbPositions]>,
     aabb_count: u32,
     alloc: &BlasAllocation,
@@ -730,7 +732,7 @@ fn resolve_blas_storage(
 }
 
 fn plan_blas_build(
-    gpu: &GpuDesc,
+    gpu: &RenderContext,
     region_index: IVec3,
     aabb_buffer_id: Id<Buffer>,
     aabb_buffer: &Subbuffer<[AabbPositions]>,
@@ -795,7 +797,8 @@ fn static_instances() -> anyhow::Result<Vec<AccelerationStructureInstance>> {
                 .as_vec3()
                 .to_array();
 
-                *out.get_mut(id).context(format!("instance slot {id} out of range"))? =
+                *out.get_mut(id)
+                    .context(format!("instance slot {id} out of range"))? =
                     AccelerationStructureInstance {
                         transform: [
                             [1.0, 0.0, 0.0, origin[0]],
@@ -813,7 +816,7 @@ fn static_instances() -> anyhow::Result<Vec<AccelerationStructureInstance>> {
     Ok(out)
 }
 
-fn create_scene_buffers(gpu: &GpuDesc) -> anyhow::Result<SceneBuffers> {
+fn create_scene_buffers(gpu: &RenderContext) -> anyhow::Result<SceneBuffers> {
     Ok(SceneBuffers {
         camera: create_storage_buffer::<production_raygen::Camera>(gpu)?,
         scene: create_storage_buffer::<production_raygen::Scene>(gpu)?,
@@ -824,7 +827,7 @@ fn create_scene_buffers(gpu: &GpuDesc) -> anyhow::Result<SceneBuffers> {
     })
 }
 
-fn create_storage_buffer<T: BufferContents>(gpu: &GpuDesc) -> anyhow::Result<Id<Buffer>> {
+fn create_storage_buffer<T: BufferContents>(gpu: &RenderContext) -> anyhow::Result<Id<Buffer>> {
     Ok(gpu.resources.create_buffer(
         &BufferCreateInfo {
             usage: BufferUsage::STORAGE_BUFFER | BufferUsage::TRANSFER_DST,
@@ -839,7 +842,7 @@ fn create_storage_buffer<T: BufferContents>(gpu: &GpuDesc) -> anyhow::Result<Id<
     )?)
 }
 
-fn create_instance_buffer(gpu: &GpuDesc) -> anyhow::Result<Id<Buffer>> {
+fn create_instance_buffer(gpu: &RenderContext) -> anyhow::Result<Id<Buffer>> {
     let layout =
         DeviceLayout::new_unsized::<[AccelerationStructureInstance]>(u64::try_from(REGION_COUNT)?)
             .context("device layout for the instance buffer is invalid")?;
@@ -860,7 +863,7 @@ fn create_instance_buffer(gpu: &GpuDesc) -> anyhow::Result<Id<Buffer>> {
 }
 
 fn create_tlas(
-    gpu: &GpuDesc,
+    gpu: &RenderContext,
     instance_buffer_id: Id<Buffer>,
 ) -> anyhow::Result<(Arc<AccelerationStructure>, u64)> {
     let instance_buffer = Subbuffer::new(gpu.resources.buffer(instance_buffer_id).buffer().clone())
@@ -875,7 +878,7 @@ fn create_tlas(
 }
 
 fn upload_initial_globals(
-    gpu: &GpuDesc,
+    gpu: &RenderContext,
     buffers: &SceneBuffers,
     voxel_data: &DotVoxData,
 ) -> anyhow::Result<()> {
@@ -918,7 +921,7 @@ fn bindless_storage_buffer<T>(
 }
 
 fn create_bindings(
-    gpu: &GpuDesc,
+    gpu: &RenderContext,
     buffers: &SceneBuffers,
     tlas: &Arc<AccelerationStructure>,
 ) -> anyhow::Result<RegionBindingsIds> {
@@ -955,7 +958,7 @@ fn create_bindings(
     })
 }
 
-fn create_dummy_blas(gpu: &GpuDesc) -> anyhow::Result<Arc<AccelerationStructure>> {
+fn create_dummy_blas(gpu: &RenderContext) -> anyhow::Result<Arc<AccelerationStructure>> {
     let aabb = AabbPositions {
         min: [1.0e9; 3],
         max: [1.0e9 + 1.0; 3],

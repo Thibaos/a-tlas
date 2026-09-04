@@ -20,7 +20,7 @@ use vulkano_taskgraph::{
 
 use crate::core::render::{
     accel,
-    gpu::GpuDesc,
+    context::RenderContext,
     region::{pack::REGION_COUNT, residency::RegionStore, task::production_raygen},
 };
 
@@ -301,7 +301,11 @@ pub struct RebuildGraph {
 }
 
 impl RebuildGraph {
-    pub fn new(gpu: &GpuDesc, store: &RegionStore, plan: RebuildPlan) -> anyhow::Result<Self> {
+    pub fn new(
+        gpu: &RenderContext,
+        store: &RegionStore,
+        plan: RebuildPlan,
+    ) -> anyhow::Result<Self> {
         let blas_buffers = blas_buffer_ids(&plan);
 
         let mut task_graph = TaskGraph::new(&gpu.resources);
@@ -401,7 +405,7 @@ impl RebuildGraph {
         Ok(Self { executable })
     }
 
-    pub fn execute(self, gpu: &GpuDesc) -> anyhow::Result<()> {
+    pub fn execute(self, gpu: &RenderContext) -> anyhow::Result<()> {
         let resource_map = resource_map!(&self.executable)?;
 
         unsafe { self.executable.execute(resource_map, &(), || {}) }?;

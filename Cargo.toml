@@ -12,6 +12,7 @@ winit = "0.30"
 dot_vox = "*"
 glam = { version = "*", features = ["bytemuck"] }
 anyhow = "1.0.104"
+rustc-hash = "2"
 
 [profile.release]
 codegen-units = 1
@@ -36,7 +37,6 @@ unchecked_time_subtraction = "deny"
 todo = "deny"
 string_slice = "deny"
 panic_in_result_fn = "deny"
-# panic = "deny"
 exit = "deny"
 as_conversions = "deny"
 too_many_arguments = "allow"

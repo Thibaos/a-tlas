@@ -21,7 +21,7 @@ use vulkano_taskgraph::{
 };
 
 use crate::core::{
-    render::gpu::GpuDesc,
+    render::context::RenderContext,
     render::region::residency::{RegionBindingsIds, RegionStore},
 };
 
@@ -110,7 +110,7 @@ pub struct RegionRenderTask {
 
 impl RegionRenderTask {
     pub fn new(
-        gpu: &GpuDesc,
+        gpu: &RenderContext,
         store: &RegionStore,
         virtual_swapchain_id: Id<Swapchain>,
         raygen: &EntryPoint,
@@ -161,7 +161,7 @@ pub const fn default_scene() -> production_raygen::Scene {
 }
 
 fn build_ray_tracing_pipeline(
-    gpu: &GpuDesc,
+    gpu: &RenderContext,
     raygen: &EntryPoint,
     miss: &EntryPoint,
     intersection: &EntryPoint,

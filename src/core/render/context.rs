@@ -23,7 +23,7 @@ use winit::event_loop::EventLoop;
 pub const MAX_FRAMES_IN_FLIGHT: u32 = 2;
 pub const MIN_SWAPCHAIN_IMAGES: u32 = MAX_FRAMES_IN_FLIGHT + 1;
 
-pub struct GpuDesc {
+pub struct RenderContext {
     pub instance: Arc<Instance>,
     pub device: Arc<Device>,
 
@@ -55,6 +55,7 @@ fn create_device(
         khr_swapchain: true,
         ..BindlessContext::required_extensions(instance)
     };
+
     let device_features = DeviceFeatures {
         acceleration_structure: true,
         descriptor_binding_acceleration_structure_update_after_bind: true,
@@ -150,7 +151,7 @@ fn create_device(
     Ok((device, queues))
 }
 
-impl GpuDesc {
+impl RenderContext {
     pub fn new(event_loop: &EventLoop<()>) -> anyhow::Result<Self> {
         let required_extensions = Surface::required_extensions(event_loop);
 

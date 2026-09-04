@@ -8,7 +8,7 @@ use vulkano::{
 };
 use vulkano_taskgraph::Id;
 
-use crate::core::render::gpu::GpuDesc;
+use crate::core::render::context::RenderContext;
 
 pub struct FreedPool {
     pub(crate) buffer_id: Id<Buffer>,
@@ -65,7 +65,7 @@ pub struct BlasAllocation {
 }
 
 pub fn allocate_pool(
-    gpu: &GpuDesc,
+    gpu: &RenderContext,
     free: &mut FreeLists,
     stats: &mut AllocStats,
     needed: u64,
@@ -88,7 +88,8 @@ pub fn allocate_pool(
                     | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
                 ..Default::default()
             },
-            DeviceLayout::new_unsized::<[u8]>(needed).context(format!("device layout for {needed} bytes is invalid"))?,
+            DeviceLayout::new_unsized::<[u8]>(needed)
+                .context(format!("device layout for {needed} bytes is invalid"))?,
         )?;
 
         stats.pool_allocations = stats.pool_allocations.saturating_add(1);
@@ -101,7 +102,7 @@ pub fn allocate_pool(
 }
 
 pub fn allocate_blas(
-    gpu: &GpuDesc,
+    gpu: &RenderContext,
     free: &mut FreeLists,
     stats: &mut AllocStats,
     aabb_count: u32,

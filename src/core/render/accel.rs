@@ -23,7 +23,7 @@ use vulkano_taskgraph::{
     resource::{Flight, Resources},
 };
 
-use crate::core::render::gpu::GpuDesc;
+use crate::core::render::context::RenderContext;
 
 pub type BuildGeometries = Vec<AccelerationStructureGeometry<'static>>;
 
@@ -371,7 +371,7 @@ pub fn instance_geometries(
 }
 
 pub fn blas_build_sizes(
-    gpu: &GpuDesc,
+    gpu: &RenderContext,
     aabb_buffer: &Subbuffer<[AabbPositions]>,
     aabb_count: u32,
 ) -> anyhow::Result<AccelerationStructureBuildSizesInfo> {
@@ -384,7 +384,7 @@ pub fn blas_build_sizes(
 }
 
 pub fn tlas_build_sizes(
-    gpu: &GpuDesc,
+    gpu: &RenderContext,
     instance_buffer: &Subbuffer<[AccelerationStructureInstance]>,
     instance_count: u32,
 ) -> anyhow::Result<AccelerationStructureBuildSizesInfo> {
@@ -396,7 +396,7 @@ pub fn tlas_build_sizes(
     ))
 }
 
-pub fn allocate_scratch(gpu: &GpuDesc, size: DeviceSize) -> anyhow::Result<Arc<Buffer>> {
+pub fn allocate_scratch(gpu: &RenderContext, size: DeviceSize) -> anyhow::Result<Arc<Buffer>> {
     Ok(Buffer::new_slice::<u8>(
         &gpu.memory_allocator,
         &BufferCreateInfo {

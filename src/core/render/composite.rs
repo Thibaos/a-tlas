@@ -14,7 +14,7 @@ use vulkano_taskgraph::{
 };
 
 use crate::core::render::{
-    gpu::GpuDesc,
+    context::RenderContext,
     region::task::{RegionRenderContext, RenderMode},
 };
 
@@ -27,7 +27,7 @@ pub mod composite_shader {
     }
 }
 
-pub fn create_composite_pipeline(gpu: &GpuDesc) -> anyhow::Result<Arc<ComputePipeline>> {
+pub fn create_composite_pipeline(gpu: &RenderContext) -> anyhow::Result<Arc<ComputePipeline>> {
     let shader = unsafe {
         composite_shader::load(&gpu.device)?
             .entry_point("main")
@@ -79,24 +79,29 @@ impl Task for CompositeTask {
         let swapchain_state = tcx.swapchain(self.swapchain_id);
 
         let Some(image_index) = swapchain_state.current_image_index() else {
+            eprintln!("swapchain current image index not found");
             return Ok(());
         };
 
         let Some(swapchain_first_image) = swapchain_state.images().first() else {
+            eprintln!("swapchain image not found");
             return Ok(());
         };
 
         let Some(image_id) = rcx.swapchain_storage_image_ids.get(image_index as usize) else {
+            eprintln!("swapchain storage image {image_index} not found");
             return Ok(());
         };
 
         let Some(pipeline) = self.pipeline.as_ref() else {
+            eprintln!("pipeline not found");
             return Ok(());
         };
 
         let extent = swapchain_first_image.extent();
 
         unsafe { cbf.bind_pipeline(pipeline) };
+
         unsafe {
             cbf.push_constants(
                 pipeline.layout(),
@@ -110,12 +115,15 @@ impl Task for CompositeTask {
                 },
             )
         };
+
         unsafe { cbf.dispatch([extent[0].div_ceil(16), extent[1].div_ceil(16), 1]) };
+
         unsafe {
             cbf.pipeline_barrier(&DependencyInfo {
                 memory_barriers: &[MemoryBarrier {
                     src_access: AccessFlags::SHADER_STORAGE_WRITE,
-                    dst_access: AccessFlags::SHADER_STORAGE_READ | AccessFlags::SHADER_STORAGE_WRITE,
+                    dst_access: AccessFlags::SHADER_STORAGE_READ
+                        | AccessFlags::SHADER_STORAGE_WRITE,
                     src_stages: PipelineStages::COMPUTE_SHADER,
                     dst_stages: PipelineStages::COMPUTE_SHADER,
                     ..Default::default()

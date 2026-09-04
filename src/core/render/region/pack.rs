@@ -81,14 +81,9 @@ pub fn pack_region(
     ordered.sort_unstable_by_key(|s| s.global_coords.to_array());
 
     for snapshot in ordered {
-        let mc_local_origin =
-            snapshot
-                .global_coords
-                .checked_sub(region_origin)
-                .context(format!(
-                    "snapshot {} outside region {region_index}",
-                    snapshot.global_coords
-                ))?;
+        let mc_local_origin = snapshot.global_coords.checked_sub(region_origin).with_context(|| {
+            format!("snapshot {} outside region {region_index}", snapshot.global_coords)
+        })?;
 
         debug_assert!(
             mc_local_origin.cmpge(IVec3::ZERO).all()
@@ -115,14 +110,14 @@ pub fn pack_region(
 
         let offset = offset_table
             .get_mut(mc_index)
-            .context(format!("offset table slot {mc_index} out of range"))?;
+            .with_context(|| format!("offset table slot {mc_index} out of range"))?;
         debug_assert_eq!(offset, &OFFSET_SENTINEL);
 
         *offset = block_offset;
 
         let block = blocks
             .get_mut(4usize.strict_mul(mc_index)..4usize.strict_mul(mc_index).strict_add(4))
-            .context(format!("block offset slot {mc_index} out of range"))?;
+            .with_context(|| format!("block offset slot {mc_index} out of range"))?;
         block.copy_from_slice(&block_offset.to_le_bytes());
         debug_assert_eq!(snapshot.materials.len(), snapshot.occupied_count());
 
@@ -156,22 +151,23 @@ pub fn pack_region(
 }
 
 fn occupied_cell_bounds(mask: &[u8; 64]) -> anyhow::Result<(IVec3, IVec3)> {
-    let side = usize::try_from(MICRO_CHUNK_LENGTH)?;
-
     let mut min = IVec3::splat(i32::try_from(MICRO_CHUNK_LENGTH.strict_sub(1))?);
     let mut max = IVec3::ZERO;
     let mut any = false;
 
-    let l = side.strict_mul(side).strict_mul(side);
+    for (z, row) in mask.as_chunks::<8>().0.iter().enumerate() {
+        for (y, &byte) in row.iter().enumerate() {
+            if byte == 0 {
+                continue;
+            }
 
-    for idx in 0..l {
-        if (mask.get(idx / 8).context(format!("mask byte {} out of range", idx / 8))? >> (idx % 8)) & 1 != 0 {
-            let x = i32::try_from(idx.strict_rem(side))?;
-            let y = i32::try_from((idx.strict_div(side)).strict_rem(side))?;
-            let z = i32::try_from(idx.strict_div(side.strict_mul(side)))?;
+            let x_min = i32::try_from(byte.trailing_zeros())?;
+            let x_max = i32::try_from(7u32.strict_sub(byte.leading_zeros()))?;
+            let y = i32::try_from(y)?;
+            let z = i32::try_from(z)?;
 
-            min = min.min(IVec3::new(x, y, z));
-            max = max.max(IVec3::new(x, y, z));
+            min = min.min(IVec3::new(x_min, y, z));
+            max = max.max(IVec3::new(x_max, y, z));
 
             any = true;
         }

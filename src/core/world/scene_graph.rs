@@ -1,6 +1,8 @@
 use dot_vox::{DotVoxData, Rotation, SceneNode, Voxel};
 use glam::{IVec3, Mat4, UVec3, Vec3A, Vec3Swizzles};
 
+use crate::core::world::InsertResult;
+
 use super::{BoundsPolicy, World};
 
 pub struct SceneGraphTraverser<'a> {
@@ -19,7 +21,8 @@ impl SceneGraphTraverser<'_> {
                     IVec3::new(i32::from(voxel.x), i32::from(voxel.z), i32::from(voxel.y)),
                     u32::from(voxel.i),
                     self.policy,
-                ) {
+                ) == InsertResult::Clipped
+                {
                     clipped = clipped.saturating_add(1);
                 }
             }
@@ -42,16 +45,17 @@ impl SceneGraphTraverser<'_> {
         match node {
             SceneNode::Transform { frames, child, .. } => {
                 let [frame] = &frames[..] else {
-                    panic!("transform node must have exactly one frame, got {}", frames.len());
+                    panic!(
+                        "transform node must have exactly one frame, got {}",
+                        frames.len()
+                    );
                 };
 
-                let this_translation = frame
-                    .position()
-                    .map_or(IVec3::ZERO, |position| IVec3 {
-                        x: position.x,
-                        y: position.y,
-                        z: position.z,
-                    });
+                let this_translation = frame.position().map_or(IVec3::ZERO, |position| IVec3 {
+                    x: position.x,
+                    y: position.y,
+                    z: position.z,
+                });
 
                 let this_rotation = frame.orientation().unwrap_or(Rotation::IDENTITY);
 
@@ -66,7 +70,10 @@ impl SceneGraphTraverser<'_> {
             }
             SceneNode::Shape { models, .. } => {
                 let [shape_model] = models.as_slice() else {
-                    panic!("shape node must have exactly one model, got {}", models.len());
+                    panic!(
+                        "shape node must have exactly one model, got {}",
+                        models.len()
+                    );
                 };
 
                 let model = self

@@ -18,8 +18,8 @@ use winit::{dpi::PhysicalSize, window::Window};
 
 use crate::core::render::{
     composite::{CompositeTask, create_composite_pipeline},
+    context::{MIN_SWAPCHAIN_IMAGES, RenderContext},
     frame_images::FrameImages,
-    gpu::{GpuDesc, MIN_SWAPCHAIN_IMAGES},
     region::{
         feed::RendererInput,
         residency::RegionStore,
@@ -37,6 +37,7 @@ const PROJ_FAR: f32 = 10000.0;
 pub struct FrameInput {
     pub view: Mat4,
     pub resized: bool,
+    #[cfg(debug_assertions)]
     pub next_mode: bool,
     pub delta_time: f32,
 }
@@ -54,7 +55,7 @@ pub struct FramePipeline {
 }
 
 fn create_swapchain(
-    gpu: &GpuDesc,
+    gpu: &RenderContext,
     surface: &Arc<Surface>,
     window_size: PhysicalSize<u32>,
 ) -> anyhow::Result<Id<Swapchain>> {
@@ -105,7 +106,7 @@ fn create_swapchain(
 
 impl FramePipeline {
     pub fn new(
-        gpu: &GpuDesc,
+        gpu: &RenderContext,
         window: Arc<Window>,
         voxel_data: &DotVoxData,
         world: &World,
@@ -215,7 +216,7 @@ impl FramePipeline {
         })
     }
 
-    fn recreate_if_needed(&mut self, gpu: &GpuDesc) -> anyhow::Result<bool> {
+    fn recreate_if_needed(&mut self, gpu: &RenderContext) -> anyhow::Result<bool> {
         if !self.recreate_swapchain {
             return Ok(false);
         }
@@ -247,7 +248,7 @@ impl FramePipeline {
     }
 
     #[allow(clippy::as_conversions, clippy::cast_precision_loss)]
-    pub fn run_frame(&mut self, gpu: &GpuDesc, input: &FrameInput) -> anyhow::Result<()> {
+    pub fn run_frame(&mut self, gpu: &RenderContext, input: &FrameInput) -> anyhow::Result<()> {
         self.recreate_swapchain |= input.resized;
 
         let extent = self.window.inner_size();

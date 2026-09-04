@@ -2,6 +2,7 @@ use anyhow::Context;
 use std::collections::HashMap;
 
 use glam::{IVec3, UVec3};
+use rustc_hash::FxBuildHasher;
 
 use crate::core::world::{
     World,
@@ -26,7 +27,7 @@ impl MicroChunkSnapshot {
 }
 
 pub fn emit_snapshots(world: &World) -> anyhow::Result<Vec<MicroChunkSnapshot>> {
-    let mut per_microchunk: HashMap<IVec3, Vec<(u32, u8)>> = HashMap::new();
+    let mut per_microchunk: HashMap<IVec3, Vec<(u32, u8)>, FxBuildHasher> = HashMap::default();
 
     for (global, voxel) in world.iter_voxels() {
         let origin = grid_origin(global, MICRO_CHUNK_LENGTH);
@@ -65,7 +66,7 @@ pub fn emit_snapshots(world: &World) -> anyhow::Result<Vec<MicroChunkSnapshot>> 
             for (idx, material) in cells {
                 let slot = mask
                     .get_mut(usize::try_from(idx / 8)?)
-                    .context(format!("mask byte for cell {idx} out of range"))?;
+                    .with_context(|| format!("mask byte for cell {idx} out of range"))?;
                 *slot |= 1 << (idx % 8);
                 materials.push(material);
             }

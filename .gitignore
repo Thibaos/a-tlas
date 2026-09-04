@@ -38,3 +38,5 @@ third_party/nrd/Shaders/NRDConfig.hlsli
 third_party/probe_sizes.cpp
 third_party/probe_sizes.exe
 third_party/*.spv
+
+*.svg

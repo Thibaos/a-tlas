@@ -26,7 +26,7 @@ use crate::{
     },
     core::{
         render::{
-            gpu::GpuDesc,
+            context::RenderContext,
             pipeline::{FrameInput, FramePipeline},
         },
         world::{World, format::open_file, grid::LATTICE_HALF_EXTENT},
@@ -37,7 +37,7 @@ use crate::{
 pub struct App {
     close_requested: bool,
 
-    pub gpu: GpuDesc,
+    pub gpu: RenderContext,
 
     delta_time: Duration,
     focused: bool,
@@ -68,7 +68,7 @@ impl App {
         world_path: &str,
         clip_oob: bool,
     ) -> anyhow::Result<Self> {
-        let gpu = GpuDesc::new(event_loop)?;
+        let gpu = RenderContext::new(event_loop)?;
 
         let voxel_data = open_file(world_path);
         let (world, clipped) = if clip_oob {
@@ -115,7 +115,10 @@ impl App {
     ///
     /// Returns an error if the window is not available.
     pub fn toggle_capture_mouse(&mut self) -> anyhow::Result<()> {
-        let window = self.window.as_ref().context("app window is not available")?;
+        let window = self
+            .window
+            .as_ref()
+            .context("app window is not available")?;
 
         if self.focused {
             self.focused = false;
@@ -220,6 +223,7 @@ impl ApplicationHandler for App {
                 let view = self.player_view();
 
                 let resized = std::mem::take(&mut self.resize_pending);
+                #[cfg(debug_assertions)]
                 let next_mode = std::mem::take(&mut self.mode_toggle_pending);
 
                 if let Some(pipeline) = self.pipeline.as_mut() {
@@ -228,6 +232,7 @@ impl ApplicationHandler for App {
                         &FrameInput {
                             view,
                             resized,
+                            #[cfg(debug_assertions)]
                             next_mode,
                             delta_time: self.delta_time.as_secs_f32(),
                         },

@@ -1,6 +1,7 @@
 use std::{collections::HashMap, fmt::Display, ops::Neg};
 
 use dot_vox::DotVoxData;
+use rustc_hash::FxBuildHasher;
 use glam::{IVec3, IVec4, UVec3, Vec4Swizzles};
 
 use crate::core::world::scene_graph::SceneGraphTraverser;
@@ -16,9 +17,19 @@ pub mod grid;
 pub mod scene_graph;
 pub mod snapshot;
 
+#[cfg(test)]
+mod bench;
+
 #[derive(Debug, Default)]
 pub struct World {
-    inner: HashMap<IVec3, u32>,
+    inner: HashMap<IVec3, u32, FxBuildHasher>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum InsertResult {
+    Ok,
+    Clipped,
+    Existing,
 }
 
 impl World {
@@ -30,15 +41,24 @@ impl World {
         );
     }
 
-    pub(crate) fn insert(&mut self, position: IVec3, voxel: u32, policy: BoundsPolicy) -> bool {
+    pub(crate) fn insert(
+        &mut self,
+        position: IVec3,
+        voxel: u32,
+        policy: BoundsPolicy,
+    ) -> InsertResult {
         if !grid::in_lattice(position) {
             match policy {
                 BoundsPolicy::Panic => Self::assert_in_lattice(&position),
-                BoundsPolicy::Clip => return true,
+                BoundsPolicy::Clip => return InsertResult::Clipped,
             }
         }
-        self.inner.insert(position, voxel);
-        false
+
+        if self.inner.insert(position, voxel).is_some() {
+            InsertResult::Existing
+        } else {
+            InsertResult::Ok
+        }
     }
 
     pub fn new(voxel_data: &DotVoxData) -> Self {
@@ -54,6 +74,15 @@ impl World {
     fn load(voxel_data: &DotVoxData, policy: BoundsPolicy) -> (Self, usize) {
         let mut world = Self::default();
 
+        if voxel_data.scenes.is_empty() {
+            let direct = voxel_data
+                .models
+                .iter()
+                .map(|model| model.voxels.len())
+                .sum();
+            world.inner.reserve(direct);
+        }
+
         let mut loader = SceneGraphTraverser {
             world: &mut world,
             policy,
@@ -63,7 +92,12 @@ impl World {
 
         let mut clipped = loader.traverse();
 
-        for (translation, rotation, size, voxels) in loader.models {
+        let models = std::mem::take(&mut loader.models);
+
+        world.inner
+            .reserve(models.iter().map(|(.., voxels)| voxels.len()).sum());
+
+        for (translation, rotation, size, voxels) in models {
             let transform = SceneGraphTraverser::to_transform(translation, rotation, size);
 
             for voxel in voxels {
@@ -81,7 +115,7 @@ impl World {
 
                 let position = IVec3::new(position.x, position.y, position.z.neg());
 
-                if world.insert(position, voxel.i.into(), policy) {
+                if world.insert(position, voxel.i.into(), policy) == InsertResult::Clipped {
                     clipped = clipped.saturating_add(1);
                 }
             }
@@ -180,9 +214,18 @@ mod tests {
     #[test]
     fn clip_drops_out_of_lattice_voxels() {
         let mut world = World::default();
-        assert!(!world.insert(IVec3::new(0, 0, 0), 1, BoundsPolicy::Clip));
-        assert!(world.insert(IVec3::new(3000, 0, 0), 2, BoundsPolicy::Clip));
-        assert!(world.insert(IVec3::new(0, -3000, 0), 3, BoundsPolicy::Clip));
+        assert_eq!(
+            world.insert(IVec3::new(0, 0, 0), 1, BoundsPolicy::Clip),
+            InsertResult::Ok
+        );
+        assert_eq!(
+            world.insert(IVec3::new(3000, 0, 0), 2, BoundsPolicy::Clip),
+            InsertResult::Clipped
+        );
+        assert_eq!(
+            world.insert(IVec3::new(0, -3000, 0), 3, BoundsPolicy::Clip),
+            InsertResult::Clipped
+        );
         assert_eq!(world.voxel_count(), 1);
         assert_eq!(
             world.iter_voxels().next().map(|(p, _)| p),
@@ -199,8 +242,18 @@ mod tests {
             models: vec![Model {
                 size: Size { x: 2, y: 2, z: 2 },
                 voxels: vec![
-                    Voxel { x: 0, y: 0, z: 0, i: 0 },
-                    Voxel { x: 0, y: 1, z: 0, i: 0 },
+                    Voxel {
+                        x: 0,
+                        y: 0,
+                        z: 0,
+                        i: 0,
+                    },
+                    Voxel {
+                        x: 0,
+                        y: 1,
+                        z: 0,
+                        i: 0,
+                    },
                 ],
             }],
             palette: Vec::new(),
