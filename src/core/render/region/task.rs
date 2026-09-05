@@ -61,6 +61,15 @@ pub mod closest_hit {
     }
 }
 
+pub mod shadow_hit {
+    vulkano_shaders::shader! {
+        root_path_env: "CARGO_MANIFEST_DIR",
+        ty: "closesthit",
+        path: "shaders/voxel/shadow_hit.rchit",
+        vulkan_version: "1.3"
+    }
+}
+
 #[cfg(debug_assertions)]
 pub mod hull_intersect {
     vulkano_shaders::shader! {
@@ -127,13 +136,20 @@ impl RegionRenderTask {
                     .entry_point("main")
                     .context("main entry point not found for intersect shader")?
             };
+
             let closest_hit = unsafe {
                 closest_hit::load(&gpu.device)?
                     .entry_point("main")
                     .context("main entry point not found for closest hit shader")?
             };
 
-            build_ray_tracing_pipeline(gpu, raygen, &miss, &intersection, &closest_hit)
+            let shadow_hit = unsafe {
+                shadow_hit::load(&gpu.device)?
+                    .entry_point("main")
+                    .context("main entry point not found for shadow hit shader")?
+            };
+
+            build_ray_tracing_pipeline(gpu, raygen, &miss, &intersection, &closest_hit, &shadow_hit)
         }?;
 
         let shader_binding_table = ShaderBindingTable::new(&gpu.memory_allocator, &pipeline)?;
@@ -166,6 +182,7 @@ fn build_ray_tracing_pipeline(
     miss: &EntryPoint,
     intersection: &EntryPoint,
     closest_hit: &EntryPoint,
+    shadow_hit: &EntryPoint,
 ) -> anyhow::Result<Arc<RayTracingPipeline>> {
     let bcx = gpu
         .resources
@@ -186,13 +203,13 @@ fn build_ray_tracing_pipeline(
             .context("main entry point not found for hull closest hit shader")?
     };
 
-    #[cfg(debug_assertions)]
     let (stages, groups) = {
         let mut stages = vec![
             PipelineShaderStageCreateInfo::new(raygen),
             PipelineShaderStageCreateInfo::new(miss),
             PipelineShaderStageCreateInfo::new(intersection),
             PipelineShaderStageCreateInfo::new(closest_hit),
+            PipelineShaderStageCreateInfo::new(shadow_hit),
         ];
 
         let mut groups = vec![
@@ -203,39 +220,25 @@ fn build_ray_tracing_pipeline(
                 any_hit_shader: None,
                 intersection_shader: 2,
             },
-        ];
-
-        let hull_intersection_idx = u32::try_from(stages.len())?;
-        let hull_closest_hit_idx = hull_intersection_idx.strict_add(1);
-        stages.push(PipelineShaderStageCreateInfo::new(&hull_intersection));
-        stages.push(PipelineShaderStageCreateInfo::new(&hull_closest_hit));
-        groups.push(RayTracingShaderGroupCreateInfo::ProceduralHit {
-            closest_hit_shader: Some(hull_closest_hit_idx),
-            any_hit_shader: None,
-            intersection_shader: hull_intersection_idx,
-        });
-
-        (stages, groups)
-    };
-
-    #[cfg(not(debug_assertions))]
-    let (mut stages, mut groups) = {
-        let mut stages = vec![
-            PipelineShaderStageCreateInfo::new(raygen),
-            PipelineShaderStageCreateInfo::new(miss),
-            PipelineShaderStageCreateInfo::new(intersection),
-            PipelineShaderStageCreateInfo::new(closest_hit),
-        ];
-
-        let mut groups = vec![
-            RayTracingShaderGroupCreateInfo::General { general_shader: 0 },
-            RayTracingShaderGroupCreateInfo::General { general_shader: 1 },
             RayTracingShaderGroupCreateInfo::ProceduralHit {
-                closest_hit_shader: Some(3),
+                closest_hit_shader: Some(4),
                 any_hit_shader: None,
                 intersection_shader: 2,
             },
         ];
+
+        #[cfg(debug_assertions)]
+        {
+            let hull_intersection_idx = u32::try_from(stages.len())?;
+            let hull_closest_hit_idx = hull_intersection_idx.strict_add(1);
+            stages.push(PipelineShaderStageCreateInfo::new(&hull_intersection));
+            stages.push(PipelineShaderStageCreateInfo::new(&hull_closest_hit));
+            groups.push(RayTracingShaderGroupCreateInfo::ProceduralHit {
+                closest_hit_shader: Some(hull_closest_hit_idx),
+                any_hit_shader: None,
+                intersection_shader: hull_intersection_idx,
+            });
+        }
 
         (stages, groups)
     };

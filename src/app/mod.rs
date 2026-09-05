@@ -56,6 +56,7 @@ pub struct App {
     pipeline: Option<FramePipeline>,
 
     resize_pending: bool,
+    #[cfg(debug_assertions)]
     mode_toggle_pending: bool,
 }
 
@@ -107,6 +108,7 @@ impl App {
             pipeline: None,
 
             resize_pending: false,
+            #[cfg(debug_assertions)]
             mode_toggle_pending: false,
         })
     }

@@ -5,18 +5,23 @@
 #extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
 #extension GL_EXT_buffer_reference2 : require
 
-#include "common/common.glsl"
 #include "common/header.glsl"
 #include "common/bindings.glsl"
 #include "common/raygen_common.glsl"
 #include "common/sky.glsl"
 
 layout(location = 0) rayPayloadEXT MainPassPayload payload;
+layout(location = 1) rayPayloadEXT ShadowPayload shadow_payload;
 
 void reset_payload() {
     payload.color = vec4(0.0);
     payload.normal = vec3(0.0);
+    shadow_payload.attenuation = 1.0;
 }
+
+#define VOXEL_SBT_INDEX 0u
+#define SHADOW_SBT_INDEX 1u
+#define HULL_SBT_INDEX 2u
 
 void main() {
     vec3 origin;
@@ -25,7 +30,7 @@ void main() {
 
     reset_payload();
 
-    uint sbt_offset = (mode == MODE_HULL) ? 1u : 0u;
+    uint sbt_offset = (mode == MODE_HULL) ? HULL_SBT_INDEX : VOXEL_SBT_INDEX;
 
     traceRayEXT(vko_accelerationStructureEXT(acceleration_structure_id), gl_RayFlagsOpaqueEXT, 0xFFu, sbt_offset, 0u, 0u, origin, RAY_T_MIN, direction, RAY_T_MAX, 0);
 
@@ -34,10 +39,20 @@ void main() {
         return;
     }
 
-    if (mode != MODE_VOXEL) {
+    if (mode == MODE_HULL) {
         imageStore(vko_image2D_rgba8(image_id), ivec2(gl_LaunchIDEXT.xy), payload.color);
         return;
     }
 
-    imageStore(vko_image2D_rgba16f(color_image_id), ivec2(gl_LaunchIDEXT.xy), payload.color);
+    if (mode == MODE_VOXEL) {
+        vec3 sun_direction = normalize(vec3(0.5, -0.5, 0.5));
+        vec3 hit_position = origin + (payload.t - EPSILON) * direction;
+        vec4 hit_albedo = payload.color;
+
+        traceRayEXT(vko_accelerationStructureEXT(acceleration_structure_id), gl_RayFlagsOpaqueEXT, 0xFFu, SHADOW_SBT_INDEX, 0u, 0u, hit_position, RAY_T_MIN, -sun_direction, RAY_T_MAX, 1);
+
+        hit_albedo.rgb *= shadow_payload.attenuation;
+
+        imageStore(vko_image2D_rgba16f(color_image_id), ivec2(gl_LaunchIDEXT.xy), hit_albedo);
+    }
 }

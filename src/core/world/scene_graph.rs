@@ -124,6 +124,7 @@ impl SceneGraphTraverser<'_> {
             if size.z.is_multiple_of(2) { 0.0 } else { 0.5 },
             if size.y.is_multiple_of(2) { 0.0 } else { -0.5 },
         );
+
         offset = quat.mul_vec3a(offset);
 
         let center = quat.mul_vec3a(size.xzy().as_vec3a().mul(0.5));
@@ -162,9 +163,10 @@ impl VoxelPlacement {
                     continue;
                 }
 
-                if picked.is_some() {
-                    panic!("rotation row {row:?} is not a signed permutation");
-                }
+                assert!(
+                    picked.is_none(),
+                    "rotation row {row:?} is not a signed permutation"
+                );
 
                 picked = Some((column, sign));
             }
