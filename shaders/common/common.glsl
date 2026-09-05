@@ -1,7 +1,7 @@
 struct MainPassPayload {
+    float t;
     vec4 color;
     vec3 normal;
-    float t;
 };
 
 struct ShadowPayload {

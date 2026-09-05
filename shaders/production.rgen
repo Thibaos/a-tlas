@@ -14,8 +14,10 @@ layout(location = 0) rayPayloadEXT MainPassPayload payload;
 layout(location = 1) rayPayloadEXT ShadowPayload shadow_payload;
 
 void reset_payload() {
+    payload.t = FLT_MAX;
     payload.color = vec4(0.0);
     payload.normal = vec3(0.0);
+
     shadow_payload.attenuation = 1.0;
 }
 
