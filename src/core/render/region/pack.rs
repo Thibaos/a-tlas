@@ -81,9 +81,15 @@ pub fn pack_region(
     ordered.sort_unstable_by_key(|s| s.global_coords.to_array());
 
     for snapshot in ordered {
-        let mc_local_origin = snapshot.global_coords.checked_sub(region_origin).with_context(|| {
-            format!("snapshot {} outside region {region_index}", snapshot.global_coords)
-        })?;
+        let mc_local_origin = snapshot
+            .global_coords
+            .checked_sub(region_origin)
+            .with_context(|| {
+                format!(
+                    "snapshot {} outside region {region_index}",
+                    snapshot.global_coords
+                )
+            })?;
 
         debug_assert!(
             mc_local_origin.cmpge(IVec3::ZERO).all()
@@ -272,7 +278,7 @@ mod contract {
 
     use super::*;
 
-    const CONSTS: &str = include_str!("../../../../shaders/common/consts.glsl");
+    const CONSTS: &str = include_str!("../../../../shaders/common/common.glsl");
 
     const NAMES: &[&str] = &[
         "RAY_T_MIN",

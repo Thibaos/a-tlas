@@ -70,7 +70,6 @@ pub mod shadow_hit {
     }
 }
 
-#[cfg(debug_assertions)]
 pub mod hull_intersect {
     vulkano_shaders::shader! {
         root_path_env: "CARGO_MANIFEST_DIR",
@@ -189,7 +188,6 @@ fn build_ray_tracing_pipeline(
         .bindless_context()
         .context("bindless context not found")?;
 
-    #[cfg(debug_assertions)]
     let hull_intersection = unsafe {
         hull_intersect::load(&gpu.device)?
             .entry_point("main")
@@ -204,26 +202,50 @@ fn build_ray_tracing_pipeline(
     };
 
     let (stages, groups) = {
+        let raygen = PipelineShaderStageCreateInfo::new(raygen);
+        let miss = PipelineShaderStageCreateInfo::new(miss);
+        let default_intersection = PipelineShaderStageCreateInfo::new(intersection);
+        let coarse_intersection = PipelineShaderStageCreateInfo::new(&hull_intersection);
+        let default_chit = PipelineShaderStageCreateInfo::new(closest_hit);
+        let shadow_chit = PipelineShaderStageCreateInfo::new(shadow_hit);
+
         let mut stages = vec![
-            PipelineShaderStageCreateInfo::new(raygen),
-            PipelineShaderStageCreateInfo::new(miss),
-            PipelineShaderStageCreateInfo::new(intersection),
-            PipelineShaderStageCreateInfo::new(closest_hit),
-            PipelineShaderStageCreateInfo::new(shadow_hit),
+            raygen,
+            miss,
+            default_intersection,
+            coarse_intersection,
+            default_chit,
+            shadow_chit,
         ];
 
+        const RAYGEN_INDEX: u32 = 0;
+        const MISS_INDEX: u32 = 1;
+        const DEFAULT_INTERSECTION_INDEX: u32 = 2;
+        const COARSE_INTERSECTION_INDEX: u32 = 3;
+        const DEFAULT_CHIT_INDEX: u32 = 4;
+        const SHADOW_CHIT_INDEX: u32 = 5;
+
         let mut groups = vec![
-            RayTracingShaderGroupCreateInfo::General { general_shader: 0 },
-            RayTracingShaderGroupCreateInfo::General { general_shader: 1 },
-            RayTracingShaderGroupCreateInfo::ProceduralHit {
-                closest_hit_shader: Some(3),
-                any_hit_shader: None,
-                intersection_shader: 2,
+            RayTracingShaderGroupCreateInfo::General {
+                general_shader: RAYGEN_INDEX,
+            },
+            RayTracingShaderGroupCreateInfo::General {
+                general_shader: MISS_INDEX,
             },
             RayTracingShaderGroupCreateInfo::ProceduralHit {
-                closest_hit_shader: Some(4),
+                closest_hit_shader: Some(DEFAULT_CHIT_INDEX),
                 any_hit_shader: None,
-                intersection_shader: 2,
+                intersection_shader: DEFAULT_INTERSECTION_INDEX,
+            },
+            RayTracingShaderGroupCreateInfo::ProceduralHit {
+                closest_hit_shader: Some(SHADOW_CHIT_INDEX),
+                any_hit_shader: None,
+                intersection_shader: DEFAULT_INTERSECTION_INDEX,
+            },
+            RayTracingShaderGroupCreateInfo::ProceduralHit {
+                closest_hit_shader: Some(SHADOW_CHIT_INDEX),
+                any_hit_shader: None,
+                intersection_shader: COARSE_INTERSECTION_INDEX,
             },
         ];
 
