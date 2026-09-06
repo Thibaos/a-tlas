@@ -13,7 +13,7 @@ use vulkano_taskgraph::{
     command_buffer::{DependencyInfo, MemoryBarrier, RecordingCommandBuffer},
 };
 
-use crate::core::render::{
+use crate::render::{
     context::RenderContext,
     region::task::{RegionRenderContext, RenderMode},
 };

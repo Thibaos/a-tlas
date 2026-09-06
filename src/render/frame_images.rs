@@ -12,7 +12,7 @@ use vulkano_taskgraph::{
     resource::{AccessTypes, ImageLayoutType, Resources},
 };
 
-use crate::core::render::region::task::RegionRenderContext;
+use crate::render::region::task::RegionRenderContext;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum FrameImageKind {
@@ -214,7 +214,7 @@ fn swapchain_storage_views(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::render::region::task::{RenderMode, default_scene, production_raygen};
+    use crate::render::region::task::{RenderMode, default_scene, production_raygen};
 
     fn test_images() -> FrameImages {
         FrameImages {

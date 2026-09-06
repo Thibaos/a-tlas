@@ -1,8 +1,8 @@
 use anyhow::Context;
 use glam::IVec3;
 
-use crate::core::render::region::pack::RegionData;
-use crate::core::world::grid::region_id;
+use crate::render::region::pack::RegionData;
+use crate::world::grid::region_id;
 
 #[derive(Clone, Copy, Debug)]
 pub struct RegionSlot {
@@ -148,7 +148,7 @@ fn remove_resident(resident_ids: &mut Vec<u32>, id: u32) {
 mod tests {
     use super::*;
 
-    use crate::core::render::region::pack::REGION_COUNT;
+    use crate::render::region::pack::REGION_COUNT;
 
     use vulkano::acceleration_structure::AabbPositions;
 

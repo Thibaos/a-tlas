@@ -29,14 +29,5 @@ docs/vulkan
 .pi-subagents
 .scratch
 nul
-
-# Vendored NRD SDK build outputs (source is committed; artifacts are local)
-third_party/nrd/build/
-third_party/nrd/_Bin/
-third_party/nrd/_Shaders/
-third_party/nrd/Shaders/NRDConfig.hlsli
-third_party/probe_sizes.cpp
-third_party/probe_sizes.exe
-third_party/*.spv
-
+docs/agents
 *.svg

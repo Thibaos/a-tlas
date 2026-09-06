@@ -16,7 +16,7 @@ use vulkano_taskgraph::{
 };
 use winit::{dpi::PhysicalSize, window::Window};
 
-use crate::core::render::{
+use crate::render::{
     composite::{CompositeTask, create_composite_pipeline},
     context::{MIN_SWAPCHAIN_IMAGES, RenderContext},
     frame_images::FrameImages,
@@ -28,7 +28,7 @@ use crate::core::render::{
         },
     },
 };
-use crate::core::world::{World, snapshot::emit_snapshots};
+use crate::world::{World, snapshot::emit_snapshots};
 
 const PROJ_FOV: f32 = std::f32::consts::FRAC_PI_2;
 const PROJ_NEAR: f32 = 0.01;

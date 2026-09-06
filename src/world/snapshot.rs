@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use glam::{IVec3, UVec3};
 use rustc_hash::FxBuildHasher;
 
-use crate::core::world::{
+use crate::world::{
     World,
     grid::{MICRO_CHUNK_LENGTH, grid_origin},
 };
@@ -57,30 +57,32 @@ pub fn emit_snapshots(world: &World) -> anyhow::Result<Vec<MicroChunkSnapshot>> 
 
     let mut snapshots: Vec<MicroChunkSnapshot> = per_microchunk
         .into_iter()
-        .map(|(global_coords, mut cells)| -> anyhow::Result<MicroChunkSnapshot> {
-            cells.sort_unstable_by_key(|&(idx, _)| idx);
+        .map(
+            |(global_coords, mut cells)| -> anyhow::Result<MicroChunkSnapshot> {
+                cells.sort_unstable_by_key(|&(idx, _)| idx);
 
-            let mut mask = [0u8; 64];
-            let mut materials = Vec::with_capacity(cells.len());
+                let mut mask = [0u8; 64];
+                let mut materials = Vec::with_capacity(cells.len());
 
-            for (idx, material) in cells {
-                let slot = mask
-                    .get_mut(usize::try_from(idx / 8)?)
-                    .with_context(|| format!("mask byte for cell {idx} out of range"))?;
-                *slot |= 1 << (idx % 8);
-                materials.push(material);
-            }
+                for (idx, material) in cells {
+                    let slot = mask
+                        .get_mut(usize::try_from(idx / 8)?)
+                        .with_context(|| format!("mask byte for cell {idx} out of range"))?;
+                    *slot |= 1 << (idx % 8);
+                    materials.push(material);
+                }
 
-            let snapshot = MicroChunkSnapshot {
-                global_coords,
-                mask,
-                materials,
-            };
+                let snapshot = MicroChunkSnapshot {
+                    global_coords,
+                    mask,
+                    materials,
+                };
 
-            debug_assert_eq!(snapshot.materials.len(), snapshot.occupied_count());
+                debug_assert_eq!(snapshot.materials.len(), snapshot.occupied_count());
 
-            Ok(snapshot)
-        })
+                Ok(snapshot)
+            },
+        )
         .collect::<anyhow::Result<_>>()?;
 
     snapshots.sort_unstable_by_key(|s| s.global_coords.to_array());

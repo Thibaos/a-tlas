@@ -20,7 +20,7 @@ use vulkano_taskgraph::{
     descriptor_set::StorageImageId,
 };
 
-use crate::core::{
+use crate::{
     render::context::RenderContext,
     render::region::residency::{RegionBindingsIds, RegionStore},
 };

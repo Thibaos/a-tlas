@@ -15,7 +15,7 @@ use vulkano_taskgraph::{
     resource::HostAccessType,
 };
 
-use crate::core::{
+use crate::{
     render::{
         accel,
         context::RenderContext,
@@ -235,7 +235,11 @@ impl RegionStore {
         Ok(())
     }
 
-    pub fn apply(&mut self, gpu: &RenderContext, input: &RendererInput) -> anyhow::Result<ApplyReport> {
+    pub fn apply(
+        &mut self,
+        gpu: &RenderContext,
+        input: &RendererInput,
+    ) -> anyhow::Result<ApplyReport> {
         let dirty = input.take_dirty_regions();
 
         if dirty.is_empty() {

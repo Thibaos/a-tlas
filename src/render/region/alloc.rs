@@ -8,7 +8,7 @@ use vulkano::{
 };
 use vulkano_taskgraph::Id;
 
-use crate::core::render::context::RenderContext;
+use crate::render::context::RenderContext;
 
 pub struct FreedPool {
     pub(crate) buffer_id: Id<Buffer>,

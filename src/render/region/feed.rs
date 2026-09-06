@@ -10,7 +10,7 @@ use std::{
 use anyhow::{Context, bail};
 use glam::IVec3;
 
-use crate::core::{
+use crate::{
     render::region::pack::{RegionData, pack_region},
     world::{
         grid::{assert_region_index_in_lattice, region_index_of},
@@ -205,7 +205,7 @@ impl RendererInput {
         Ok(())
     }
 
-    pub(in crate::core::render) fn take_dirty_regions(&self) -> Vec<IVec3> {
+    pub(in crate::render) fn take_dirty_regions(&self) -> Vec<IVec3> {
         let Ok(mut regions) = self.queue.inner.applied_regions.lock() else {
             return vec![];
         };
@@ -357,7 +357,7 @@ pub fn apply_snapshots(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::{
+    use crate::{
         render::region::pack::pack_regions,
         world::{
             World,

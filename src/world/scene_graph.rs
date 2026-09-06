@@ -4,7 +4,7 @@ use glam::{IVec3, UVec3};
 #[cfg(test)]
 use glam::{Mat4, Vec3A, Vec3Swizzles};
 
-use crate::core::world::{InsertResult, grid};
+use crate::world::{InsertResult, grid};
 
 use super::{BoundsPolicy, World};
 

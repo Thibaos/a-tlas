@@ -1,10 +1,10 @@
 use std::{collections::HashMap, fmt::Display};
 
 use dot_vox::DotVoxData;
-use rustc_hash::FxBuildHasher;
 use glam::IVec3;
+use rustc_hash::FxBuildHasher;
 
-use crate::core::world::scene_graph::{SceneGraphTraverser, VoxelPlacement};
+use crate::world::scene_graph::{SceneGraphTraverser, VoxelPlacement};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum BoundsPolicy {
@@ -193,7 +193,10 @@ fn scene_fixture(specs: &[ModelSpec]) -> DotVoxData {
         frame.insert("_r".to_owned(), spec.rotation.to_string());
         frame.insert(
             "_t".to_owned(),
-            format!("{} {} {}", spec.translation[0], spec.translation[1], spec.translation[2]),
+            format!(
+                "{} {} {}",
+                spec.translation[0], spec.translation[1], spec.translation[2]
+            ),
         );
 
         scenes.push(SceneNode::Transform {
@@ -335,7 +338,11 @@ mod placement_differential {
             f64::from(quat[3]),
         );
         let quat = DQuat::from_xyzw(quat.x, quat.z, -quat.y, quat.w);
-        let scale = DVec3::new(f64::from(scale[0]), f64::from(scale[2]), f64::from(scale[1]));
+        let scale = DVec3::new(
+            f64::from(scale[0]),
+            f64::from(scale[2]),
+            f64::from(scale[1]),
+        );
 
         let translation = DVec3::new(
             f64::from(translation.x),
@@ -350,8 +357,8 @@ mod placement_differential {
         );
         offset = quat.mul_vec3(offset);
 
-        let center =
-            quat.mul_vec3(DVec3::new(f64::from(size.x), f64::from(size.z), f64::from(size.y)) * 0.5);
+        let center = quat
+            .mul_vec3(DVec3::new(f64::from(size.x), f64::from(size.z), f64::from(size.y)) * 0.5);
 
         DMat4::from_scale_rotation_translation(scale, quat, translation - center * scale + offset)
     }
@@ -379,7 +386,8 @@ mod placement_differential {
     fn legacy_float_map(data: &DotVoxData) -> HashMap<IVec3, u32> {
         let mut map = HashMap::new();
         for (translation, rotation, size, voxels) in collected_models(data) {
-            let transform = SceneGraphTraverser::legacy_float_transform(translation, rotation, size);
+            let transform =
+                SceneGraphTraverser::legacy_float_transform(translation, rotation, size);
             for voxel in voxels.iter().copied() {
                 let local = UVec3::new(
                     u32::from(voxel.x),
@@ -450,7 +458,11 @@ mod placement_differential {
                 })
                 .collect();
             let data = scene_fixture(&specs);
-            assert_eq!(production_map(&data), exact_oracle_map(&data), "specs {specs:?}");
+            assert_eq!(
+                production_map(&data),
+                exact_oracle_map(&data),
+                "specs {specs:?}"
+            );
         }
     }
 
@@ -495,7 +507,12 @@ mod placement_differential {
     fn placement_known_example_from_legacy_pipeline() {
         let specs = [ModelSpec {
             size: (1, 1, 1),
-            voxels: vec![Voxel { x: 0, y: 0, z: 0, i: 7 }],
+            voxels: vec![Voxel {
+                x: 0,
+                y: 0,
+                z: 0,
+                i: 7,
+            }],
             rotation: 0b0001,
             translation: [5, 7, 9],
         }];
@@ -579,8 +596,18 @@ mod tests {
         let data = scene_fixture(&[ModelSpec {
             size: (2, 2, 2),
             voxels: vec![
-                dot_vox::Voxel { x: 0, y: 0, z: 0, i: 0 },
-                dot_vox::Voxel { x: 0, y: 1, z: 0, i: 0 },
+                dot_vox::Voxel {
+                    x: 0,
+                    y: 0,
+                    z: 0,
+                    i: 0,
+                },
+                dot_vox::Voxel {
+                    x: 0,
+                    y: 1,
+                    z: 0,
+                    i: 0,
+                },
             ],
             rotation: 0b0000100,
             translation: [0, 0, 0],

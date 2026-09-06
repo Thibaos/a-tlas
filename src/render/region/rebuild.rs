@@ -18,7 +18,7 @@ use vulkano_taskgraph::{
     resource_map,
 };
 
-use crate::core::render::{
+use crate::render::{
     accel,
     context::RenderContext,
     region::{pack::REGION_COUNT, residency::RegionStore, task::production_raygen},

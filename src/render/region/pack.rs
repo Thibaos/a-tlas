@@ -5,13 +5,13 @@ use anyhow::{Context, bail};
 use glam::{IVec3, UVec3};
 use vulkano::acceleration_structure::AabbPositions;
 
-use crate::core::world::{
+use crate::world::{
     grid::{MICRO_CHUNK_LENGTH, REGION_HALF_EXTENT, REGION_LENGTH, region_id},
     snapshot::MicroChunkSnapshot,
 };
 
 #[cfg(test)]
-use crate::core::world::grid::region_index_of;
+use crate::world::grid::region_index_of;
 
 #[allow(clippy::as_conversions)]
 pub const MC_PER_REGION_SIDE: usize = (REGION_LENGTH / MICRO_CHUNK_LENGTH) as usize;
@@ -188,7 +188,7 @@ fn occupied_cell_bounds(mask: &[u8; 64]) -> anyhow::Result<(IVec3, IVec3)> {
 
 #[cfg(test)]
 mod tests {
-    use crate::core::world::{World, snapshot::emit_snapshots};
+    use crate::world::{World, snapshot::emit_snapshots};
 
     use super::*;
 
@@ -274,11 +274,11 @@ mod contract {
     use std::fs;
     use std::path::{Path, PathBuf};
 
-    use crate::core::render::region::task::RenderMode;
+    use crate::render::region::task::RenderMode;
 
     use super::*;
 
-    const CONSTS: &str = include_str!("../../../../shaders/common/common.glsl");
+    const CONSTS: &str = include_str!("../../../shaders/common/common.glsl");
 
     const NAMES: &[&str] = &[
         "RAY_T_MIN",

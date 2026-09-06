@@ -23,7 +23,7 @@ use vulkano_taskgraph::{
     resource::{Flight, Resources},
 };
 
-use crate::core::render::context::RenderContext;
+use crate::render::context::RenderContext;
 
 pub type BuildGeometries = Vec<AccelerationStructureGeometry<'static>>;
 

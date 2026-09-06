@@ -24,13 +24,11 @@ use crate::{
         player::PlayerController,
         schedule::ScheduleController,
     },
-    core::{
-        render::{
-            context::RenderContext,
-            pipeline::{FrameInput, FramePipeline},
-        },
-        world::{World, format::open_file, grid::LATTICE_HALF_EXTENT},
+    render::{
+        context::RenderContext,
+        pipeline::{FrameInput, FramePipeline},
     },
+    world::{World, format::open_file, grid::LATTICE_HALF_EXTENT},
 };
 
 #[allow(clippy::struct_excessive_bools)]

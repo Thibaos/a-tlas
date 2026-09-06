@@ -5,16 +5,18 @@ mod load_bench {
 
     use glam::IVec3;
 
-    use crate::core::{
+    use crate::{
         render::region::pack::{RegionData, pack_region},
-        world::{World, grid::region_index_of, snapshot::MicroChunkSnapshot, snapshot::emit_snapshots},
+        world::{
+            World, grid::region_index_of, snapshot::MicroChunkSnapshot, snapshot::emit_snapshots,
+        },
     };
 
     #[test]
     #[ignore = "bench: cargo test --release load_pipeline_timings -- --ignored --nocapture"]
     fn load_pipeline_timings() {
-        let path = std::env::var("ATLAS_BENCH_VOX")
-            .unwrap_or_else(|_| "assets/church.vox".to_string());
+        let path =
+            std::env::var("ATLAS_BENCH_VOX").unwrap_or_else(|_| "assets/church.vox".to_string());
 
         let start = Instant::now();
         let data = dot_vox::load(&path).unwrap();
