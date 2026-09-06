@@ -126,9 +126,9 @@ impl Task for CompositeTask {
                         | AccessFlags::SHADER_STORAGE_WRITE,
                     src_stages: PipelineStages::COMPUTE_SHADER,
                     dst_stages: PipelineStages::COMPUTE_SHADER,
-                    ..Default::default()
+                    ..MemoryBarrier::default()
                 }],
-                ..Default::default()
+                ..DependencyInfo::default()
             })
         };
 

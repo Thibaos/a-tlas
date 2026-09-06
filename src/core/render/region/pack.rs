@@ -356,7 +356,7 @@ mod contract {
         );
 
         for path in sources {
-            if path.file_name().is_some_and(|name| name == "consts.glsl") {
+            if path.file_name().is_some_and(|name| name == "common.glsl") {
                 continue;
             }
 

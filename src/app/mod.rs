@@ -160,7 +160,7 @@ impl App {
 
         if self.schedule_controller.check("log").is_some() {
             let fps = f32::from(self.log_frames) / self.log_since.elapsed().as_secs_f32();
-            println!("{fps:.2} fps");
+            println!("{fps:.0} fps");
 
             self.log_frames = 0;
             self.log_since = Instant::now();

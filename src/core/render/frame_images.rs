@@ -64,7 +64,7 @@ impl FrameImages {
                     image_type: ImageType::Dim2d,
                     format,
                     usage: ImageUsage::STORAGE,
-                    ..Default::default()
+                    ..ImageCreateInfo::default()
                 });
 
                 Entry {
@@ -116,7 +116,7 @@ impl FrameImages {
                     format: entry.format,
                     extent: [extent[0], extent[1], 1],
                     usage: ImageUsage::STORAGE | ImageUsage::SAMPLED,
-                    ..Default::default()
+                    ..ImageCreateInfo::default()
                 },
                 &AllocationCreateInfo::default(),
             )?;

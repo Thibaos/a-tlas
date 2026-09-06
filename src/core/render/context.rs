@@ -41,10 +41,7 @@ pub struct RenderContext {
 fn create_device(
     instance: &Arc<Instance>,
     event_loop: &EventLoop<()>,
-) -> anyhow::Result<(
-    Arc<Device>,
-    impl ExactSizeIterator<Item = Arc<Queue>> + use<>,
-)> {
+) -> anyhow::Result<(Arc<Device>, Vec<Arc<Queue>>)> {
     let device_extensions = DeviceExtensions {
         khr_acceleration_structure: true,
         khr_deferred_host_operations: true,
@@ -125,17 +122,17 @@ fn create_device(
 
     let mut queue_create_infos = vec![QueueCreateInfo {
         queue_family_index: graphics_family_index?,
-        ..Default::default()
+        ..QueueCreateInfo::default()
     }];
 
     queue_create_infos.push(QueueCreateInfo {
         queue_family_index: compute_family_index,
-        ..Default::default()
+        ..QueueCreateInfo::default()
     });
 
     queue_create_infos.push(QueueCreateInfo {
         queue_family_index: transfer_family_index,
-        ..Default::default()
+        ..QueueCreateInfo::default()
     });
 
     let (device, queues) = Device::new(
@@ -144,7 +141,7 @@ fn create_device(
             enabled_extensions: &device_extensions,
             enabled_features: &device_features,
             queue_create_infos: &queue_create_infos,
-            ..Default::default()
+            ..DeviceCreateInfo::default()
         },
     )?;
 
@@ -164,15 +161,23 @@ impl RenderContext {
                     ext_swapchain_colorspace: true,
                     ..required_extensions
                 },
-                ..Default::default()
+                ..InstanceCreateInfo::default()
             },
         )?;
 
-        let (device, mut queues) = create_device(&instance, event_loop)?;
+        let (device, queues) = create_device(&instance, event_loop)?;
 
-        let graphics_queue = queues.next().context("graphics queue was not created")?;
-        let compute_queue = queues.next().context("compute queue was not created")?;
-        let transfer_queue = queues.next().context("transfer queue was not created")?;
+        let mut queues_iter = queues.into_iter();
+
+        let graphics_queue = queues_iter
+            .next()
+            .context("graphics queue was not created")?;
+        let compute_queue = queues_iter
+            .next()
+            .context("compute queue was not created")?;
+        let transfer_queue = queues_iter
+            .next()
+            .context("transfer queue was not created")?;
 
         let memory_allocator = Arc::new(StandardMemoryAllocator::new(
             &device,
@@ -183,7 +188,7 @@ impl RenderContext {
             &device,
             &ResourcesCreateInfo {
                 bindless_context: Some(&BindlessContextCreateInfo::default()),
-                ..Default::default()
+                ..ResourcesCreateInfo::default()
             },
         )?;
 

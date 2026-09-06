@@ -40,13 +40,13 @@ pub fn as_build_pre_barrier(cbf: &mut RecordingCommandBuffer<'_>) {
             | PipelineStages::HOST
             | PipelineStages::ACCELERATION_STRUCTURE_BUILD,
         dst_stages: PipelineStages::ACCELERATION_STRUCTURE_BUILD,
-        ..Default::default()
+        ..MemoryBarrier::default()
     };
 
     unsafe {
         cbf.pipeline_barrier(&DependencyInfo {
             memory_barriers: &[pre_memory_barrier],
-            ..Default::default()
+            ..DependencyInfo::default()
         });
     }
 }
@@ -58,13 +58,13 @@ pub fn as_build_post_barrier(cbf: &mut RecordingCommandBuffer<'_>) {
         src_stages: PipelineStages::ACCELERATION_STRUCTURE_BUILD,
         dst_stages: PipelineStages::ACCELERATION_STRUCTURE_BUILD
             | PipelineStages::RAY_TRACING_SHADER,
-        ..Default::default()
+        ..MemoryBarrier::default()
     };
 
     unsafe {
         cbf.pipeline_barrier(&DependencyInfo {
             memory_barriers: &[post_memory_barrier],
-            ..Default::default()
+            ..DependencyInfo::default()
         });
     }
 }
@@ -120,7 +120,7 @@ pub fn build_acceleration_structure_in_place(
         memory_allocator,
         &BufferCreateInfo {
             usage: BufferUsage::SHADER_DEVICE_ADDRESS | BufferUsage::STORAGE_BUFFER,
-            ..Default::default()
+            ..BufferCreateInfo::default()
         },
         &AllocationCreateInfo::default(),
         as_build_sizes_info.build_scratch_size,
@@ -131,7 +131,7 @@ pub fn build_acceleration_structure_in_place(
 
     let as_build_range_info = AccelerationStructureBuildRangeInfo {
         primitive_count,
-        ..Default::default()
+        ..AccelerationStructureBuildRangeInfo::default()
     };
 
     unsafe {
@@ -198,7 +198,7 @@ pub fn create_blas_aabbs_storage(
         memory_allocator,
         &BufferCreateInfo {
             usage: BufferUsage::ACCELERATION_STRUCTURE_STORAGE | BufferUsage::SHADER_DEVICE_ADDRESS,
-            ..Default::default()
+            ..BufferCreateInfo::default()
         },
         &AllocationCreateInfo::default(),
         as_build_sizes_info.acceleration_structure_size,
@@ -246,7 +246,7 @@ pub fn build_acceleration_structure_fresh(
         memory_allocator,
         &BufferCreateInfo {
             usage: BufferUsage::ACCELERATION_STRUCTURE_STORAGE | BufferUsage::SHADER_DEVICE_ADDRESS,
-            ..Default::default()
+            ..BufferCreateInfo::default()
         },
         &AllocationCreateInfo::default(),
         as_build_sizes_info.acceleration_structure_size,
@@ -323,7 +323,7 @@ pub fn create_tlas_storage(
         memory_allocator,
         &BufferCreateInfo {
             usage: BufferUsage::ACCELERATION_STRUCTURE_STORAGE | BufferUsage::SHADER_DEVICE_ADDRESS,
-            ..Default::default()
+            ..BufferCreateInfo::default()
         },
         &AllocationCreateInfo::default(),
         as_build_sizes_info.acceleration_structure_size,
@@ -349,7 +349,7 @@ pub fn aabb_geometries(
     let aabb_data = AccelerationStructureGeometryAabbsData {
         data: aabb_buffer.device_address()?.get(),
         stride: size_of::<AabbPositions>().try_into()?,
-        ..Default::default()
+        ..AccelerationStructureGeometryAabbsData::default()
     };
 
     Ok(vec![AccelerationStructureGeometry::new(
@@ -362,7 +362,7 @@ pub fn instance_geometries(
 ) -> anyhow::Result<BuildGeometries> {
     let instances_data = AccelerationStructureGeometryInstancesData {
         data: instance_buffer.device_address()?.get(),
-        ..Default::default()
+        ..AccelerationStructureGeometryInstancesData::default()
     };
 
     Ok(vec![AccelerationStructureGeometry::new(
@@ -401,7 +401,7 @@ pub fn allocate_scratch(gpu: &RenderContext, size: DeviceSize) -> anyhow::Result
         &gpu.memory_allocator,
         &BufferCreateInfo {
             usage: BufferUsage::SHADER_DEVICE_ADDRESS | BufferUsage::STORAGE_BUFFER,
-            ..Default::default()
+            ..BufferCreateInfo::default()
         },
         &AllocationCreateInfo::default(),
         size.max(1),

@@ -202,28 +202,28 @@ fn build_ray_tracing_pipeline(
     };
 
     let (stages, groups) = {
-        let raygen = PipelineShaderStageCreateInfo::new(raygen);
-        let miss = PipelineShaderStageCreateInfo::new(miss);
-        let default_intersection = PipelineShaderStageCreateInfo::new(intersection);
-        let coarse_intersection = PipelineShaderStageCreateInfo::new(&hull_intersection);
-        let default_chit = PipelineShaderStageCreateInfo::new(closest_hit);
-        let shadow_chit = PipelineShaderStageCreateInfo::new(shadow_hit);
-
-        let mut stages = vec![
-            raygen,
-            miss,
-            default_intersection,
-            coarse_intersection,
-            default_chit,
-            shadow_chit,
-        ];
-
         const RAYGEN_INDEX: u32 = 0;
         const MISS_INDEX: u32 = 1;
         const DEFAULT_INTERSECTION_INDEX: u32 = 2;
         const COARSE_INTERSECTION_INDEX: u32 = 3;
         const DEFAULT_CHIT_INDEX: u32 = 4;
         const SHADOW_CHIT_INDEX: u32 = 5;
+
+        let raygen = PipelineShaderStageCreateInfo::new(raygen);
+        let miss = PipelineShaderStageCreateInfo::new(miss);
+        let default_intersection = PipelineShaderStageCreateInfo::new(intersection);
+        let coarse_intersection = PipelineShaderStageCreateInfo::new(&hull_intersection);
+        let default_closest_hit = PipelineShaderStageCreateInfo::new(closest_hit);
+        let shadow_closest_hit = PipelineShaderStageCreateInfo::new(shadow_hit);
+
+        let mut stages = vec![
+            raygen,
+            miss,
+            default_intersection,
+            coarse_intersection,
+            default_closest_hit,
+            shadow_closest_hit,
+        ];
 
         let mut groups = vec![
             RayTracingShaderGroupCreateInfo::General {
@@ -328,9 +328,9 @@ impl Task for RegionRenderTask {
                         | vulkano::sync::AccessFlags::SHADER_STORAGE_READ,
                     src_stages: vulkano::sync::PipelineStages::ALL_TRANSFER,
                     dst_stages: vulkano::sync::PipelineStages::RAY_TRACING_SHADER,
-                    ..Default::default()
+                    ..MemoryBarrier::default()
                 }],
-                ..Default::default()
+                ..DependencyInfo::default()
             })
         };
 

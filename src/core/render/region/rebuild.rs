@@ -232,7 +232,7 @@ impl Task for BuildBlasTask {
                         &build_geometry_info,
                         &[AccelerationStructureBuildRangeInfo {
                             primitive_count: build.aabb_count,
-                            ..Default::default()
+                            ..AccelerationStructureBuildRangeInfo::default()
                         }],
                     )
                 };
@@ -284,7 +284,7 @@ impl Task for BuildTlasTask {
                     &build_geometry_info,
                     &[AccelerationStructureBuildRangeInfo {
                         primitive_count: self.instance_count,
-                        ..Default::default()
+                        ..AccelerationStructureBuildRangeInfo::default()
                     }],
                 )
             };

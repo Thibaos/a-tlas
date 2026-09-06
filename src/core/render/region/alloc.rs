@@ -81,12 +81,12 @@ pub fn allocate_pool(
         let buffer_id = gpu.resources.create_buffer(
             &BufferCreateInfo {
                 usage: BufferUsage::SHADER_DEVICE_ADDRESS | BufferUsage::STORAGE_BUFFER,
-                ..Default::default()
+                ..BufferCreateInfo::default()
             },
             &AllocationCreateInfo {
                 memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
                     | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
-                ..Default::default()
+                ..AllocationCreateInfo::default()
             },
             DeviceLayout::new_unsized::<[u8]>(needed)
                 .context(format!("device layout for {needed} bytes is invalid"))?,
@@ -123,12 +123,12 @@ pub fn allocate_blas(
                 usage: BufferUsage::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY
                     | BufferUsage::SHADER_DEVICE_ADDRESS
                     | BufferUsage::STORAGE_BUFFER,
-                ..Default::default()
+                ..BufferCreateInfo::default()
             },
             &AllocationCreateInfo {
                 memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
                     | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
-                ..Default::default()
+                ..AllocationCreateInfo::default()
             },
             DeviceLayout::new_unsized::<[AabbPositions]>(u64::from(aabb_count))
                 .context(format!("device layout for {aabb_count} AABBs is invalid"))?,

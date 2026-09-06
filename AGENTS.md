@@ -1,6 +1,6 @@
 # atlas-rt
 
-## When writing code
+## When writing Rust and glsl code
 
 - Keep documentation as minimal as possible
 - Do not write in-code (within functions) documentation nor per-field documentation
