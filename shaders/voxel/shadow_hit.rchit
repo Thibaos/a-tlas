@@ -8,8 +8,8 @@
 #include "../common/header.glsl"
 #include "../common/bindings.glsl"
 
-layout(location = 1) rayPayloadInEXT ShadowPayload shadow_payload;
+layout(location = 1) rayPayloadInEXT MainPassPayload shadow_payload;
 
 void main() {
-    shadow_payload.attenuation = 0.25;
+    shadow_payload.t = gl_RayTmaxEXT;
 }

@@ -26,4 +26,4 @@ struct ShadowPayload {
 
 #define MODE_VOXEL 0u
 #define MODE_HULL 1u
-#define MODE_NORMAL 4u
+#define MODE_NORMAL 2u

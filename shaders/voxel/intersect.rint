@@ -32,18 +32,23 @@ uint material_rank(RegionPool pool, uint block_offset, uint idx) {
     uint bit = idx & 31u;
     uint base = block_offset >> 2u;
     uint count = 0u;
+
     for (uint w = 0u; w < word; ++w) {
         count += bitCount(pool.words[base + w]);
     }
+
     count += bitCount(pool.words[base + word] & ((1u << bit) - 1u));
+
     return count;
 }
 
 bool aabb_slab(vec3 origin, vec3 dir, float tmin, float tmax, vec3 bmin, vec3 bmax, out float t0, out float t1) {
     t0 = tmin;
     t1 = tmax;
+
     for (int a = 0; a < 3; ++a) {
         float d = dir[a];
+
         if (d == 0.0) {
             if (origin[a] < bmin[a] || origin[a] >= bmax[a]) {
                 return false;
@@ -52,18 +57,22 @@ bool aabb_slab(vec3 origin, vec3 dir, float tmin, float tmax, vec3 bmin, vec3 bm
             float inv = 1.0 / d;
             float a0 = (bmin[a] - origin[a]) * inv;
             float a1 = (bmax[a] - origin[a]) * inv;
+
             if (a0 > a1) {
                 float tmp = a0;
                 a0 = a1;
                 a1 = tmp;
             }
+
             t0 = max(t0, a0);
             t1 = min(t1, a1);
+
             if (t0 > t1) {
                 return false;
             }
         }
     }
+
     return t1 > t0;
 }
 
@@ -109,8 +118,10 @@ void main() {
     ivec3 step = ivec3(0);
     vec3 t_next = vec3(0.0);
     vec3 delta = vec3(0.0);
+
     for (int a = 0; a < 3; ++a) {
         float d = dir[a];
+
         if (d == 0.0) {
             step[a] = 1;
             t_next[a] = FLT_MAX;
@@ -149,14 +160,8 @@ void main() {
                     uint byte_off = block_offset + MASK_BYTES + count;
                     uint byte_word = pool.words[byte_off >> 2u];
                     uint material = (byte_word >> ((byte_off & 3u) << 3u)) & 0xFFu;
-                    // Snap the reported crossing to the division form of the
-                    // entered boundary: the accumulated t_entry carries one
-                    // rounding per march step, and closest-hit reconstructs
-                    // the entered face from p = o + d*t — drift past a few
-                    // ULP would fall off the boundary into the no-face
-                    // fallback. One division here keeps the reported hit on
-                    // the face.
                     float t_report = t_entry;
+
                     if (last_axis >= 0) {
                         float boundary = (step[last_axis] > 0)
                             ? float(cell[last_axis])
@@ -166,13 +171,16 @@ void main() {
                             tmin
                         );
                     }
+
                     reportIntersectionEXT(t_report, material);
+
                     return;
                 }
             }
         }
 
         int axis;
+
         if (t_next.x <= t_next.y && t_next.x <= t_next.z) {
             axis = 0;
         } else if (t_next.y <= t_next.z) {
@@ -180,10 +188,13 @@ void main() {
         } else {
             axis = 2;
         }
+
         float next_t = t_next[axis];
+
         if (next_t >= t1) {
             return;
         }
+
         cell[axis] += step[axis];
         t_next[axis] = next_t + delta[axis];
         t_entry = next_t;

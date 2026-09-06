@@ -96,7 +96,7 @@ pub enum RenderMode {
     #[cfg(debug_assertions)]
     Hull = 1,
     #[cfg(debug_assertions)]
-    Normal = 4,
+    Normal = 2,
 }
 
 pub struct RegionRenderContext {
@@ -168,10 +168,8 @@ impl RegionRenderTask {
 }
 
 pub const fn default_scene() -> production_raygen::Scene {
-    let knots = [0.15, 0.6, 1.2];
-
     production_raygen::Scene {
-        sky_knots: [knots[0], knots[1], knots[2], 0.0],
+        sky_knots: [0.15, 0.6, 1.2, 0.0],
     }
 }
 
@@ -208,6 +206,10 @@ fn build_ray_tracing_pipeline(
         const COARSE_INTERSECTION_INDEX: u32 = 3;
         const DEFAULT_CHIT_INDEX: u32 = 4;
         const SHADOW_CHIT_INDEX: u32 = 5;
+        #[cfg(debug_assertions)]
+        const HULL_INTERSECTION_INDEX: u32 = 6;
+        #[cfg(debug_assertions)]
+        const HULL_CHIT_INDEX: u32 = 7;
 
         let raygen = PipelineShaderStageCreateInfo::new(raygen);
         let miss = PipelineShaderStageCreateInfo::new(miss);
@@ -216,7 +218,8 @@ fn build_ray_tracing_pipeline(
         let default_closest_hit = PipelineShaderStageCreateInfo::new(closest_hit);
         let shadow_closest_hit = PipelineShaderStageCreateInfo::new(shadow_hit);
 
-        let mut stages = vec![
+        #[cfg(not(debug_assertions))]
+        let stages = vec![
             raygen,
             miss,
             default_intersection,
@@ -225,7 +228,19 @@ fn build_ray_tracing_pipeline(
             shadow_closest_hit,
         ];
 
-        let mut groups = vec![
+        #[cfg(debug_assertions)]
+        let stages = vec![
+            raygen,
+            miss,
+            default_intersection,
+            coarse_intersection,
+            default_closest_hit,
+            shadow_closest_hit,
+            PipelineShaderStageCreateInfo::new(&hull_intersection),
+            PipelineShaderStageCreateInfo::new(&hull_closest_hit),
+        ];
+
+        let groups = vec![
             RayTracingShaderGroupCreateInfo::General {
                 general_shader: RAYGEN_INDEX,
             },
@@ -247,20 +262,13 @@ fn build_ray_tracing_pipeline(
                 any_hit_shader: None,
                 intersection_shader: COARSE_INTERSECTION_INDEX,
             },
-        ];
-
-        #[cfg(debug_assertions)]
-        {
-            let hull_intersection_idx = u32::try_from(stages.len())?;
-            let hull_closest_hit_idx = hull_intersection_idx.strict_add(1);
-            stages.push(PipelineShaderStageCreateInfo::new(&hull_intersection));
-            stages.push(PipelineShaderStageCreateInfo::new(&hull_closest_hit));
-            groups.push(RayTracingShaderGroupCreateInfo::ProceduralHit {
-                closest_hit_shader: Some(hull_closest_hit_idx),
+            #[cfg(debug_assertions)]
+            RayTracingShaderGroupCreateInfo::ProceduralHit {
+                closest_hit_shader: Some(HULL_CHIT_INDEX),
                 any_hit_shader: None,
-                intersection_shader: hull_intersection_idx,
-            });
-        }
+                intersection_shader: HULL_INTERSECTION_INDEX,
+            },
+        ];
 
         (stages, groups)
     };

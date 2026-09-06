@@ -9,6 +9,7 @@
 #include "../common/bindings.glsl"
 
 layout(location = 0) rayPayloadInEXT MainPassPayload incoming_payload;
+layout(location = 1) rayPayloadInEXT MainPassPayload shadow_payload;
 
 void main() {
     // Palette entries are sRGB; the display path (ACES + gamma) is linear.

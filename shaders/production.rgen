@@ -11,14 +11,18 @@
 #include "common/sky.glsl"
 
 layout(location = 0) rayPayloadEXT MainPassPayload payload;
-layout(location = 1) rayPayloadEXT ShadowPayload shadow_payload;
+layout(location = 1) rayPayloadEXT MainPassPayload shadow_payload;
 
 void reset_payload() {
     payload.t = FLT_MAX;
     payload.color = vec4(0.0);
     payload.normal = vec3(0.0);
 
-    shadow_payload.attenuation = 1.0;
+    shadow_payload.t = FLT_MAX;
+    shadow_payload.color = vec4(0.0);
+    shadow_payload.normal = vec3(0.0);
+
+    // shadow_payload.attenuation = 1.0;
 }
 
 #define VOXEL_SBT_INDEX 0u
@@ -47,13 +51,15 @@ void main() {
         return;
     }
 
-    if (mode == MODE_VOXEL) {
+    if (mode == MODE_VOXEL && payload.t < 1024.0) {
         vec3 sun_direction = normalize(vec3(-0.5, -0.8, 0.5));
         vec3 hit_position = origin + (payload.t - EPSILON) * direction;
 
         traceRayEXT(vko_accelerationStructureEXT(acceleration_structure_id), gl_RayFlagsOpaqueEXT, 0xFFu, SHADOW_SBT_INDEX, 0u, 0u, hit_position, RAY_T_MIN, -sun_direction, RAY_T_MAX, 1);
 
-        payload.color.rgb *= shadow_payload.attenuation;
+        if (shadow_payload.t < 1024.0) {
+            payload.color.rgb *= 0.25;
+        }
     }
 
     imageStore(vko_image2D_rgba16f(color_image_id), ivec2(gl_LaunchIDEXT.xy), payload.color);
